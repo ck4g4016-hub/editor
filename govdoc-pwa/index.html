@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>公文編輯器</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#252220">
+<style>
+  :root{
+    --paper:#faf7ef;
+    --paper-edge:#efe9d8;
+    --ink:#211c15;
+    --ink-soft:#524c3d;
+    --rule:#d8cfb8;
+    --seal:#9c3b3b;
+    --seal-soft:#c98787;
+    --bg:#3a362f;
+    --toolbar:#252220;
+    --field-bg:#fffdf8;
+    --badge-bg:#efe6d0;
+    --badge-bg-2:#e6dcc0;
+    --badge-bg-3:#ddd0ab;
+    --badge-bg-4:#d4c398;
+    --ok:#5c7a52;
+    --err:#a24444;
+    --serif: 'Noto Serif TC','PMingLiU','MingLiU',serif;
+    --sans: 'Noto Sans TC',-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  header{
+    display:flex; align-items:center; gap:10px; padding:12px 18px; background:var(--toolbar);
+    border-bottom:1px solid #1a1815; flex-wrap:wrap; flex-shrink:0;
+  }
+  .logo{
+    font-family:var(--serif); font-weight:700; color:#e8d9b8; font-size:15px;
+    margin-right:6px; white-space:nowrap; display:flex; align-items:center; gap:6px;
+  }
+  .logo .seal{
+    width:16px;height:16px; border:1.5px solid var(--seal-soft); color:var(--seal-soft);
+    border-radius:3px; display:inline-flex; align-items:center; justify-content:center; font-size:10px;
+  }
+  button, .file-btn{
+    background:transparent; border:1px solid #4a453c; color:#e8e2d4;
+    font-family:var(--sans); font-size:13px; padding:7px 14px; border-radius:5px;
+    cursor:pointer; transition:border-color .15s, color .15s; white-space:nowrap;
+  }
+  button:hover, .file-btn:hover{ border-color:var(--seal-soft); color:#f0dcc0; }
+  button.primary{ background:var(--seal); border-color:var(--seal); color:#fbf3ea; font-weight:600; }
+  button.primary:hover{ background:#b04747; color:#fff; }
+  button:disabled{opacity:.35;cursor:not-allowed;}
+  input[type=file]{display:none;}
+  .filename{
+    font-family:var(--sans); font-size:12.5px; color:#a49c8a; margin-left:2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:240px;
+  }
+  .spacer{flex:1;}
+  .status{ font-family:var(--sans); font-size:12px; padding:5px 10px; border-radius:5px; white-space:nowrap; }
+  .status.ok{color:#a8caa0;} .status.err{color:#e0a1a1;} .status.idle{color:#8a8172;}
+  main{ flex:1; overflow:auto; display:flex; flex-direction:column; align-items:center; padding:36px 20px 80px; }
+  .empty-state{ margin:auto; text-align:center; color:#a49c8a; font-family:var(--sans); }
+  .empty-state .big{ font-size:15px; color:#d8d0bd; margin-bottom:8px;}
+  .empty-state .small{ font-size:12.5px; }
+
+  .sheet{
+    background:var(--paper); width:100%; max-width:780px; padding:44px 56px 56px;
+    box-shadow:0 10px 40px rgba(0,0,0,0.45); font-family:var(--serif); color:var(--ink);
+    position:relative; min-height:600px;
+  }
+  .sheet::before{
+    content:""; position:absolute; top:14px; left:14px; right:14px; bottom:14px;
+    border:1px solid var(--paper-edge); pointer-events:none;
+  }
+  .filenum-block{ text-align:right; font-size:13px; color:var(--ink-soft); margin-bottom:6px; line-height:1.9; }
+  .filenum-block .fld-row{ justify-content:flex-end; }
+  .filenum-block label{ width:auto; margin-right:6px; }
+  .filenum-block input{ width:90px; text-align:left; }
+  .doc-title{
+    text-align:center; font-size:22px; font-weight:700; letter-spacing:2px; margin:6px 0 22px;
+    border:none; background:transparent; width:100%; font-family:var(--serif); color:var(--ink); padding:4px;
+  }
+  .contact-block{ margin-left:auto; width:300px; font-size:12.5px; color:var(--ink-soft); margin-bottom:18px; }
+  .contact-block .fld-row{ margin-bottom:3px; }
+  .contact-block label{ width:56px; flex-shrink:0; color:var(--ink-soft); }
+  .section{ margin-bottom:14px; }
+  .fld-row{ display:flex; align-items:baseline; gap:8px; margin-bottom:10px; }
+  .fld-row > label{ width:92px; flex-shrink:0; font-size:14px; color:var(--ink); font-weight:600; }
+  .fld-row.readonly > label{ color:var(--ink-soft); font-weight:400; }
+  input, textarea{
+    font-family:var(--serif); font-size:14px; color:var(--ink); background:var(--field-bg);
+    border:none; border-bottom:1px solid var(--rule); padding:4px 6px; width:100%;
+    outline:none; resize:none; line-height:1.6;
+  }
+  input:focus, textarea:focus{ border-bottom-color:var(--seal); background:#fffef9; }
+  .fld-row.readonly input, .fld-row.readonly .readonly-text{ color:var(--ink-soft); background:transparent; border-bottom-color:transparent; }
+  .readonly-text{ font-size:13.5px; padding:4px 6px; color:var(--ink-soft); line-height:1.6; }
+
+  .block-label{
+    display:flex; align-items:center; gap:9px; margin:28px 0 12px; padding:6px 10px;
+    background:#efe6d0; border-left:5px solid var(--seal); border-radius:3px;
+  }
+  .block-label .txt{ font-family:var(--sans); font-weight:800; font-size:16px; color:var(--seal); letter-spacing:2px; }
+  .block-label .hint{ font-family:var(--sans); font-size:11.5px; color:var(--ink); opacity:.75; margin-left:4px; }
+
+  .subject-box textarea{ min-height:52px; border:1px solid var(--rule); padding:10px 12px; background:var(--field-bg); }
+  .subject-box textarea::placeholder{ color:#9a917a; }
+
+  .desc-item{
+    display:flex; align-items:flex-start; gap:8px; margin-bottom:8px;
+    background:#fffef9; border:1px solid var(--paper-edge); border-radius:6px; padding:7px;
+  }
+  .desc-item.level-2{ margin-left:30px; background:#fffdf5; }
+  .desc-item.level-3{ margin-left:60px; background:#fffcf0; }
+  .desc-item.level-4{ margin-left:90px; background:#fffaea; }
+  .desc-item .prefix{
+    flex-shrink:0; display:flex; align-items:center; justify-content:center;
+    background:var(--badge-bg); color:var(--ink); font-weight:700; border-radius:50%;
+    margin-top:2px; user-select:none;
+  }
+  .desc-item.level-1 .prefix{ width:30px; height:30px; font-size:13px; background:var(--badge-bg); }
+  .desc-item.level-2 .prefix{ width:36px; height:26px; font-size:11.5px; border-radius:13px; background:var(--badge-bg-2); }
+  .desc-item.level-3 .prefix{ width:32px; height:24px; font-size:11px; border-radius:12px; background:var(--badge-bg-3); }
+  .desc-item.level-4 .prefix{ width:36px; height:22px; font-size:10.5px; border-radius:11px; background:var(--badge-bg-4); }
+  .desc-item textarea{ min-height:34px; border:1px solid var(--rule); padding:6px 8px; background:var(--field-bg); font-size:13.5px; }
+  .desc-item textarea::placeholder{ color:#9a917a; }
+  .desc-item .item-actions{ display:flex; flex-direction:column; gap:2px; flex-shrink:0; }
+  .desc-item .item-actions button{
+    border:none; background:transparent; color:var(--ink-soft); font-size:12px; cursor:pointer;
+    padding:2px 5px; line-height:1.3; text-align:left; border-radius:3px;
+  }
+  .desc-item .item-actions button:hover{ background:var(--paper-edge); color:var(--seal); }
+  .desc-item .item-actions .remove-action{ color:var(--seal-soft); }
+  .desc-item .item-actions .remove-action:hover{ color:var(--seal); }
+  .desc-children{ margin-top:2px; }
+
+  .footer-block{ margin-top:28px; padding-top:18px; border-top:1px solid var(--paper-edge); }
+  .label-chip{
+    display:inline-block; width:auto !important; background:#efe6d0; color:var(--seal) !important;
+    font-weight:800 !important; padding:4px 12px; border-radius:4px; border-left:3px solid var(--seal);
+    letter-spacing:1px; font-size:13px !important;
+  }
+
+  .bottom-info{ width:100%; max-width:780px; margin-top:20px; font-family:var(--sans); }
+  .bottom-info summary{ cursor:pointer; color:#a49c8a; font-size:12px; user-select:none; padding:6px 2px; }
+  .bottom-info summary:hover{ color:#c9c2b0; }
+  .bottom-info .info-body{ padding:10px 4px 4px; }
+  .bottom-info .reminder{ font-size:11.5px; color:#9a917a; line-height:1.7; margin-bottom:10px; }
+  .bottom-info pre{ background:#1e1c19; color:#c9c2b0; padding:14px; border-radius:6px; font-size:11px; overflow:auto; max-height:300px; }
+  .bottom-info.on-paper{ margin-top:30px; padding-top:14px; border-top:1px dashed var(--paper-edge); }
+  .bottom-info.on-paper summary{ color:#a89f88; font-family:var(--sans); }
+  .bottom-info.on-paper summary:hover{ color:var(--seal); }
+  .bottom-info.on-paper .reminder{ color:var(--ink-soft); }
+  .bottom-info.on-paper pre{ background:#2a271f; }
+
+  .drop-overlay{
+    position:fixed; inset:0; background:rgba(20,18,15,0.75);
+    border:3px dashed var(--seal-soft); display:none; align-items:center; justify-content:center;
+    font-family:var(--sans); color:#f0dcc0; font-size:16px; z-index:90; pointer-events:none;
+  }
+  .drop-overlay.active{ display:flex; }
+
+  .generic-form{
+    width:100%; max-width:780px; background:var(--paper); padding:32px 40px;
+    box-shadow:0 10px 40px rgba(0,0,0,0.45); font-family:var(--sans);
+  }
+  .generic-form .field-row{ display:flex; align-items:flex-start; gap:10px; padding:7px 0; border-bottom:1px solid var(--paper-edge); }
+  .generic-form .field-row label{ width:180px; flex-shrink:0; font-size:12.5px; color:var(--ink-soft); padding-top:6px; word-break:break-all; }
+  .generic-form .field-row textarea, .generic-form .field-row select{
+    font-family:var(--sans); font-size:13.5px; border:1px solid var(--rule); border-radius:4px;
+    padding:6px 8px; background:#fffef9; width:100%; min-height:34px; resize:vertical;
+  }
+  details.node{ margin:4px 0; }
+  details.node > summary{ cursor:pointer; font-family:var(--sans); font-size:12.5px; color:var(--ink-soft); padding:6px 0; user-select:none; }
+  details.node .nested{ margin-left:16px; border-left:2px solid var(--paper-edge); padding-left:14px; }
+
+  .modal-overlay{ position:fixed; inset:0; background:rgba(20,18,15,0.55); display:none; align-items:center; justify-content:center; z-index:100; }
+  .modal-overlay.active{ display:flex; }
+  .modal-box{ background:var(--paper); width:360px; max-width:90vw; padding:22px 24px; border-radius:8px; box-shadow:0 20px 60px rgba(0,0,0,0.5); font-family:var(--sans); }
+  .modal-box h3{ margin:0 0 14px; font-size:15px; color:var(--ink); }
+  .modal-box input{ font-family:var(--sans); border:1px solid var(--rule); background:#fffef9; }
+  .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
+  .modal-actions button{ color:var(--ink); border-color:var(--rule); }
+  .modal-actions button.primary{ background:var(--seal); border-color:var(--seal); color:#fff; }
+
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-track{background:var(--bg);}
+  ::-webkit-scrollbar-thumb{background:#4a453c;border-radius:5px;}
+  ::-webkit-scrollbar-thumb:hover{background:var(--seal-soft);}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="seal">文</span>公文編輯器</div>
+  <button class="file-btn" id="openBtn">開啟檔案</button>
+  <input type="file" id="fileInput" accept=".json,.xml,application/json,application/xml,text/xml">
+  <span class="filename" id="filenameLabel"></span>
+  <div class="spacer"></div>
+  <button id="installBtn" style="display:none;" title="安裝後可設為雙擊 .json / .xml 的預設開啟程式">安裝為應用程式</button>
+  <span class="status idle" id="statusLabel">尚未開啟檔案</span>
+  <button id="undoBtn" disabled title="復原上一步編輯">復原上一步</button>
+  <button id="saveDirectBtn" disabled title="直接覆寫原始檔案（需瀏覽器支援，目前為 Chrome / Edge）">儲存</button>
+  <button class="primary" id="saveBtn" disabled>另存新檔</button>
+</header>
+
+<main id="main">
+  <div class="empty-state" id="emptyState">
+    <div class="big">開啟一份公文檔案（.json 或 .xml）</div>
+    <div class="small">會以公文版面顯示內容，可直接點選文字進行編輯；也可以直接把檔案拖曳到這裡</div>
+  </div>
+</main>
+
+<div class="drop-overlay" id="dropOverlay">放開滑鼠以開啟這份檔案</div>
+
+<div class="modal-overlay" id="saveModal">
+  <div class="modal-box">
+    <h3>另存新檔的檔名</h3>
+    <input type="text" id="saveFilenameInput" style="width:100%;padding:8px 10px;font-size:13.5px;border-radius:4px;">
+    <div class="modal-actions">
+      <button id="saveCancelBtn">取消</button>
+      <button class="primary" id="saveConfirmBtn">儲存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const openBtn = document.getElementById('openBtn');
+const main = document.getElementById('main');
+const emptyState = document.getElementById('emptyState');
+const filenameLabel = document.getElementById('filenameLabel');
+const statusLabel = document.getElementById('statusLabel');
+const saveBtn = document.getElementById('saveBtn');
+const saveDirectBtn = document.getElementById('saveDirectBtn');
+const undoBtn = document.getElementById('undoBtn');
+const saveModal = document.getElementById('saveModal');
+const saveFilenameInput = document.getElementById('saveFilenameInput');
+const saveCancelBtn = document.getElementById('saveCancelBtn');
+const saveConfirmBtn = document.getElementById('saveConfirmBtn');
+const dropOverlay = document.getElementById('dropOverlay');
+
+let originalData = null;    // json: parsed object.  xml: parsed XML Document.
+let jsonPageDoc = null;     // json only: PageContent parsed into a Document
+let currentFilename = 'untitled.json';
+let currentFileHandle = null; // FileSystemFileHandle, when available, for direct "儲存"
+let mode = null; // 'json-gov' | 'xml-gov' | 'generic'
+let descItems = []; // shared tree: [{text, subs:[...]}]
+let genericInputs = [];
+let pendingSavePayload = null; // {ext, blobParts}
+let xmlSubjectMeta = null; // captured layout ids from the source XML, reused on save
+let undoStack = [];
+
+function setStatus(text, kind){ statusLabel.textContent = text; statusLabel.className = 'status ' + kind; }
+
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function decodeEntities(s){
+  return String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&amp;/g,'&');
+}
+
+function chineseNumeral(n){
+  const d = ['零','一','二','三','四','五','六','七','八','九'];
+  if(n <= 10) return n===10 ? '十' : d[n];
+  if(n < 20) return '十' + d[n-10];
+  const tens = Math.floor(n/10), ones = n%10;
+  return d[tens] + '十' + (ones ? d[ones] : '');
+}
+// confirmed against a real document's <NUMBER_STYLE> definition:
+// level 1 -> 一、 二、    level 2 -> (一) (二)    level 3 -> 1、 2、    level 4 -> (1) (2)
+function prefixForLevel(level, idx){
+  if(level === 1) return chineseNumeral(idx+1) + '、';
+  if(level === 2) return '(' + chineseNumeral(idx+1) + ')';
+  if(level === 3) return (idx+1) + '、';
+  return '(' + (idx+1) + ')';
+}
+function autoResize(el){ el.style.height = 'auto'; el.style.height = (el.scrollHeight + 2) + 'px'; }
+function makeItem(){ return {text:'', subs:[]}; }
+
+/* ---------- undo / 復原上一步 ---------- */
+function collectSimpleFieldValues(){
+  const els = main.querySelectorAll('.sheet input, .sheet textarea, .generic-form input, .generic-form textarea, .generic-form select');
+  const values = [];
+  els.forEach(el => { if(!el.closest('#desc-list')) values.push(el.value); });
+  return values;
+}
+function restoreSimpleFieldValues(values){
+  const els = main.querySelectorAll('.sheet input, .sheet textarea, .generic-form input, .generic-form textarea, .generic-form select');
+  let i = 0;
+  els.forEach(el => {
+    if(!el.closest('#desc-list')){
+      if(i < values.length) el.value = values[i++];
+      if(el.tagName === 'TEXTAREA') autoResize(el);
+    }
+  });
+}
+function resetUndoHistory(){
+  undoStack = [];
+  undoBtn.disabled = true;
+}
+function pushUndoSnapshot(){
+  if(!mode) return;
+  undoStack.push(JSON.stringify({descItems, simple: collectSimpleFieldValues()}));
+  if(undoStack.length > 50) undoStack.shift();
+  undoBtn.disabled = false;
+}
+function performUndo(){
+  if(!undoStack.length) return;
+  const snap = JSON.parse(undoStack.pop());
+  descItems = snap.descItems;
+  renderDescItems();
+  restoreSimpleFieldValues(snap.simple);
+  if(!undoStack.length) undoBtn.disabled = true;
+  setStatus('已復原上一步', 'ok');
+}
+
+/* ============================================================
+   JSON (SPEED PageContent / HTML) support — now parsed with a
+   real DOMParser instead of regex, so any markup embedded inside
+   a field (manual <br>, <span> formatting, etc.) is stripped from
+   the plain text shown to the user instead of leaking through as
+   literal "<...>" characters.
+   ============================================================ */
+function extractByIdDom(doc, id){
+  const el = doc.querySelector('[data-speed-id="'+id+'"]');
+  return el ? el.textContent : '';
+}
+function setElementTextPreserveTags(doc, el, newText){
+  Array.from(el.childNodes).forEach(n => { if(n.nodeType === 3) el.removeChild(n); });
+  el.insertBefore(doc.createTextNode(newText), el.firstChild);
+}
+function setByIdDom(doc, id, val){
+  const el = doc.querySelector('[data-speed-id="'+id+'"]');
+  if(el) setElementTextPreserveTags(doc, el, val);
+}
+function extractByLabelDom(doc, label){
+  const el = doc.querySelector('[data-speed-label="'+label+'"]');
+  return el ? el.textContent : '';
+}
+function setByLabelDom(doc, label, val){
+  const el = doc.querySelector('[data-speed-label="'+label+'"]');
+  if(el) setElementTextPreserveTags(doc, el, val);
+}
+function parseUlDom(ulEl){
+  const items = [];
+  Array.from(ulEl.children).forEach(li => {
+    if(li.tagName !== 'LI') return;
+    if(li.hasAttribute('data-speed-itemstyle')){
+      items.push({text: li.textContent, subs: []});
+    } else {
+      const nestedUl = li.querySelector(':scope > ul');
+      if(nestedUl && items.length) items[items.length-1].subs = parseUlDom(nestedUl);
+    }
+  });
+  return items;
+}
+function extractDescTreeDom(doc){
+  const rootUl = doc.querySelector('ul[data-speed-level="1"]');
+  if(!rootUl) return [];
+  return parseUlDom(rootUl);
+}
+function rebuildUlDom(doc, itemsArray, level){
+  const ul = doc.createElement('ul');
+  ul.setAttribute('data-speed-level', String(level));
+  itemsArray.forEach((item, idx) => {
+    const li = doc.createElement('li');
+    li.setAttribute('class','item-1');
+    li.setAttribute('data-speed-itemstyle', prefixForLevel(level, idx));
+    li.appendChild(doc.createTextNode(item.text));
+    li.appendChild(doc.createElement('br'));
+    ul.appendChild(li);
+    if(item.subs && item.subs.length){
+      const wrapLi = doc.createElement('li');
+      wrapLi.setAttribute('class','item-1');
+      wrapLi.appendChild(rebuildUlDom(doc, item.subs, level+1));
+      ul.appendChild(wrapLi);
+    }
+  });
+  return ul;
+}
+function replaceDescTreeDom(doc, itemsArray){
+  const rootUl = doc.querySelector('ul[data-speed-level="1"]');
+  if(!rootUl) return;
+  const newUl = rebuildUlDom(doc, itemsArray, 1);
+  rootUl.parentNode.replaceChild(newUl, rootUl);
+}
+function descItemsToPlainText(itemsArray, level, out){
+  itemsArray.forEach((item, idx) => {
+    const indent = '　'.repeat((level-1)*2);
+    out.push(indent + prefixForLevel(level, idx) + item.text);
+    if(item.subs && item.subs.length) descItemsToPlainText(item.subs, level+1, out);
+  });
+}
+function isJsonGovDoc(data){
+  return data && typeof data.PageContent === 'string' &&
+         data.PageContent.indexOf('A4Portrait') !== -1 &&
+         Object.prototype.hasOwnProperty.call(data, 'Subject');
+}
+
+/* ============================================================
+   XML (SPEED23_DATA) support — tested against a real export
+   ============================================================ */
+function isXmlGovDoc(doc){
+  return !!(doc && doc.documentElement && doc.documentElement.tagName === 'SPEED23_DATA' && doc.querySelector('BODY'));
+}
+function xmlGetField(doc, name){
+  const all = doc.querySelectorAll('BODY > FIELD');
+  for(const f of all){ if(f.getAttribute('NAME') === name) return f; }
+  return null;
+}
+function xmlFieldPlainText(fieldEl){
+  if(!fieldEl) return '';
+  let out = '';
+  fieldEl.querySelectorAll('I').forEach(iEl => {
+    iEl.childNodes.forEach(n => { if(n.nodeType === 3) out += n.textContent; });
+  });
+  return out;
+}
+function xmlSetFieldSimpleText(doc, fieldEl, newText){
+  if(!fieldEl) return;
+  let iEl = fieldEl.querySelector('I');
+  if(!iEl){
+    iEl = doc.createElement('I');
+    iEl.setAttribute('V_ID','1');
+    fieldEl.appendChild(iEl);
+  }
+  const kept = [];
+  Array.from(iEl.childNodes).forEach(n => { if(n.nodeType !== 3) kept.push(n); });
+  while(iEl.firstChild) iEl.removeChild(iEl.firstChild);
+  iEl.appendChild(doc.createTextNode(newText));
+  kept.forEach(n => iEl.appendChild(n));
+}
+function xmlParseSubjectField(fieldEl){
+  const iEls = Array.from(fieldEl.querySelectorAll(':scope > I'));
+  let idx = 0;
+  let leadPsId = '5';
+  if(iEls[idx] && iEls[idx].querySelector('LINEBREAK') && !iEls[idx].textContent.trim()){
+    leadPsId = iEls[idx].querySelector('LINEBREAK').getAttribute('PS_ID') || '5';
+    idx++;
+  }
+  let subject = '';
+  if(iEls[idx]){ subject = iEls[idx].textContent; idx++; }
+  if(subject.startsWith('主旨：')) subject = subject.slice('主旨：'.length);
+  let midPsId = leadPsId;
+  if(iEls[idx] && iEls[idx].querySelector('LINEBREAK')){
+    midPsId = iEls[idx].querySelector('LINEBREAK').getAttribute('PS_ID') || leadPsId;
+    idx++;
+  }
+  let hasDescLabel = false;
+  if(iEls[idx] && iEls[idx].textContent.trim() === '說明：'){ hasDescLabel = true; idx++; }
+  const flat = [];
+  let itemPsId = '6', itemNsId = '1';
+  while(idx < iEls.length){
+    const lbEl = iEls[idx].querySelector('LINEBREAK');
+    if(!lbEl){ idx++; continue; }
+    const lvl = parseInt(lbEl.getAttribute('NS_LVL') || '1', 10);
+    itemPsId = lbEl.getAttribute('PS_ID') || itemPsId;
+    itemNsId = lbEl.getAttribute('NS_ID') || itemNsId;
+    idx++;
+    const text = iEls[idx] ? iEls[idx].textContent : '';
+    idx++;
+    flat.push({level: lvl, text});
+  }
+  const root = [];
+  const stack = [{items: root, level: 0}];
+  flat.forEach(({level, text}) => {
+    while(stack.length && stack[stack.length-1].level >= level) stack.pop();
+    const node = {text, subs: []};
+    stack[stack.length-1].items.push(node);
+    stack.push({items: node.subs, level});
+  });
+  return { subject, descItems: root, meta: {leadPsId, midPsId, hasDescLabel, itemPsId, itemNsId} };
+}
+function xmlBuildSubjectInnerXml(subject, items, meta){
+  let out = '';
+  out += '<I V_ID="1" S_ID="1"><LINEBREAK PS_ID="'+meta.leadPsId+'"/></I>';
+  out += '<I V_ID="1" S_ID="1">主旨：'+escHtml(subject)+'</I>';
+  out += '<I V_ID="1" S_ID="1"><LINEBREAK PS_ID="'+meta.midPsId+'" NS_ID="" NS_LVL="" NS_NO=""/></I>';
+  if(meta.hasDescLabel || (items && items.length)){
+    out += '<I V_ID="1" S_ID="1">說明：</I>';
+  }
+  function walk(arr, level){
+    arr.forEach((item, idx) => {
+      out += '<I V_ID="1" S_ID="1"><LINEBREAK PS_ID="'+meta.itemPsId+'" NS_ID="'+meta.itemNsId+'" NS_LVL="'+level+'" NS_NO="'+(idx+1)+'"/></I>';
+      out += '<I V_ID="1" S_ID="1">'+escHtml(item.text)+'</I>';
+      if(item.subs && item.subs.length) walk(item.subs, level+1);
+    });
+  }
+  walk(items, 1);
+  return out;
+}
+function xmlSetSubjectField(doc, fieldEl, subject, items, meta){
+  const tempDoc = new DOMParser().parseFromString('<TEMP>'+xmlBuildSubjectInnerXml(subject, items, meta)+'</TEMP>', 'application/xml');
+  while(fieldEl.firstChild) fieldEl.removeChild(fieldEl.firstChild);
+  Array.from(tempDoc.documentElement.childNodes).forEach(node => {
+    fieldEl.appendChild(doc.importNode(node, true));
+  });
+}
+
+/* ============================================================
+   Shared UI: builds/populates/saves the letter-style form for
+   either a JSON PageContent document or an XML SPEED23 document
+   ============================================================ */
+function buildGovDocForm(){
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet';
+
+  const filenumBlock = document.createElement('div');
+  filenumBlock.className = 'filenum-block';
+  filenumBlock.innerHTML = `
+    <div class="fld-row"><label>檔　　號：</label><input id="fld-FileNumber"></div>
+    <div class="fld-row"><label>保存年限：</label><input id="fld-RetentionPeriod"></div>
+  `;
+  sheet.appendChild(filenumBlock);
+
+  const title = document.createElement('input');
+  title.className = 'doc-title';
+  title.id = 'fld-FullName';
+  sheet.appendChild(title);
+  const titleSuffix = document.createElement('div');
+  titleSuffix.style.textAlign='center'; titleSuffix.style.fontSize='12px';
+  titleSuffix.style.color='var(--ink-soft)'; titleSuffix.style.marginTop='-14px'; titleSuffix.style.marginBottom='18px';
+  titleSuffix.textContent = '　函(稿)';
+  sheet.appendChild(titleSuffix);
+
+  const contact = document.createElement('div');
+  contact.className = 'contact-block';
+  contact.innerHTML = `
+    <div class="fld-row"><label>地址</label><input id="fld-Address"></div>
+    <div class="fld-row"><label>承辦人</label><input id="fld-contact-name"></div>
+    <div class="fld-row"><label>電話</label><input id="fld-contact-phone"></div>
+    <div class="fld-row"><label>傳真</label><input id="fld-contact-fax"></div>
+    <div class="fld-row"><label>信箱</label><input id="fld-contact-email"></div>
+  `;
+  sheet.appendChild(contact);
+
+  const section = document.createElement('div');
+  section.className = 'section';
+  section.innerHTML = `
+    <div class="fld-row"><label>受文者</label><input id="fld-Recipient"></div>
+    <div class="fld-row readonly"><label>發文日期</label><div class="readonly-text" id="fld-PublishDate-view"></div></div>
+    <div class="fld-row"><label>發文字號</label><input id="fld-PublishDocNumber"></div>
+    <div class="fld-row readonly"><label>速別</label><div class="readonly-text" id="fld-LevelUrgency-view"></div></div>
+    <div class="fld-row"><label>附件</label><input id="fld-Attachment"></div>
+  `;
+  sheet.appendChild(section);
+
+  const subjectBox = document.createElement('div');
+  subjectBox.className = 'subject-box';
+  const subjectLabel = document.createElement('div');
+  subjectLabel.className = 'block-label';
+  subjectLabel.innerHTML = '<div class="txt">主旨</div><div class="hint">公文的核心目的，一段文字</div>';
+  subjectBox.appendChild(subjectLabel);
+  const subjectTa = document.createElement('textarea');
+  subjectTa.id = 'fld-Subject';
+  subjectTa.placeholder = '請輸入主旨內容';
+  subjectBox.appendChild(subjectTa);
+  sheet.appendChild(subjectBox);
+
+  const descBox = document.createElement('div');
+  descBox.className = 'desc-box';
+  const descLabel = document.createElement('div');
+  descLabel.className = 'block-label';
+  descLabel.innerHTML = '<div class="txt">說明</div><div class="hint">逐項列點，可插入項目、可加子項目，編號自動排列</div>';
+  descBox.appendChild(descLabel);
+  const descList = document.createElement('div');
+  descList.id = 'desc-list';
+  descBox.appendChild(descList);
+  sheet.appendChild(descBox);
+
+  const footer = document.createElement('div');
+  footer.className = 'footer-block';
+  footer.innerHTML = `
+    <div class="fld-row"><label class="label-chip">正本</label><input id="fld-OriginalRecipient"></div>
+    <div class="fld-row"><label class="label-chip">副本</label><input id="fld-CopyRecipient"></div>
+  `;
+  sheet.appendChild(footer);
+
+  main.innerHTML = '';
+  main.appendChild(sheet);
+  appendBottomInfo(sheet);
+  return sheet;
+}
+
+function populateSharedControls(get){
+  document.getElementById('fld-FileNumber').value = get('fileNumber');
+  document.getElementById('fld-RetentionPeriod').value = get('retentionPeriod');
+  document.getElementById('fld-FullName').value = get('fullName');
+  document.getElementById('fld-Address').value = get('address');
+  document.getElementById('fld-contact-name').value = get('contactName');
+  document.getElementById('fld-contact-phone').value = get('contactPhone');
+  document.getElementById('fld-contact-fax').value = get('contactFax');
+  document.getElementById('fld-contact-email').value = get('contactEmail');
+  document.getElementById('fld-Recipient').value = get('recipient');
+  document.getElementById('fld-PublishDocNumber').value = get('publishDocNumber');
+  document.getElementById('fld-Attachment').value = get('attachment');
+  document.getElementById('fld-OriginalRecipient').value = get('originalRecipient');
+  document.getElementById('fld-CopyRecipient').value = get('copyRecipient');
+  document.getElementById('fld-PublishDate-view').textContent = get('publishDateDisplay') || '（草稿尚未發文）';
+  document.getElementById('fld-LevelUrgency-view').textContent = get('urgencyDisplay');
+  const subjectTa = document.getElementById('fld-Subject');
+  subjectTa.value = get('subject');
+  autoResize(subjectTa);
+  subjectTa.addEventListener('input', () => autoResize(subjectTa));
+}
+
+function appendBottomInfo(container){
+  const details = document.createElement('details');
+  details.className = 'bottom-info on-paper';
+  const summary = document.createElement('summary');
+  summary.textContent = '提醒事項與原始資料（點此展開）';
+  details.appendChild(summary);
+  const body = document.createElement('div');
+  body.className = 'info-body';
+  const reminder = document.createElement('div');
+  reminder.className = 'reminder';
+  reminder.textContent = '說明的子項目編號格式（一、→(一)→1、→(1)）已對照實際公文樣式與系統定義的編號規則確認無誤。';
+  body.appendChild(reminder);
+  const jsonDetails = document.createElement('details');
+  const jsonSummary = document.createElement('summary');
+  jsonSummary.textContent = mode === 'xml-gov' ? '檢視原始 XML' : '檢視原始 JSON';
+  jsonSummary.style.fontSize = '11.5px';
+  const pre = document.createElement('pre');
+  jsonDetails.appendChild(jsonSummary);
+  jsonDetails.appendChild(pre);
+  jsonDetails.addEventListener('toggle', () => {
+    if(!jsonDetails.open) return;
+    if(mode === 'xml-gov') pre.textContent = new XMLSerializer().serializeToString(originalData);
+    else pre.textContent = JSON.stringify(originalData, null, 2);
+  });
+  body.appendChild(jsonDetails);
+  details.appendChild(body);
+  container.appendChild(details);
+}
+
+function makeDescRenderer(){
+  return function renderDescItems(){
+    const list = document.getElementById('desc-list');
+    list.innerHTML = '';
+    renderLevel(list, descItems, 1);
+  };
+}
+function renderDescItems(){
+  const list = document.getElementById('desc-list');
+  list.innerHTML = '';
+  renderLevel(list, descItems, 1);
+}
+function renderLevel(container, itemsArray, level){
+  itemsArray.forEach((item, idx) => {
+    const row = document.createElement('div');
+    row.className = 'desc-item level-' + level;
+    const prefix = document.createElement('div');
+    prefix.className = 'prefix';
+    prefix.textContent = prefixForLevel(level, idx);
+    const ta = document.createElement('textarea');
+    ta.value = item.text;
+    ta.placeholder = level === 1 ? '請輸入說明內容' : '請輸入子項目內容';
+    ta.addEventListener('input', () => { item.text = ta.value; autoResize(ta); });
+    const actions = document.createElement('div');
+    actions.className = 'item-actions';
+    const insertBtn = document.createElement('button');
+    insertBtn.type = 'button'; insertBtn.textContent = '插入下一項'; insertBtn.tabIndex = -1;
+    insertBtn.onclick = () => { pushUndoSnapshot(); itemsArray.splice(idx+1, 0, makeItem()); renderDescItems(); };
+    actions.appendChild(insertBtn);
+    if(level < 4){
+      const addSubBtn = document.createElement('button');
+      addSubBtn.type = 'button'; addSubBtn.textContent = '＋子項目'; addSubBtn.tabIndex = -1;
+      addSubBtn.onclick = () => { pushUndoSnapshot(); item.subs.push(makeItem()); renderDescItems(); };
+      actions.appendChild(addSubBtn);
+    }
+    const rm = document.createElement('button');
+    rm.type = 'button'; rm.className = 'remove-action'; rm.textContent = '刪除'; rm.tabIndex = -1;
+    rm.onclick = () => { pushUndoSnapshot(); itemsArray.splice(idx,1); renderDescItems(); };
+    actions.appendChild(rm);
+    row.appendChild(prefix); row.appendChild(ta); row.appendChild(actions);
+    container.appendChild(row);
+    autoResize(ta);
+    if(item.subs && item.subs.length){
+      const childWrap = document.createElement('div');
+      childWrap.className = 'desc-children';
+      container.appendChild(childWrap);
+      renderLevel(childWrap, item.subs, level+1);
+    }
+  });
+}
+
+/* ---------- open: JSON gov doc ---------- */
+function openJsonGovDoc(data){
+  mode = 'json-gov';
+  buildGovDocForm();
+  jsonPageDoc = new DOMParser().parseFromString(data.PageContent, 'text/html');
+  const doc = jsonPageDoc;
+  populateSharedControls((key) => {
+    switch(key){
+      case 'fileNumber': return extractByIdDom(doc, 'FileNumber');
+      case 'retentionPeriod': return extractByIdDom(doc, 'RetentionPeriod');
+      case 'fullName': return extractByIdDom(doc, 'FullName');
+      case 'address': return extractByIdDom(doc, 'Address');
+      case 'contactName': return extractByLabelDom(doc, '承辦人：');
+      case 'contactPhone': return extractByLabelDom(doc, '電話：');
+      case 'contactFax': return extractByLabelDom(doc, '傳真：');
+      case 'contactEmail': return extractByLabelDom(doc, '電子信箱：');
+      case 'recipient': return extractByIdDom(doc, 'Recipient');
+      case 'publishDocNumber': return extractByIdDom(doc, 'PublishDocNumber');
+      case 'attachment': return extractByIdDom(doc, 'Attachment');
+      case 'originalRecipient': return extractByIdDom(doc, 'OriginalRecipient');
+      case 'copyRecipient': return extractByIdDom(doc, 'CopyRecipient');
+      case 'subject': return extractByIdDom(doc, 'Subject');
+      case 'publishDateDisplay': return (data.PublishDate||'').trim();
+      case 'urgencyDisplay': {
+        const el = doc.querySelector('[data-speed-id="LevelofUrgency"] label');
+        return el ? el.textContent : '';
+      }
+    }
+    return '';
+  });
+  descItems = extractDescTreeDom(doc);
+  renderDescItems();
+  saveBtn.disabled = false;
+  resetUndoHistory();
+  setStatus('已開啟公文檔案（JSON）', 'ok');
+}
+function saveJsonGovDoc(){
+  const clone = JSON.parse(JSON.stringify(originalData));
+  const pcDoc = jsonPageDoc.cloneNode(true);
+
+  const fileNumber = document.getElementById('fld-FileNumber').value;
+  const retention = document.getElementById('fld-RetentionPeriod').value;
+  const fullName = document.getElementById('fld-FullName').value;
+  const address = document.getElementById('fld-Address').value;
+  const contactName = document.getElementById('fld-contact-name').value;
+  const contactPhone = document.getElementById('fld-contact-phone').value;
+  const contactFax = document.getElementById('fld-contact-fax').value;
+  const contactEmail = document.getElementById('fld-contact-email').value;
+  const recipient = document.getElementById('fld-Recipient').value;
+  const publishDocNumber = document.getElementById('fld-PublishDocNumber').value;
+  const attachment = document.getElementById('fld-Attachment').value;
+  const originalRecipient = document.getElementById('fld-OriginalRecipient').value;
+  const copyRecipient = document.getElementById('fld-CopyRecipient').value;
+  const subject = document.getElementById('fld-Subject').value;
+
+  setByIdDom(pcDoc, 'FileNumber', fileNumber);
+  setByIdDom(pcDoc, 'RetentionPeriod', retention);
+  setByIdDom(pcDoc, 'FullName', fullName);
+  setByIdDom(pcDoc, 'Address', address);
+  setByLabelDom(pcDoc, '承辦人：', contactName);
+  setByLabelDom(pcDoc, '電話：', contactPhone);
+  setByLabelDom(pcDoc, '傳真：', contactFax);
+  setByLabelDom(pcDoc, '電子信箱：', contactEmail);
+  setByIdDom(pcDoc, 'Recipient', recipient);
+  setByIdDom(pcDoc, 'PublishDocNumber', publishDocNumber);
+  setByIdDom(pcDoc, 'Attachment', attachment);
+  setByIdDom(pcDoc, 'OriginalRecipient', originalRecipient);
+  setByIdDom(pcDoc, 'CopyRecipient', copyRecipient);
+  setByIdDom(pcDoc, 'Subject', subject);
+  replaceDescTreeDom(pcDoc, descItems);
+
+  clone.PageContent = pcDoc.body.innerHTML;
+  clone.Subject = subject;
+  const plainLines = [];
+  descItemsToPlainText(descItems, 1, plainLines);
+  clone.Description = plainLines.join('\r\n');
+  clone.PublishDocNumber = publishDocNumber;
+  const retentionDigits = retention.replace(/[^0-9]/g, '');
+  if(retentionDigits) clone.RetentionPeriod = retentionDigits;
+  const fnParts = fileNumber.split('/');
+  if(fnParts.length === 3){ clone.ClassificationNumber = fnParts[1]; clone.FolderNumber = fnParts[2]; }
+  if(Array.isArray(clone.Recipients) && clone.Recipients[0]){
+    clone.Recipients[0].Name = originalRecipient;
+    clone.Recipients[0].ElectricOrganName = originalRecipient;
+  }
+  return {kind:'json', data: clone};
+}
+
+/* ---------- open: XML gov doc ---------- */
+function openXmlGovDoc(doc){
+  mode = 'xml-gov';
+  buildGovDocForm();
+
+  const yearField = xmlGetField(doc, '年度號');
+  const classField = xmlGetField(doc, '檔號');
+  const caseNoField = xmlGetField(doc, '案次號');
+  const retentionField = xmlGetField(doc, '保存年限');
+  const fullNameField = xmlGetField(doc, '全銜');
+  const addressField = xmlGetField(doc, '地址');
+  const contactField = xmlGetField(doc, '承辦人資訊');
+  const recipientField = xmlGetField(doc, '受文者');
+  const publishDocNoField = xmlGetField(doc, '發文字號');
+  const attachmentField = xmlGetField(doc, '附件');
+  const originalRecipientField = xmlGetField(doc, '正本');
+  const copyRecipientField = xmlGetField(doc, '副本');
+  const publishDateField = xmlGetField(doc, '發文日期');
+  const urgencyField = xmlGetField(doc, '速別');
+  const subjectField = xmlGetField(doc, '主旨');
+
+  const contactText = xmlFieldPlainText(contactField);
+  const contactLines = contactText.split('\n');
+  function pickLine(prefix){
+    const l = contactLines.find(x => x.startsWith(prefix));
+    return l ? l.slice(prefix.length) : '';
+  }
+
+  const parsed = xmlParseSubjectField(subjectField);
+  xmlSubjectMeta = parsed.meta;
+
+  populateSharedControls((key) => {
+    switch(key){
+      case 'fileNumber': {
+        const y = xmlFieldPlainText(yearField);
+        const c = xmlFieldPlainText(classField);
+        const n = xmlFieldPlainText(caseNoField);
+        return [y,c,n].filter(Boolean).join('/');
+      }
+      case 'retentionPeriod': {
+        const r = xmlFieldPlainText(retentionField);
+        return r ? r + '年' : '';
+      }
+      case 'fullName': return xmlFieldPlainText(fullNameField);
+      case 'address': return xmlFieldPlainText(addressField);
+      case 'contactName': return pickLine('承辦人：');
+      case 'contactPhone': return pickLine('電話：');
+      case 'contactFax': return pickLine('傳真：');
+      case 'contactEmail': return pickLine('電子信箱：');
+      case 'recipient': return xmlFieldPlainText(recipientField);
+      case 'publishDocNumber': return xmlFieldPlainText(publishDocNoField);
+      case 'attachment': return xmlFieldPlainText(attachmentField);
+      case 'originalRecipient': return xmlFieldPlainText(originalRecipientField);
+      case 'copyRecipient': return xmlFieldPlainText(copyRecipientField);
+      case 'subject': return parsed.subject;
+      case 'publishDateDisplay': return xmlFieldPlainText(publishDateField).trim();
+      case 'urgencyDisplay': return xmlFieldPlainText(urgencyField);
+    }
+    return '';
+  });
+
+  descItems = parsed.descItems;
+  renderDescItems();
+  saveBtn.disabled = false;
+  resetUndoHistory();
+  setStatus('已開啟公文檔案（XML）', 'ok');
+}
+function saveXmlGovDoc(){
+  const clonedDoc = originalData.cloneNode(true);
+
+  const fileNumber = document.getElementById('fld-FileNumber').value;
+  const retention = document.getElementById('fld-RetentionPeriod').value;
+  const fullName = document.getElementById('fld-FullName').value;
+  const address = document.getElementById('fld-Address').value;
+  const contactName = document.getElementById('fld-contact-name').value;
+  const contactPhone = document.getElementById('fld-contact-phone').value;
+  const contactFax = document.getElementById('fld-contact-fax').value;
+  const contactEmail = document.getElementById('fld-contact-email').value;
+  const recipient = document.getElementById('fld-Recipient').value;
+  const publishDocNumber = document.getElementById('fld-PublishDocNumber').value;
+  const attachment = document.getElementById('fld-Attachment').value;
+  const originalRecipient = document.getElementById('fld-OriginalRecipient').value;
+  const copyRecipient = document.getElementById('fld-CopyRecipient').value;
+  const subject = document.getElementById('fld-Subject').value;
+
+  const fnParts = fileNumber.split('/');
+  if(fnParts.length === 3){
+    xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'年度號'), fnParts[0]);
+    xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'檔號'), fnParts[1]);
+    xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'案次號'), fnParts[2]);
+  }
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'保存年限'), retention.replace(/[^0-9]/g,''));
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'全銜'), fullName);
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'地址'), address);
+  const contactCombined = [
+    contactName ? '承辦人：'+contactName : '',
+    contactPhone ? '電話：'+contactPhone : '',
+    contactFax ? '傳真：'+contactFax : '',
+    contactEmail ? '電子信箱：'+contactEmail : ''
+  ].filter(Boolean).join('\n');
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'承辦人資訊'), contactCombined);
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'受文者'), recipient);
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'發文字號'), publishDocNumber);
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'附件'), attachment);
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'正本'), originalRecipient);
+  xmlSetFieldSimpleText(clonedDoc, xmlGetField(clonedDoc,'副本'), copyRecipient);
+  xmlSetSubjectField(clonedDoc, xmlGetField(clonedDoc,'主旨'), subject, descItems, xmlSubjectMeta);
+
+  const xmlString = new XMLSerializer().serializeToString(clonedDoc);
+  return {kind:'xml', data: xmlString};
+}
+
+/* ---------- generic JSON fallback (non-govdoc) ---------- */
+function renderGeneric(data){
+  mode = 'generic';
+  const form = document.createElement('div');
+  form.className = 'generic-form';
+  genericInputs = [];
+  buildGenericNode(form, data, []);
+  main.innerHTML = '';
+  main.appendChild(form);
+  const details = document.createElement('details');
+  details.className = 'bottom-info';
+  const summary = document.createElement('summary');
+  summary.textContent = '原始資料（點此展開）';
+  details.appendChild(summary);
+  const body = document.createElement('div');
+  body.className = 'info-body';
+  const pre = document.createElement('pre');
+  body.appendChild(pre);
+  details.addEventListener('toggle', () => { if(details.open) pre.textContent = JSON.stringify(originalData, null, 2); });
+  details.appendChild(body);
+  main.appendChild(details);
+  descItems = [];
+  saveBtn.disabled = false;
+  resetUndoHistory();
+  setStatus('已開啟檔案', 'ok');
+}
+function buildGenericNode(container, value, path){
+  if(value === null || typeof value !== 'object'){
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const label = document.createElement('label');
+    label.textContent = path.length ? String(path[path.length-1]) : '(值)';
+    let input;
+    if(typeof value === 'boolean'){
+      input = document.createElement('select');
+      ['true','false'].forEach(v=>{
+        const o = document.createElement('option'); o.value=v; o.textContent=v;
+        if(String(value)===v) o.selected = true;
+        input.appendChild(o);
+      });
+    } else {
+      input = document.createElement('textarea');
+      input.value = value === null ? '' : String(value);
+      input.rows = 1;
+      input.addEventListener('input', () => autoResize(input));
+    }
+    row.appendChild(label); row.appendChild(input); container.appendChild(row);
+    genericInputs.push({el: input, path: path.slice(), type: value===null?'null':typeof value});
+    if(input.tagName === 'TEXTAREA') setTimeout(()=>autoResize(input), 0);
+    return;
+  }
+  const isArray = Array.isArray(value);
+  const keys = isArray ? value.map((_,i)=>i) : Object.keys(value);
+  keys.forEach(k => {
+    const v = value[k];
+    if(v !== null && typeof v === 'object'){
+      const det = document.createElement('details');
+      det.className = 'node'; det.open = path.length < 1;
+      const sum = document.createElement('summary');
+      sum.textContent = String(k) + (Array.isArray(v) ? ' [' + v.length + ']' : ' {…}');
+      det.appendChild(sum);
+      const nested = document.createElement('div');
+      nested.className = 'nested';
+      det.appendChild(nested);
+      container.appendChild(det);
+      buildGenericNode(nested, v, path.concat(k));
+    } else {
+      buildGenericNode(container, v, path.concat(k));
+    }
+  });
+}
+function saveGeneric(){
+  const clone = JSON.parse(JSON.stringify(originalData));
+  genericInputs.forEach(({el, path, type}) => {
+    let val = el.value;
+    if(type === 'number'){ val = val === '' ? null : Number(val); }
+    else if(type === 'boolean'){ val = (val === 'true'); }
+    else if(type === 'null'){ val = val === '' ? null : val; }
+    let target = clone;
+    for(let i=0;i<path.length-1;i++) target = target[path[i]];
+    if(path.length) target[path[path.length-1]] = val;
+  });
+  return {kind:'json', data: clone};
+}
+
+/* ---------- unified save payload ---------- */
+function buildSavePayload(){
+  if(mode === 'json-gov') return saveJsonGovDoc();
+  if(mode === 'xml-gov') return saveXmlGovDoc();
+  if(mode === 'generic') return saveGeneric();
+  throw new Error('沒有可儲存的內容');
+}
+function payloadToBlobParts(payload){
+  if(payload.kind === 'xml') return { parts: [payload.data], mime: 'application/xml' };
+  return { parts: ['\uFEFF' + JSON.stringify(payload.data)], mime: 'application/json' };
+}
+function defaultExtFor(payload){ return payload.kind === 'xml' ? '.xml' : '.json'; }
+function ensureExtension(name, ext){ return /\.[a-zA-Z0-9]+$/.test(name) ? name : name + ext; }
+
+/* ---------- 另存新檔 (download, always available) ---------- */
+function openSaveModal(){
+  let payload;
+  try{ payload = buildSavePayload(); }
+  catch(err){ setStatus('整理存檔內容時發生錯誤：' + err.message, 'err'); return; }
+  pendingSavePayload = payload;
+  const ext = defaultExtFor(payload);
+  const base = currentFilename ? currentFilename.replace(/\.[a-zA-Z0-9]+$/, '') : 'untitled';
+  saveFilenameInput.value = base + ext;
+  saveModal.classList.add('active');
+  saveFilenameInput.focus();
+  saveFilenameInput.select();
+}
+function closeSaveModal(){ saveModal.classList.remove('active'); pendingSavePayload = null; }
+function confirmSave(){
+  const name = saveFilenameInput.value.trim();
+  if(!name){ saveFilenameInput.focus(); return; }
+  const ext = defaultExtFor(pendingSavePayload);
+  const finalName = ensureExtension(name, ext);
+  try{
+    const {parts, mime} = payloadToBlobParts(pendingSavePayload);
+    const blob = new Blob(parts, {type: mime});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = finalName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    currentFilename = finalName;
+    filenameLabel.textContent = currentFilename;
+    setStatus('已儲存為 ' + finalName, 'ok');
+  }catch(err){ setStatus('儲存失敗：' + err.message, 'err'); }
+  closeSaveModal();
+}
+saveCancelBtn.addEventListener('click', closeSaveModal);
+saveConfirmBtn.addEventListener('click', confirmSave);
+saveFilenameInput.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter'){ e.preventDefault(); confirmSave(); }
+  else if(e.key === 'Escape'){ e.preventDefault(); closeSaveModal(); }
+});
+saveModal.addEventListener('click', (e) => { if(e.target === saveModal) closeSaveModal(); });
+saveBtn.addEventListener('click', openSaveModal);
+undoBtn.addEventListener('click', performUndo);
+main.addEventListener('focusin', (e) => {
+  if(e.target.matches && e.target.matches('input, textarea, select')) pushUndoSnapshot();
+});
+
+/* ---------- 儲存 (direct overwrite via File System Access API) ---------- */
+saveDirectBtn.addEventListener('click', async () => {
+  if(!currentFileHandle){ return; }
+  let payload;
+  try{ payload = buildSavePayload(); }
+  catch(err){ setStatus('整理存檔內容時發生錯誤：' + err.message, 'err'); return; }
+  try{
+    const {parts} = payloadToBlobParts(payload);
+    const writable = await currentFileHandle.createWritable();
+    await writable.write(parts.join(''));
+    await writable.close();
+    setStatus('已直接儲存至原始檔案', 'ok');
+  }catch(err){
+    setStatus('直接儲存失敗：' + err.message, 'err');
+  }
+});
+
+/* ---------- opening files ---------- */
+function parseFileContent(text, fileName){
+  const trimmed = text.replace(/^\uFEFF/, '');
+  const looksJson = /^\s*[{\[]/.test(trimmed);
+  if(looksJson){
+    let data;
+    try{ data = JSON.parse(trimmed); }
+    catch(err){ return {error: 'JSON 格式錯誤，無法開啟：' + err.message}; }
+    originalData = data;
+    if(isJsonGovDoc(data)) return {ok:true, kind:'json-gov'};
+    return {ok:true, kind:'generic'};
+  }
+  // try XML
+  const doc = new DOMParser().parseFromString(trimmed, 'application/xml');
+  if(doc.getElementsByTagName('parsererror').length){
+    return {error: '無法辨識這個檔案的格式（不是有效的 JSON 或 XML）。'};
+  }
+  if(!isXmlGovDoc(doc)){
+    return {error: '這是一份 XML 檔案，但不是目前支援的公文格式（找不到 SPEED23_DATA 結構）。'};
+  }
+  originalData = doc;
+  return {ok:true, kind:'xml-gov'};
+}
+function loadFile(file, handle){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const result = parseFileContent(text, file.name);
+    if(result.error){ setStatus(result.error, 'err'); return; }
+    currentFilename = file.name;
+    currentFileHandle = handle || null;
+    saveDirectBtn.disabled = !currentFileHandle;
+    filenameLabel.textContent = currentFilename;
+    emptyState.style.display = 'none';
+    if(result.kind === 'json-gov') openJsonGovDoc(originalData);
+    else if(result.kind === 'xml-gov') openXmlGovDoc(originalData);
+    else renderGeneric(originalData);
+  };
+  reader.onerror = () => setStatus('讀取檔案失敗', 'err');
+  reader.readAsText(file, 'UTF-8');
+}
+
+async function handleOpenClick(){
+  if(window.showOpenFilePicker){
+    try{
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description:'公文檔案', accept:{ 'application/json':['.json'], 'application/xml':['.xml','.XML'] } }]
+      });
+      const file = await handle.getFile();
+      loadFile(file, handle);
+      return;
+    }catch(err){
+      if(err && err.name === 'AbortError') return;
+      // fall through to classic picker on unexpected errors
+    }
+  }
+  fileInput.click();
+}
+openBtn.addEventListener('click', handleOpenClick);
+fileInput.addEventListener('change', (e) => { if(e.target.files && e.target.files[0]) loadFile(e.target.files[0], null); });
+
+/* ---------- drag & drop ---------- */
+let dragCounter = 0;
+window.addEventListener('dragenter', (e) => { e.preventDefault(); dragCounter++; dropOverlay.classList.add('active'); });
+window.addEventListener('dragover', (e) => { e.preventDefault(); });
+window.addEventListener('dragleave', (e) => {
+  e.preventDefault(); dragCounter--;
+  if(dragCounter <= 0){ dragCounter = 0; dropOverlay.classList.remove('active'); }
+});
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  dropOverlay.classList.remove('active');
+  const items = e.dataTransfer && e.dataTransfer.items;
+  if(items && items[0] && items[0].getAsFileSystemHandle){
+    try{
+      const handle = await items[0].getAsFileSystemHandle();
+      if(handle && handle.kind === 'file'){
+        const file = await handle.getFile();
+        loadFile(file, handle);
+        return;
+      }
+    }catch(err){ /* fall through to plain file */ }
+  }
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(file) loadFile(file, null);
+});
+
+/* ---------- PWA：File Handling（雙擊 .json / .xml 直接以本編輯器開啟） ---------- */
+if('launchQueue' in window && window.launchQueue && typeof window.launchQueue.setConsumer === 'function'){
+  window.launchQueue.setConsumer(async (launchParams) => {
+    if(!launchParams.files || !launchParams.files.length) return;
+    const handle = launchParams.files[0];
+    try{
+      if(handle.queryPermission){
+        const perm = await handle.queryPermission({mode:'readwrite'});
+        if(perm !== 'granted' && handle.requestPermission){
+          await handle.requestPermission({mode:'readwrite'});
+        }
+      }
+      const file = await handle.getFile();
+      loadFile(file, handle);
+    }catch(err){
+      setStatus('由系統開啟檔案失敗：' + err.message, 'err');
+    }
+  });
+}
+
+/* ---------- PWA：註冊 Service Worker（安裝與離線快取的必要條件） ---------- */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch(() => {});
+  });
+}
+
+/* ---------- PWA：安裝為應用程式按鈕 ---------- */
+const installBtn = document.getElementById('installBtn');
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  installBtn.style.display = '';
+});
+installBtn.addEventListener('click', async () => {
+  if(!deferredInstallPrompt) return;
+  installBtn.disabled = true;
+  deferredInstallPrompt.prompt();
+  const choice = await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  installBtn.style.display = 'none';
+  installBtn.disabled = false;
+  if(choice && choice.outcome === 'accepted'){
+    setStatus('已安裝為應用程式，之後可在「開啟方式」中設為預設', 'ok');
+  }
+});
+window.addEventListener('appinstalled', () => { installBtn.style.display = 'none'; });
+</script>
+</body>
+</html>

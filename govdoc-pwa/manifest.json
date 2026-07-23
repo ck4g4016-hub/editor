@@ -1,0 +1,30 @@
+{
+  "name": "公文編輯器",
+  "short_name": "公文編輯器",
+  "description": "開啟並編輯政府公文 JSON / XML 檔案的桌面版編輯器",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#3a362f",
+  "theme_color": "#252220",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./index.html",
+      "accept": {
+        "application/json": [".json"],
+        "application/xml": [".xml"],
+        "text/xml": [".xml"]
+      },
+      "icons": [
+        { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }
+      ],
+      "launch_type": "single-client"
+    }
+  ]
+}
