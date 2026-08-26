@@ -1,0 +1,62 @@
+name: build-probe-exe
+
+# 在 Windows runner 上把 probe/probe.py 打包成 Windows 執行檔。
+# 產出四個版本，用來分辨「跑不起來」到底是哪一種管制造成的：
+#   lite  / full   → 是不是含原生 DLL 的套件被防毒擋下
+#   onefile/onedir → 是不是「暫存資料夾不准執行」的政策擋下 (onefile 會解壓到暫存資料夾再執行)
+on:
+  push:
+    branches: ['main', 'claude/**']
+    paths:
+      - 'probe/**'
+      - '.github/workflows/build-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 建置精簡版 (只用 Python 標準函式庫)
+        run: |
+          python -m venv venv-lite
+          venv-lite\Scripts\python -m pip install --upgrade pip
+          venv-lite\Scripts\pip install pyinstaller==6.15.0
+          venv-lite\Scripts\pyinstaller --onefile --name probe-lite-onefile --distpath dist\lite --workpath build\lite-one --specpath build probe\probe.py
+          venv-lite\Scripts\pyinstaller --onedir  --name probe-lite-onedir  --distpath dist\lite --workpath build\lite-dir --specpath build probe\probe.py
+
+      - name: 建置完整版 (含影像處理與推論套件)
+        run: |
+          python -m venv venv-full
+          venv-full\Scripts\python -m pip install --upgrade pip
+          venv-full\Scripts\pip install -r probe\requirements-full.txt
+          venv-full\Scripts\pip install pyinstaller==6.15.0 pyinstaller-hooks-contrib
+          venv-full\Scripts\pyinstaller --onefile --name probe-full-onefile --distpath dist\full --workpath build\full-one --specpath build probe\probe.py
+          venv-full\Scripts\pyinstaller --onedir  --name probe-full-onedir  --distpath dist\full --workpath build\full-dir --specpath build probe\probe.py
+
+      - name: 冒煙測試 (確認打包出來的執行檔真的跑得動)
+        shell: cmd
+        run: |
+          echo. | dist\lite\probe-lite-onefile.exe
+          if errorlevel 1 exit /b 1
+          echo. | dist\full\probe-full-onefile.exe
+          if errorlevel 1 exit /b 1
+
+      - name: 列出檔案大小
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse dist -File |
+            Select-Object FullName, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} |
+            Where-Object { $_.FullName -like '*.exe' } |
+            Format-Table -AutoSize
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-exe
+          path: dist/
+          retention-days: 30
