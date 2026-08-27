@@ -30,7 +30,12 @@ jobs:
           python-version: '3.12'
 
       - name: 建置精簡版 (只用 Python 標準函式庫)
+        shell: pwsh
         run: |
+          # 預設只有最後一個指令的結束碼算數，中間的 pip 裝失敗會被吃掉。
+          # 這兩行讓任何一個外部指令失敗就立刻中斷。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m venv venv-lite
           venv-lite\Scripts\python -m pip install --upgrade pip
           venv-lite\Scripts\pip install pyinstaller==6.15.0
@@ -40,6 +45,10 @@ jobs:
       - name: 建置完整版 (含影像處理與推論套件)
         shell: pwsh
         run: |
+          # 預設只有最後一個指令的結束碼算數，中間的 pip 裝失敗會被吃掉。
+          # 這兩行讓任何一個外部指令失敗就立刻中斷。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m venv venv-full
           venv-full\Scripts\python -m pip install --upgrade pip
           venv-full\Scripts\pip install -r probe\requirements-full.txt

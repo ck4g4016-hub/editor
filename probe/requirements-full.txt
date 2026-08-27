@@ -1,6 +1,7 @@
 # 完整版探測程式要包進去的套件。
 # 這些就是正式程式會用到的、含原生 DLL 的套件，也是最容易被防毒或白名單擋下的部分。
-numpy==2.3.3
+# 版本必須落在 opencv-python-headless 允許的範圍 (>=2, <2.3.0)，否則 pip 無解
+numpy==2.2.6
 opencv-python-headless==4.12.0.88
 PyMuPDF==1.26.4
 Pillow==11.3.0
