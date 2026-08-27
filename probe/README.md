@@ -36,7 +36,9 @@
 
 ## 怎麼測
 
-1. 從 GitHub Actions 的 `build-probe-exe` 工作流程下載 `probe-exe` 這個產出物，解壓縮。
+1. 到 repo 的 **Releases** 頁面，下載 `probe-latest` 這一版的四個檔案。
+   （也可以從 GitHub Actions 的 `build-probe-exe` 工作流程下載 `probe-exe` 產出物，
+   但 Actions 產出物需要登入 GitHub 才下載得到，Releases 則是一般的下載連結。）
 2. **先跑 `probe-lite-onefile.exe`**（在檔案上按兩下即可）。
 3. 依上表的順序把其餘三個也跑一遍。
 4. 每次執行都會在同一個資料夾（或桌面）產生一個 `環境探測報告_日期時間.txt`，把內容貼給開發者。
