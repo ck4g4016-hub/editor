@@ -214,6 +214,21 @@ def try_sqlite():
 # 3. 套件載入
 # --------------------------------------------------------------------------
 
+def _packaging_hint():
+    """永遠不會被呼叫。
+
+    打包工具靠靜態分析決定要收哪些套件，看不懂下面 PACKAGES 表裡的動態載入，
+    結果就是完整版跟精簡版一樣什麼都沒包。函式裡的 import 一樣會被靜態分析看到，
+    但執行時不會真的載入，所以下面量測到的載入耗時仍然是真實的第一次載入時間。
+    """
+    import cv2  # noqa: F401
+    import numpy  # noqa: F401
+    import onnxruntime  # noqa: F401
+    import openpyxl  # noqa: F401
+    import PIL  # noqa: F401
+    import pymupdf  # noqa: F401
+
+
 PACKAGES = [
     ("numpy", "numpy", "數值運算，所有影像處理的基礎"),
     ("cv2", "opencv-python-headless", "影像前處理：去歪斜、去雜訊、抽表格線、分離紅色印章"),
@@ -243,6 +258,10 @@ def probe_packages():
         providers, _ = timed(loaded["onnxruntime"].get_available_providers)
         if not isinstance(providers, Exception):
             say("           可用推論裝置: %s" % ", ".join(providers))
+
+    # 純 ASCII 的摘要行，給建置流程自動檢查用（避免主控台中文編碼干擾比對）
+    say()
+    say("  PACKAGES_OK=%d/%d" % (len(loaded), len(PACKAGES)))
     return loaded
 
 
