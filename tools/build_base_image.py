@@ -40,8 +40,10 @@ def front_pages(paths, templates, code):
     return chosen
 
 
-def load(page, dpi):
-    return render.rotate(render.render(page.source, page.index, dpi=dpi), page.rotation)
+def load(page, dpi, gray=False):
+    """把某一頁算成影像。底圖一律用彩色 —— 紅筆偵測需要色彩資訊。"""
+    return render.rotate(render.render(page.source, page.index, dpi=dpi, gray=gray),
+                         page.rotation)
 
 
 def main():
@@ -65,7 +67,7 @@ def main():
     os.makedirs(folder, exist_ok=True)
 
     if args.blank:
-        base = render.render(args.blank, args.blank_page - 1, dpi=args.dpi)
+        base = render.render(args.blank, args.blank_page - 1, dpi=args.dpi, gray=False)
         print("底圖來源: 空白原稿 %s 第 %d 頁" % (os.path.basename(args.blank), args.blank_page))
     else:
         pages = front_pages(args.compose, templates, args.code)

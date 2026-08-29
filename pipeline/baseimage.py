@@ -36,16 +36,25 @@ _ORB = cv2.ORB_create(20000)
 _MATCHER = cv2.BFMatcher(cv2.NORM_HAMMING)
 
 
-def ink_mask(gray):
+def as_gray(image):
+    """彩色就轉灰階，已經是灰階就原樣回傳。
+
+    底圖一律存彩色 —— 粉紅色紙的表格要靠色彩才分得出紅筆與紅色印刷，
+    存成灰階的話紅度資訊就沒了。需要灰階的地方在這裡臨時轉。
+    """
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+
+def ink_mask(image):
     """抽出墨跡。用自適應二值化，才不會被紙張底色與掃描明暗影響。"""
     return cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 15)
+        as_gray(image), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 15)
 
 
-def align(source, target):
-    """把 source 對齊到 target 的座標系，回傳 (對齊後的影像, 內點數)。"""
-    kp_source, desc_source = _ORB.detectAndCompute(source, None)
-    kp_target, desc_target = _ORB.detectAndCompute(target, None)
+def homography(source, target):
+    """算出把 source 疊到 target 上的變換矩陣，回傳 (矩陣, 內點數)。"""
+    kp_source, desc_source = _ORB.detectAndCompute(as_gray(source), None)
+    kp_target, desc_target = _ORB.detectAndCompute(as_gray(target), None)
     if desc_source is None or desc_target is None:
         return None, 0
 
@@ -59,10 +68,24 @@ def align(source, target):
     matrix, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
     if matrix is None or mask is None:
         return None, 0
+    return matrix, int(mask.sum())
 
-    aligned = cv2.warpPerspective(source, matrix, (target.shape[1], target.shape[0]),
-                                  borderValue=255)
-    return aligned, int(mask.sum())
+
+def warp(image, matrix, shape):
+    """按矩陣把影像搬到目標座標系。超出範圍的地方填白。"""
+    border = (255, 255, 255) if image.ndim == 3 else 255
+    return cv2.warpPerspective(image, matrix, (shape[1], shape[0]), borderValue=border)
+
+
+def align(source, target):
+    """把 source 對齊到 target 的座標系，回傳 (對齊後的影像, 內點數)。
+
+    彩色進來就彩色出去 —— 紅筆偵測需要對齊後的彩色底圖。
+    """
+    matrix, inliers = homography(source, target)
+    if matrix is None:
+        return None, 0
+    return warp(source, matrix, target.shape[:2]), inliers
 
 
 def coverage(base, scan):
@@ -118,7 +141,8 @@ def subtract(base, scan, delta=35, min_area=30):
     if aligned is None:
         raise ValueError("底圖對不上這張掃描件")
 
-    difference = np.clip(aligned.astype(np.int16) - scan.astype(np.int16), 0, 255).astype(np.uint8)
+    difference = np.clip(as_gray(aligned).astype(np.int16) - as_gray(scan).astype(np.int16),
+                         0, 255).astype(np.uint8)
     ink = (difference > delta).astype(np.uint8) * 255
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
 
