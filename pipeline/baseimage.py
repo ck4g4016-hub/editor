@@ -88,6 +88,19 @@ def align(source, target):
     return warp(source, matrix, target.shape[:2]), inliers
 
 
+def to_base(base, scan):
+    """把掃描件搬進底圖的座標系，回傳 (搬好的影像, 內點數)。
+
+    方向很重要。樣板上的欄位框是照底圖量的，所以每一張掃描件都要搬進
+    同一個座標系，那些框才會對每一張都成立。反過來把底圖搬到掃描件上，
+    框就只對「當初拿來量的那一張」有效 —— 換一張掃描件位移不同就整個歪掉。
+    """
+    matrix, inliers = homography(scan, base)
+    if matrix is None:
+        return None, 0
+    return warp(scan, matrix, base.shape[:2]), inliers
+
+
 def coverage(base, scan):
     """底圖的印刷筆畫，有多少比例落在掃描件的墨跡上。
 
@@ -131,20 +144,33 @@ def compose(samples, reference=None):
     return base, weak
 
 
-def subtract(base, scan, delta=35, min_area=30):
-    """把底圖從掃描件上減掉，只留下手寫內容。回傳白底黑字的影像。
+def subtract(base, scan, delta=35, min_area=30, thin=0):
+    """把印刷版面從掃描件上減掉，只留下手寫內容。
+
+    回傳白底黑字的影像，而且是**底圖座標系**的 —— 樣板上的欄位框直接可用。
 
     用灰階相減而不是「兩張各自二值化後相減」：後者為了吸收對位誤差得把印刷筆畫
     加粗才行，而手寫常常就寫在印刷底線與方格上，加粗會把筆畫一起削掉。
     """
-    aligned, _ = align(base, scan)
-    if aligned is None:
+    moved, _ = to_base(base, scan)
+    if moved is None:
         raise ValueError("底圖對不上這張掃描件")
 
-    difference = np.clip(as_gray(aligned).astype(np.int16) - as_gray(scan).astype(np.int16),
+    difference = np.clip(as_gray(base).astype(np.int16) - as_gray(moved).astype(np.int16),
                          0, 255).astype(np.uint8)
     ink = (difference > delta).astype(np.uint8) * 255
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+
+    # 對位再準也會在印刷筆畫邊緣留下細細的殘影，落在欄位框裡會干擾辨識。
+    # thin 用侵蝕把細殘影濾掉，min_area 則是丟掉小塊雜點 —— 兩個都試著調過，
+    # 三份樣本上有的欄位變好、有的變差（姓名救回來了，行政區反而讀壞；
+    # min_area 調大會連真的筆畫一起丟）。這種規模的樣本調不出可信的參數，
+    # 所以維持原設定，等實際跑一陣子累積統計數字再依數據決定。
+    if thin:
+        seeds = cv2.erode(ink, np.ones((3, 3), np.uint8), iterations=thin)
+        if seeds.any():
+            ink = cv2.bitwise_and(ink, cv2.dilate(seeds, np.ones((3, 3), np.uint8),
+                                                  iterations=thin + 1))
 
     # 去掉零星雜點，再把被切斷的筆畫接回來
     count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, 8)

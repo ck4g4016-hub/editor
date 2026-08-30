@@ -43,6 +43,8 @@ KINDS = {
     "id_number": "身分證字號（驗檢查碼）",
     "doc_number": "公文文號（10 碼、開頭民國年）",
     "address": "地址（套用門牌正規化）",
+    "district": "行政區（比對區名清單）",
+    "land_number": "地號（補零成 0000-0000）",
     "checkbox": "勾選框",
 }
 
