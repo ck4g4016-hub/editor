@@ -12,7 +12,7 @@ import os
 
 import cv2
 
-from . import baseimage, fields as fieldmod, layout, recognise, render, validate
+from . import baseimage, fields as fieldmod, layout, lexicon, recognise, render, validate
 
 # 這三欄錯了，RPA 會拿著錯的資料去查別人的房子，而且從輸出的表格上看不出來。
 # 驗證不通過就一定要人工確認，不管信心值多高。
@@ -71,6 +71,7 @@ class Converter:
         self.store = store
         self.templates = layout.TemplateSet.load(store)
         self.districts = list(districts or ["三峽區", "鶯歌區"])
+        self.roads = lexicon.load(store)
         self._bases = {}
         self._fields = {}
 
@@ -128,7 +129,11 @@ class Converter:
                 continue
             crop = recognise.crop_field(sheet, definition.box)
             raw, confidence = recognise.read(crop)
-            extra = {"known": self.districts} if definition.kind == "district" else {}
+            extra = {}
+            if definition.kind == "district":
+                extra["known"] = self.districts
+            elif definition.kind == "address":
+                extra["roads"] = self.roads
             value, problem = validate.check(definition.kind, raw, **extra)
 
             record.raw[definition.column] = raw

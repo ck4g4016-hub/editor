@@ -1,0 +1,110 @@
+# -*- coding: utf-8 -*-
+"""路街名字典。
+
+地址是三個必要欄位裡最難辨識的一個，但它有個別的欄位沒有的優勢：
+**路街名是有限清單**。轄區內就那些路，辨識出來的東西只要吸附到最接近的合法路名，
+一大半的錯誤就自動修掉了。
+
+字典同時解決「路還是街」—— 民眾圈選或劃掉常常糊成一團，但字典裡如果只有
+「民生路」沒有「民生街」，答案就確定了，不必去猜那個圈。
+
+字典存成純文字檔，一行一個路街名，可以隨時補。
+真正完整的清單請從門牌資料或地籍圖資系統匯出後用 tools/import_roads.py 匯入 ——
+程式內建的只是從樣本抽出來的種子，不足以涵蓋轄區。
+"""
+
+import os
+import re
+
+# 路街名的結尾字
+SUFFIXES = ("路", "街", "大道", "巷")
+
+# 從現有樣本抽出來的種子。這不是完整清單，只是讓程式一開始就能動。
+SEED = [
+    "民生路", "中山路", "大學路", "橫溪路", "尖山路", "鳳吉街", "華江路", "仁愛路",
+]
+
+
+def path_for(store):
+    return os.path.join(store, "roads.txt")
+
+
+def load(store):
+    """載入路街名字典。沒有檔案就用種子清單。"""
+    target = path_for(store)
+    if not os.path.isfile(target):
+        return list(SEED)
+    with open(target, encoding="utf-8") as handle:
+        names = [line.strip() for line in handle if line.strip()
+                 and not line.startswith("#")]
+    return names or list(SEED)
+
+
+def save(store, names):
+    target = path_for(store)
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    unique = sorted({name.strip() for name in names if name.strip()})
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write("# 路街名字典，一行一個。地址辨識會把結果吸附到這裡最接近的名稱。\n")
+        for name in unique:
+            handle.write(name + "\n")
+    return target, len(unique)
+
+
+def _similarity(a, b):
+    """兩個字串有多像。用共同字元數除以較長者的長度，對辨識錯字很寬容。"""
+    if not a or not b:
+        return 0.0
+    common = 0
+    remaining = list(b)
+    for char in a:
+        if char in remaining:
+            remaining.remove(char)
+            common += 1
+    return common / max(len(a), len(b))
+
+
+def match(text, names, threshold=0.6):
+    """把一段文字吸附到最接近的路街名。
+
+    回傳 (路街名, 相似度)。找不到夠像的就回傳 (None, 最高相似度)。
+    """
+    if not text:
+        return None, 0.0
+    best, score = None, 0.0
+    for name in names:
+        value = _similarity(text, name)
+        if value > score:
+            best, score = name, value
+    return (best, score) if score >= threshold else (None, score)
+
+
+def resolve_head(head, names, threshold=0.6):
+    """從地址開頭那段文字裡認出路街名。
+
+    這裡不要求「路」「街」那個字有被讀出來 —— 紙本表格上那個字是印刷的，
+    民眾只是圈起來或劃掉，減掉版面之後根本不會留下字，
+    留下的是個圈（辨識成 Q、C、〇 之類）。所以拿去比對的是路名的**前半**，
+    對到字典裡唯一的那條路，「路」還是「街」也就跟著確定了。
+
+    回傳 (路街名, 相似度)。
+    """
+    if not head:
+        return None, 0.0
+    # 只留中文字去比對，把圈和雜訊丟掉
+    core = "".join(ch for ch in head if "\u4e00" <= ch <= "\u9fff")
+    if not core:
+        return None, 0.0
+
+    best, score = None, 0.0
+    # 從尾端往前取候選 —— 地址前面可能還黏著行政區
+    for start in range(len(core)):
+        candidate = core[start:]
+        if len(candidate) < 2:
+            break
+        for name in names:
+            stem = re.sub(r"[路街道]$", "", name)
+            value = max(_similarity(candidate, name), _similarity(candidate, stem))
+            if value > score:
+                best, score = name, value
+    return (best, score) if score >= threshold else (None, score)

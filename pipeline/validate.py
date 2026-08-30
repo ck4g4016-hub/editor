@@ -99,20 +99,63 @@ _DROP = re.compile(
 
 _FLOOR = re.compile(r"(\d+)\s*樓")
 
+# 地址只會有中文字與阿拉伯數字。出現英文字母一定是辨識錯的 ——
+# 手寫的數字被讀成形狀相近的字母是最常見的一種錯，照這張表換回數字。
+_LETTER_TO_DIGIT = {
+    "O": "0", "o": "0", "D": "0", "Q": "0",
+    "I": "1", "l": "1", "i": "1", "|": "1", "L": "1",
+    "Z": "2", "z": "2",
+    "E": "3",
+    "A": "4",
+    "S": "5", "s": "5",
+    "G": "6", "b": "6",
+    "T": "7", "t": "7",
+    "B": "8",
+    "g": "9", "q": "9",
+}
 
-def address(text):
+# 「之」常被寫成或認成各種符號
+_ZHI_SYMBOLS = "-–—~/\\_.,、"
+
+
+def address(text, roads=None):
     """門牌正規化。
 
     只留 路(街) → 巷 → 弄 → 號 → 樓，其餘一律不寫：
     不含縣市與行政區（那是行政區欄的事），也不含里、鄰。
     巷弄號用半形數字，支號用「之」不用連字號，樓層一律中文數字。
+
+    地址只會有中文字與阿拉伯數字，出現英文字母一定是辨識錯的，
+    先照混淆表換成數字；換完還有字母就直接判為錯誤，不輸出。
+
+    給了 roads（路街名字典）就把路名那一段吸附到最接近的合法名稱 ——
+    這同時解決「路還是街」，民眾圈選糊掉也沒關係，字典裡是哪個就是哪個。
     """
     value = to_halfwidth(text or "").strip()
     value = _DROP.sub("", value, count=1)
     value = value.replace(" ", "")
 
-    # 支號：12-6號 → 12之6號
-    value = re.sub(r"(\d)\s*-\s*(\d)", r"\1之\2", value)
+    # 「之」的各種寫法統一
+    value = re.sub(r"(\d)\s*[%s]\s*(\d)" % re.escape(_ZHI_SYMBOLS), r"\1之\2", value)
+
+    # 先認路名，再處理英文字母 —— 順序不能反。
+    # 紙本表格上的「路」「街」是印刷的，民眾圈起來，減掉版面後只剩一個圈，
+    # 會被辨識成 Q、C、〇 之類。先換成數字的話，那個圈就變成 0 混進門牌號碼裡了。
+    head, tail = re.match(r"^([^\d]*)(.*)$", value).groups()
+    if roads:
+        from . import lexicon
+        name, score = lexicon.resolve_head(head, roads)
+        if name:
+            # 地址一定以路街名開頭，前面黏著的行政區之類一律丟掉
+            value = name + tail
+        elif head:
+            return value, "路街名不在字典裡（讀到「%s」）" % head
+
+    # 英文字母換成形狀相近的數字。地址只會有中文字與阿拉伯數字。
+    value = "".join(_LETTER_TO_DIGIT.get(ch, ch) for ch in value)
+    leftover = re.findall(r"[A-Za-z]", value)
+    if leftover:
+        return value, "出現英文字母 %s，地址不會有英文" % "".join(sorted(set(leftover)))
 
     # 樓層轉中文：17樓 → 十七樓
     value = _FLOOR.sub(lambda m: to_chinese_number(m.group(1)) + "樓", value)
@@ -159,8 +202,10 @@ VALIDATORS = {
 
 def check(kind, text, **kwargs):
     """依型別做正規化與驗證，回傳 (值, 問題)。"""
+    if kind == "address":
+        return address(text, roads=kwargs.get("roads"))
     if kind == "district":
-        return district(text, **kwargs)
+        return district(text, known=kwargs.get("known"))
     if kind == "land_number":
         return land_number(text)
     validator = VALIDATORS.get(kind)
