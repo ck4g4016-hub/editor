@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>樣板編輯器</title>
+<style>
+  :root{
+    --bg:#f4f2ee; --panel:#fff; --line:#d9d4c9; --ink:#26221c; --soft:#6d675c;
+    --accent:#8a3d3d; --ok:#4f7a4a; --warn:#b06a1f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;height:100vh;display:flex;font:14px/1.55 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;
+       background:var(--bg);color:var(--ink)}
+  #stage{flex:1;overflow:auto;padding:16px;position:relative}
+  #wrap{position:relative;display:inline-block}
+  #sheet{display:block;box-shadow:0 2px 12px rgba(0,0,0,.18);background:#fff}
+  #overlay{position:absolute;inset:0;cursor:crosshair}
+  aside{width:400px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
+        display:flex;flex-direction:column}
+  header{padding:14px 16px;border-bottom:1px solid var(--line)}
+  header h1{margin:0 0 4px;font-size:15px}
+  header p{margin:0;color:var(--soft);font-size:12px}
+  .scroll{flex:1;overflow:auto;padding:12px 16px}
+  footer{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  select,input,button{font:inherit;color:inherit}
+  select,input[type=text],input[type=number]{width:100%;padding:5px 7px;border:1px solid var(--line);
+        border-radius:4px;background:#fff}
+  button{padding:7px 13px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#a04a4a}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 4px;text-decoration:underline}
+  .field{border:1px solid var(--line);border-radius:6px;padding:10px;margin-bottom:10px;background:#fdfcfa}
+  .field.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,61,61,.14)}
+  .field .row{display:grid;grid-template-columns:70px 1fr;gap:6px;align-items:center;margin-bottom:6px}
+  .field .row:last-child{margin-bottom:0}
+  .field label{color:var(--soft);font-size:12px}
+  .boxrow{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+  .hint{color:var(--soft);font-size:12px;margin:0 0 10px}
+  .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:6px;padding:9px 11px;
+        font-size:12.5px;margin-bottom:12px}
+  .note b{color:var(--warn)}
+  .miss{color:var(--accent);font-weight:600}
+  .tag{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;background:#eee7db;
+       color:var(--soft);margin-left:5px}
+  #msg{flex:1;font-size:12px;color:var(--soft)}
+  #msg.ok{color:var(--ok)}
+  #msg.err{color:var(--accent)}
+</style>
+</head>
+<body>
+<div id="stage"><div id="wrap"><img id="sheet" alt=""><canvas id="overlay"></canvas></div></div>
+<aside>
+  <header>
+    <h1 id="title">樣板編輯器</h1>
+    <p id="subtitle"></p>
+  </header>
+  <div class="scroll">
+    <div class="row" style="margin-bottom:12px">
+      <select id="code"></select>
+    </div>
+    <p class="hint">在左邊圖上<b>拖曳</b>畫出欄位範圍；點<b>虛線候選框</b>可直接採用紅筆標記的位置。</p>
+    <div id="missing"></div>
+    <div id="list"></div>
+  </div>
+  <footer>
+    <button id="add">空白欄位</button>
+    <span id="msg"></span>
+    <button class="primary" id="save">儲存</button>
+  </footer>
+</aside>
+<script>
+const el = id => document.getElementById(id);
+let state = {code:null, scale:1, fields:[], candidates:[], sel:-1, columns:{}, kinds:{}};
+
+function say(text, cls){ el('msg').textContent = text; el('msg').className = cls || ''; }
+
+async function loadCodes(){
+  const codes = await (await fetch('api/codes')).json();
+  el('code').innerHTML = codes.map(c => `<option value="${c.code}">${c.code} — ${c.name}</option>`).join('');
+  if (codes.length) selectCode(codes[0].code);
+}
+
+async function selectCode(code){
+  const data = await (await fetch('api/template?code=' + encodeURIComponent(code))).json();
+  state.code = code;
+  state.scale = data.scale;
+  state.columns = data.columns;
+  state.kinds = data.kinds;
+  state.fields = data.fields;
+  state.candidates = data.candidates;
+  state.sel = -1;
+  el('title').textContent = data.name;
+  el('subtitle').textContent = `${data.width}×${data.height} px @300dpi　候選框 ${data.candidates.length} 個`
+      + (data.has_base ? '' : '　（沒有底圖）');
+  const img = el('sheet');
+  img.onload = () => { sizeOverlay(); draw(); };
+  img.src = 'api/image?code=' + encodeURIComponent(code) + '&t=' + Date.now();
+  render();
+}
+
+function sizeOverlay(){
+  const img = el('sheet'), cv = el('overlay');
+  cv.width = img.clientWidth; cv.height = img.clientHeight;
+}
+
+/* 圖上的顯示座標 ←→ 300dpi 的實際座標 */
+const toReal = v => Math.round(v / state.scale);
+const toView = v => v * state.scale;
+
+function draw(){
+  const cv = el('overlay'), g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+
+  g.setLineDash([5,4]); g.strokeStyle = '#4f7a4a'; g.lineWidth = 1.5;
+  state.candidates.forEach(c => g.strokeRect(toView(c.x), toView(c.y), toView(c.w), toView(c.h)));
+
+  g.setLineDash([]);
+  state.fields.forEach((f, i) => {
+    const [x,y,w,h] = f.box;
+    g.lineWidth = i === state.sel ? 3 : 2;
+    g.strokeStyle = i === state.sel ? '#8a3d3d' : '#3b6ea5';
+    g.strokeRect(toView(x), toView(y), toView(w), toView(h));
+    const label = f.name || f.id;
+    g.font = '12px sans-serif';
+    const tw = g.measureText(label).width + 8;
+    g.fillStyle = i === state.sel ? '#8a3d3d' : '#3b6ea5';
+    g.fillRect(toView(x), toView(y) - 16, tw, 16);
+    g.fillStyle = '#fff';
+    g.fillText(label, toView(x) + 4, toView(y) - 4);
+  });
+}
+
+function render(){
+  const missing = Object.keys(state.columns).filter(
+      k => !state.fields.some(f => f.column === k));
+  const critical = missing.filter(k => ['id_number','address','doc_number'].includes(k));
+  el('missing').innerHTML = missing.length
+      ? `<div class="note">尚未指派的輸出欄位：${missing.map(k =>
+            critical.includes(k) ? `<span class="miss">${state.columns[k]}</span>` : state.columns[k]
+         ).join('、')}${critical.length ? '<br><b>紅字的三欄是必要欄位</b>，缺了辨識結果沒辦法用。' : ''}</div>`
+      : '';
+
+  el('list').innerHTML = state.fields.map((f, i) => `
+    <div class="field ${i===state.sel?'sel':''}" data-i="${i}">
+      <div class="row"><label>名稱</label><input type="text" data-k="name" value="${esc(f.name)}"></div>
+      <div class="row"><label>輸出欄</label><select data-k="column">${
+        Object.entries(state.columns).map(([k,v]) =>
+          `<option value="${k}" ${f.column===k?'selected':''}>${v}</option>`).join('')}</select></div>
+      <div class="row"><label>型別</label><select data-k="kind">${
+        Object.entries(state.kinds).map(([k,v]) =>
+          `<option value="${k}" ${f.kind===k?'selected':''}>${v}</option>`).join('')}</select></div>
+      <div class="row"><label>定位</label><select data-k="mode">
+        <option value="fixed" ${f.mode==='fixed'?'selected':''}>固定框</option>
+        <option value="anchor" ${f.mode==='anchor'?'selected':''}>錨點相對</option></select></div>
+      ${f.mode==='anchor' ? `
+      <div class="row"><label>錨點文字</label><input type="text" data-k="anchor_text" value="${esc(f.anchor_text||'')}"></div>
+      <div class="row"><label>往下第幾個</label><input type="number" data-k="anchor_index" min="1" value="${f.anchor_index||1}"></div>` : ''}
+      <div class="row"><label>範圍</label><div class="boxrow">${
+        [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')}</div></div>
+      <div class="row"><label></label><div>
+        <button class="link" data-act="del">刪除</button>
+        <span class="tag">${f.page === 'front' ? '正面' : '背面'}</span>
+      </div></div>
+    </div>`).join('');
+
+  el('list').querySelectorAll('.field').forEach(node => {
+    const i = +node.dataset.i;
+    node.addEventListener('mousedown', () => { state.sel = i; render(); draw(); });
+    node.querySelectorAll('[data-k]').forEach(input => {
+      input.addEventListener('change', () => {
+        const key = input.dataset.k;
+        state.fields[i][key] = input.type === 'number' ? +input.value : input.value;
+        render(); draw();
+      });
+    });
+    node.querySelectorAll('[data-box]').forEach(input => {
+      input.addEventListener('change', () => {
+        state.fields[i].box[+input.dataset.box] = +input.value;
+        draw();
+      });
+    });
+    const del = node.querySelector('[data-act=del]');
+    if (del) del.addEventListener('click', () => {
+      state.fields.splice(i, 1); state.sel = -1; render(); draw();
+    });
+  });
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function newField(box){
+  const used = new Set(state.fields.map(f => f.id));
+  let n = 1; while (used.has('f' + n)) n++;
+  return {id:'f'+n, name:'欄位' + n, column:'address', kind:'text',
+          box:box, page:'front', mode:'fixed', anchor_text:'', anchor_index:1, required:false};
+}
+
+/* 在圖上拖曳畫出新欄位 */
+let drag = null;
+el('overlay').addEventListener('mousedown', e => {
+  const r = el('overlay').getBoundingClientRect();
+  const px = e.clientX - r.left, py = e.clientY - r.top;
+
+  const hit = state.candidates.findIndex(c =>
+      px >= toView(c.x) && px <= toView(c.x + c.w) && py >= toView(c.y) && py <= toView(c.y + c.h));
+  if (hit >= 0){
+    const c = state.candidates[hit];
+    state.fields.push(newField([c.x, c.y, c.w, c.h]));
+    state.sel = state.fields.length - 1;
+    render(); draw();
+    return;
+  }
+  drag = {x:px, y:py};
+});
+el('overlay').addEventListener('mousemove', e => {
+  if (!drag) return;
+  const r = el('overlay').getBoundingClientRect();
+  drag.x2 = e.clientX - r.left; drag.y2 = e.clientY - r.top;
+  draw();
+  const g = el('overlay').getContext('2d');
+  g.setLineDash([4,3]); g.strokeStyle = '#8a3d3d'; g.lineWidth = 2;
+  g.strokeRect(Math.min(drag.x,drag.x2), Math.min(drag.y,drag.y2),
+               Math.abs(drag.x2-drag.x), Math.abs(drag.y2-drag.y));
+});
+window.addEventListener('mouseup', () => {
+  if (!drag || drag.x2 === undefined){ drag = null; return; }
+  const w = Math.abs(drag.x2 - drag.x), h = Math.abs(drag.y2 - drag.y);
+  if (w > 8 && h > 8){
+    state.fields.push(newField([toReal(Math.min(drag.x,drag.x2)), toReal(Math.min(drag.y,drag.y2)),
+                                toReal(w), toReal(h)]));
+    state.sel = state.fields.length - 1;
+    render();
+  }
+  drag = null; draw();
+});
+
+el('add').addEventListener('click', () => {
+  state.fields.push(newField([200, 200, 400, 90]));
+  state.sel = state.fields.length - 1; render(); draw();
+});
+el('code').addEventListener('change', e => selectCode(e.target.value));
+el('save').addEventListener('click', async () => {
+  say('儲存中…');
+  const res = await fetch('api/template?code=' + encodeURIComponent(state.code),
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({fields: state.fields})});
+  const out = await res.json();
+  if (out.ok) say('已儲存 ' + out.count + ' 個欄位', 'ok');
+  else say(out.error, 'err');
+});
+window.addEventListener('resize', () => { sizeOverlay(); draw(); });
+loadCodes();
+</script>
+</body>
+</html>
