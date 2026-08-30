@@ -21,8 +21,10 @@ CRITICAL = ("id_number", "address", "doc_number")
 # 信心低於這個值就算沒把握，即使驗證通過也要人工看一眼
 LOW_CONFIDENCE = 0.80
 
-# 姓名沒有字典也沒有格式規則，錯了驗不出來 —— 永遠人工確認
-ALWAYS_REVIEW = ("name",)
+# 姓名沒有字典也沒有格式規則，錯了驗不出來。但它不會進 RPA，
+# 只是承辦人用來對照「這件是不是我要的那件」，所以照樣輸出、
+# 在複核介面標成僅供參考，不因為它把整件擋下來。
+ADVISORY = ("name",)
 
 OK = "ok"
 REVIEW = "review"
@@ -42,18 +44,14 @@ class Record:
 
     @property
     def status(self):
-        if self.problems:
-            return REVIEW
-        if any(column in self.values for column in ALWAYS_REVIEW):
-            return REVIEW
-        return OK
+        return REVIEW if self.problems else OK
 
     def flagged(self):
         """需要人工看的欄位，以及原因。"""
         notes = dict(self.problems)
-        for column in ALWAYS_REVIEW:
+        for column in ADVISORY:
             if column in self.values:
-                notes.setdefault(column, "姓名一律人工確認")
+                notes.setdefault(column, "僅供人眼核對，不影響輸出")
         for column, value in self.confidence.items():
             if value < LOW_CONFIDENCE:
                 notes.setdefault(column, "辨識信心偏低（%.2f）" % value)
