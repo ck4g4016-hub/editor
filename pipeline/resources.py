@@ -31,3 +31,23 @@ def workspace():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def version():
+    """程式版本。
+
+    打包時 workflow 會寫一個 version.txt 進資源目錄，裡面是 commit 編號 —— 
+    診斷報告要靠它才知道使用者手上跑的是哪一版程式碼。
+    直接跑原始碼時就現場問 git。
+    """
+    marker = path("version.txt")
+    if os.path.isfile(marker):
+        with open(marker, encoding="utf-8") as handle:
+            return handle.read().strip()
+    try:
+        import subprocess
+        return subprocess.check_output(
+            ["git", "-C", base_dir(), "describe", "--always", "--dirty"],
+            stderr=subprocess.DEVNULL, text=True).strip() + "（原始碼）"
+    except Exception:                                               # noqa: BLE001
+        return "不明"

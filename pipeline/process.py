@@ -9,10 +9,11 @@
 """
 
 import os
+import time
 
 import cv2
 
-from . import baseimage, fields as fieldmod, layout, lexicon, recognise, render, validate
+from . import baseimage, diagnose, fields as fieldmod, layout, lexicon, recognise, render, validate
 
 # 這三欄錯了，RPA 會拿著錯的資料去查別人的房子，而且從輸出的表格上看不出來。
 # 驗證不通過就一定要人工確認，不管信心值多高。
@@ -77,6 +78,8 @@ class Converter:
         self.roads = lexicon.load(store)
         self._bases = {}
         self._fields = {}
+        # 每跑一次 run() 就換一本新的。診斷報告完全靠它。
+        self.journal = diagnose.Journal()
 
     def base_of(self, code):
         if code not in self._bases:
@@ -90,21 +93,111 @@ class Converter:
         return self._fields[code]
 
     def run(self, paths, progress=None, keep_crops=False):
-        """處理一批 PDF，回傳 (資料列, 需要人工分頁的頁面)。"""
-        pages = layout.classify_pages(paths, self.templates)
-        documents = layout.split_documents(pages)
+        """處理一批 PDF，回傳 (資料列, 需要人工分頁的頁面)。
 
+        沿路把每一步的中間結果記進 self.journal，出問題時才有東西可以看。
+        """
+        journal = self.journal = diagnose.Journal()
+        journal.store = self.store
+        self._survey(journal, paths)
+
+        clock = time.time()
+        pages = layout.classify_pages(paths, self.templates)
+        journal.timing["分類"] = time.time() - clock
+        for page in pages:
+            journal.pages.append({
+                "file": journal.file_id(page.source),
+                "page": page.index + 1,
+                "code": page.code,
+                "role": page.role,
+                "rotation": page.rotation,
+                "inliers": page.inliers,
+                "margin": page.margin,
+            })
+
+        documents = layout.split_documents(pages)
+        journal.documents = len(documents)
+
+        clock = time.time()
         records, unresolved = [], []
         for document in documents:
             if not document.complete:
                 unresolved.append(document)
+                journal.unresolved.append({
+                    "file": journal.file_id(document.pages[0].source),
+                    "pages": "、".join(str(p.index + 1) for p in document.pages),
+                })
                 continue
-            record = self.read_document(document, keep_crops=keep_crops)
+            try:
+                record = self.read_document(document, keep_crops=keep_crops)
+            except Exception as error:                              # noqa: BLE001
+                # 一件壞掉不該讓整批停下來 —— 十幾件裡有一件認不出來，
+                # 其餘的照樣要能輸出，那一件記進診斷報告讓人去看。
+                journal.note_error("讀取 %s 第 %d 頁" % (
+                    journal.file_id(document.pages[0].source),
+                    document.pages[0].index + 1), error)
+                continue
             if record is not None:
                 records.append(record)
+                journal.records.append(self._describe(record, len(records) - 1))
                 if progress:
                     progress(record)
+        journal.timing["辨識"] = time.time() - clock
         return records, unresolved
+
+    def _survey(self, journal, paths):
+        """把樣板與輸入檔的概況記下來。樣板沒建好是最常見的「它壞了」。"""
+        for template in self.templates.templates:
+            entry = next((t for t in journal.templates if t["code"] == template.code), None)
+            if entry is None:
+                base = self.base_of(template.code)
+                definitions = self.fields_of(template.code)
+                entry = {
+                    "code": template.code,
+                    "roles": 0,
+                    "base": "有" if base is not None else "沒有",
+                    "base_size": "%dx%d" % (base.shape[1], base.shape[0]) if base is not None else "-",
+                    "field_count": len(definitions),
+                    "fields": "、".join(
+                        "%s/%s/%s" % (fieldmod.COLUMNS.get(d.column, d.column), d.kind, d.mode)
+                        for d in definitions),
+                }
+                journal.templates.append(entry)
+            entry["roles"] += 1
+
+        for path in paths:
+            try:
+                count = render.page_count(path)
+            except Exception as error:                              # noqa: BLE001
+                journal.note_error("開啟 %s" % journal.file_id(path), error)
+                count = "讀不到"
+            journal.files.append({
+                "id": journal.file_id(path),
+                "ext": os.path.splitext(path)[1].lower(),
+                "pages": count,
+            })
+
+    def _describe(self, record, index):
+        """把一件的辨識結果整理成診斷用的資料。內容全部遮罩。"""
+        definitions = {d.column: d for d in self.fields_of(record.code)}
+        entries = []
+        for column, value in record.values.items():
+            definition = definitions.get(column)
+            entries.append({
+                "column": column,
+                "kind": definition.kind if definition else "?",
+                "confidence": record.confidence.get(column, 0.0),
+                "raw": diagnose.mask(record.raw.get(column, "")),
+                "value": diagnose.mask(value),
+                "problem": diagnose.mask_problem(record.problems.get(column, "")),
+            })
+        return {
+            "index": index,
+            "code": record.code,
+            "file": self.journal.file_id(record.source),
+            "page": record.page + 1,
+            "fields": entries,
+        }
 
     def read_document(self, document, keep_crops=False):
         """讀一件申請案的正面，把欄位辨識出來。"""

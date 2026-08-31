@@ -46,6 +46,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
+          # 版本編號要跟著程式走 —— 診斷報告靠它才知道使用者手上跑的是哪一版
+          "$env:GITHUB_SHA".Substring(0,7) | Out-File -Encoding utf8 -NoNewline version.txt
           pyinstaller --onedir --name 紙本轉excel `
             --collect-all rapidocr_onnxruntime `
             --collect-all onnxruntime `
@@ -54,6 +56,7 @@ jobs:
             --collect-all pymupdf `
             --add-data "editor;editor" `
             --add-data "data;data" `
+            --add-data "version.txt;." `
             --hidden-import tools.review `
             --hidden-import tools.template_editor `
             app.py
@@ -64,7 +67,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $root = 'dist\紙本轉excel'
-          foreach ($item in @('紙本轉excel.exe', '說明.txt',
+          foreach ($item in @('紙本轉excel.exe', '說明.txt', '_internal\version.txt',
                               '_internal\editor\page.html', '_internal\editor\review.html',
                               '_internal\data\roads-三峽-鶯歌.txt')) {
               if (-not (Test-Path (Join-Path $root $item))) { throw "打包後少了 $item" }

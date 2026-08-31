@@ -44,6 +44,24 @@
         margin-bottom:16px;font-size:13px}
   #msg{font-size:13px;color:var(--soft)}
   #msg.ok{color:var(--ok)} #msg.err{color:var(--accent)}
+  .say{grid-column:1/-1;padding:9px 14px;border-bottom:1px solid #f0ece2;background:#fcfbf8}
+  .say label{font-size:12px;color:var(--soft)}
+  textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:5px;
+           font:inherit;background:#fff;resize:vertical}
+  #overall{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+           padding:12px 14px;margin-bottom:16px}
+  #overall h2{margin:0 0 6px;font-size:14px}
+  #overall p{margin:0 0 8px;color:var(--soft);font-size:12.5px}
+  dialog{border:1px solid var(--line);border-radius:9px;padding:0;max-width:min(1000px,92vw);
+         width:100%;background:var(--panel);color:var(--ink)}
+  dialog::backdrop{background:rgba(0,0,0,.35)}
+  dialog .bar{display:flex;gap:10px;align-items:center;padding:11px 15px;
+              border-bottom:1px solid var(--line)}
+  dialog .bar b{flex:1;font-size:14px}
+  dialog pre{margin:0;padding:14px 16px;max-height:62vh;overflow:auto;font-size:12px;
+             line-height:1.5;white-space:pre;background:#fbfaf7}
+  dialog .foot{padding:10px 15px;border-top:1px solid var(--line);font-size:12.5px;
+               color:var(--soft)}
 </style>
 </head>
 <body>
@@ -52,17 +70,39 @@
   <span class="stat" id="stat"></span>
   <span class="grow"></span>
   <span id="msg"></span>
+  <button id="report">產生診斷報告</button>
   <button class="primary" id="export">產生輸出檔</button>
 </header>
 <main>
   <div id="unresolved"></div>
+  <div id="overall">
+    <h2>這一批哪裡不對？</h2>
+    <p>寫下來會一起放進診斷報告。愈具體愈好 ——「第 3 件的門牌抓到隔壁那格」
+       比「辨識很差」有用得多。每一件下面也有各自的欄位可以寫。</p>
+    <textarea id="overall-note" rows="2"
+              placeholder="例如：G 表格今天有 5 件整件認不出來，昨天還好好的"></textarea>
+  </div>
   <div id="list"></div>
 </main>
+<dialog id="preview">
+  <div class="bar">
+    <b>診斷報告</b>
+    <span id="preview-path" style="font-size:12px;color:var(--soft)"></span>
+    <button id="preview-close">關閉</button>
+  </div>
+  <pre id="preview-text"></pre>
+  <div class="foot">
+    報告已存到「輸出\診斷」資料夾。裡面的辨識結果全部經過遮罩
+    （中文字換成「字」、數字換成 9、英文字母換成 A），不含個資，
+    但還是請你捲一遍確認過再外傳。
+  </div>
+</dialog>
 <script>
 const el = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let data = null;
+const notes = {};   // 每一件的意見，鍵是件的序號
 
 async function load(){
   data = await (await fetch('api/records')).json();
@@ -93,14 +133,22 @@ function render(){
         ${raw}</div>`;
     }).join('');
     const bad = Object.keys(r.flags).length;
+    const say = `<div class="say">
+      <label>這一件有什麼問題？（會寫進診斷報告，不影響輸出檔）</label>
+      <textarea data-note="${i}" rows="1"
+        placeholder="例如：門牌抓到上面那一格的內容">${esc(notes[i] || '')}</textarea></div>`;
     return `<div class="rec">
       <div class="head">
         <span class="who">第 ${i + 1} 件</span>
         <span class="badge ${bad ? 'review' : 'ok'}">${bad ? bad + ' 個欄位要看' : '通過'}</span>
         <span class="src">${esc(r.source)}</span>
       </div>
-      <div class="fields">${cells}</div></div>`;
+      <div class="fields">${cells}${say}</div></div>`;
   }).join('');
+
+  el('list').querySelectorAll('textarea[data-note]').forEach(box => {
+    box.addEventListener('input', () => { notes[+box.dataset.note] = box.value; });
+  });
 
   el('list').querySelectorAll('input').forEach(input => {
     input.addEventListener('change', () => {
@@ -108,6 +156,20 @@ function render(){
     });
   });
 }
+
+el('report').addEventListener('click', async () => {
+  el('msg').textContent = '整理中…'; el('msg').className = '';
+  const res = await fetch('api/diagnose', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({notes: {overall: el('overall-note').value, records: notes}})});
+  const out = await res.json();
+  if (!out.ok){ el('msg').textContent = out.error; el('msg').className = 'err'; return; }
+  el('msg').textContent = '診斷報告已產出'; el('msg').className = 'ok';
+  el('preview-path').textContent = out.path;
+  el('preview-text').textContent = out.text;
+  el('preview').showModal();
+});
+el('preview-close').addEventListener('click', () => el('preview').close());
 
 el('export').addEventListener('click', async () => {
   el('msg').textContent = '產生中…'; el('msg').className = '';

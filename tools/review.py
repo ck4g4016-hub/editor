@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import fields as fieldmod, resources  # noqa: E402
+from pipeline import diagnose, fields as fieldmod, resources  # noqa: E402
 from pipeline import output, process  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,11 +69,17 @@ def make_handler(state):
                 self._send(404, b"not found", "text/plain")
 
         def do_POST(self):  # noqa: N802
-            if urlparse(self.path).path != "/api/export":
+            route = urlparse(self.path).path
+            if route not in ("/api/export", "/api/diagnose"):
                 self._send(404, b"not found", "text/plain")
                 return
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+
+            if route == "/api/diagnose":
+                self._diagnose(payload)
+                return
+
             rows = payload.get("records", [])
             if not rows:
                 self._json({"ok": False, "error": "沒有資料可以輸出"}, 400)
@@ -82,6 +88,19 @@ def make_handler(state):
             for path in written:
                 print("已產出: %s" % path)
             self._json({"ok": True, "files": [os.path.basename(p) for p in written]})
+
+        def _diagnose(self, payload):
+            journal = state.get("journal")
+            if journal is None:
+                self._json({"ok": False, "error": "這一批沒有留下診斷資料"}, 400)
+                return
+            text = diagnose.build(journal, notes=payload.get("notes"),
+                                  version=resources.version())
+            path = diagnose.save(text, os.path.join(state["out"], "診斷"))
+            print("已產出診斷報告: %s" % path)
+            # 順手在畫面上把全文顯示出來 —— 要使用者「送出前自己看過」，
+            # 就得讓他不必先去翻資料夾才看得到內容。
+            self._json({"ok": True, "path": path, "text": text})
 
         def log_message(self, *args):
             pass
@@ -143,7 +162,8 @@ def main():
     if not records:
         raise SystemExit("沒有任何可以複核的資料 —— 請先用樣板編輯器定義欄位")
 
-    state = {"records": records, "unresolved": unresolved, "out": args.out}
+    state = {"records": records, "unresolved": unresolved, "out": args.out,
+             "journal": converter.journal}
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(state))
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     print()

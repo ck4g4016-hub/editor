@@ -51,9 +51,9 @@ def id_number(text):
     if len(value) != 10:
         return value, "長度是 %d 碼，應該是 10 碼" % len(value)
     if value[0] not in _ID_LETTERS:
-        return value, "開頭 %r 不是合法的縣市英文字母" % value[0]
+        return value, "開頭「%s」不是合法的縣市英文字母" % value[0]
     if value[1] not in "12":
-        return value, "第 2 碼是 %r，應該是 1 或 2" % value[1]
+        return value, "第 2 碼是「%s」，應該是 1 或 2" % value[1]
     if not value[2:].isdigit():
         return value, "後 8 碼不全是數字"
 
@@ -74,7 +74,7 @@ def doc_number(text):
         return value, "長度是 %d 碼，應該是 10 碼" % len(value)
     year = int(value[:3])
     if not 100 <= year <= 199:
-        return value, "開頭三碼 %s 不像民國年" % value[:3]
+        return value, "開頭三碼「%s」不像民國年" % value[:3]
     return value, None
 
 
@@ -167,7 +167,7 @@ def address(text, roads=None):
     value = "".join(_LETTER_TO_DIGIT.get(ch, ch) for ch in value)
     leftover = re.findall(r"[A-Za-z]", value)
     if leftover:
-        return value, "出現英文字母 %s，地址不會有英文" % "".join(sorted(set(leftover)))
+        return value, "出現英文字母「%s」，地址不會有英文" % "".join(sorted(set(leftover)))
 
     # 段與樓層轉中文：2段 → 二段、17樓 → 十七樓
     value = _SECTION.sub(lambda m: to_chinese_number(m.group(1)) + "段", value)
