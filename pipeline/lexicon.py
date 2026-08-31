@@ -16,12 +16,13 @@
 import os
 import re
 
+from . import resources
+
 # 路街名的結尾字
 SUFFIXES = ("路", "街", "大道", "巷")
 
 # 內建字典的位置。內容見該檔開頭的說明 —— 它不是政府開放資料的權威清單。
-BUILTIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "data", "roads-三峽-鶯歌.txt")
+BUILTIN = resources.path("data", "roads-三峽-鶯歌.txt")
 
 
 def _read(path):

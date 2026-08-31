@@ -28,11 +28,11 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import fields as fieldmod  # noqa: E402
+from pipeline import fields as fieldmod, resources  # noqa: E402
 from pipeline import layout, redmarks, render  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PAGE = os.path.join(os.path.dirname(HERE), "editor", "page.html")
+PAGE = resources.path("editor", "page.html")
 
 # 網頁上顯示的寬度。實際座標一律用 300dpi，顯示端再換算。
 VIEW_WIDTH = 1000

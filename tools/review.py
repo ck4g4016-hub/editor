@@ -24,11 +24,11 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import fields as fieldmod  # noqa: E402
+from pipeline import fields as fieldmod, resources  # noqa: E402
 from pipeline import output, process  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PAGE = os.path.join(os.path.dirname(HERE), "editor", "review.html")
+PAGE = resources.path("editor", "review.html")
 
 # 複核畫面上欄位的排列順序。前三個是必須辨識正確的，放最前面。
 ORDER = ["address", "id_number", "doc_number", "district", "name", "section", "land_number"]
