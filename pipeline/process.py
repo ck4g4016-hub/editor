@@ -41,6 +41,9 @@ class Record:
         self.raw = {}
         self.confidence = {}
         self.problems = {}
+        # 每個欄位的原圖裁切（PNG bytes）。複核時要讓人對照著看，
+        # 光給文字沒辦法判斷對錯。只放在記憶體，程式關掉就沒了。
+        self.crops = {}
 
     @property
     def status(self):
@@ -86,7 +89,7 @@ class Converter:
             self._fields[code] = fieldmod.load(self.store, code)
         return self._fields[code]
 
-    def run(self, paths, progress=None):
+    def run(self, paths, progress=None, keep_crops=False):
         """處理一批 PDF，回傳 (資料列, 需要人工分頁的頁面)。"""
         pages = layout.classify_pages(paths, self.templates)
         documents = layout.split_documents(pages)
@@ -96,14 +99,14 @@ class Converter:
             if not document.complete:
                 unresolved.append(document)
                 continue
-            record = self.read_document(document)
+            record = self.read_document(document, keep_crops=keep_crops)
             if record is not None:
                 records.append(record)
                 if progress:
                     progress(record)
         return records, unresolved
 
-    def read_document(self, document):
+    def read_document(self, document, keep_crops=False):
         """讀一件申請案的正面，把欄位辨識出來。"""
         front = document.pages[0]
         definitions = self.fields_of(front.code)
@@ -132,6 +135,10 @@ class Converter:
 
         for definition in ordered:
             crop = recognise.crop_field(sheet, definition.box)
+            if keep_crops and crop is not None and crop.size:
+                ok, buffer = cv2.imencode(".png", crop)
+                if ok:
+                    record.crops[definition.column] = buffer.tobytes()
             raw, confidence = recognise.read(crop)
             extra = {}
             if definition.kind == "district":

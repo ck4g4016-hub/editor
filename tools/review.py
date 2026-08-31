@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+"""複核介面：確認辨識結果，改掉錯的，然後產生輸出檔。
+
+介面是本機網頁，只綁 127.0.0.1，不對外開放也不連任何外部資源。
+
+每個欄位都會把原圖裁切秀出來，讓人對照著看 —— 光給文字沒辦法判斷對錯。
+驗證沒過、辨識信心偏低、或是僅供參考的欄位會標紅，其餘的通常掃過去就好。
+
+影像只留在記憶體，程式關掉就什麼都不剩，不落地到暫存資料夾。
+
+用法：
+
+    python tools/review.py 樣板資料夾 掃描檔資料夾 --out 輸出資料夾
+"""
+
+import argparse
+import json
+import os
+import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from pipeline import fields as fieldmod  # noqa: E402
+from pipeline import output, process  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PAGE = os.path.join(os.path.dirname(HERE), "editor", "review.html")
+
+# 複核畫面上欄位的排列順序。前三個是必須辨識正確的，放最前面。
+ORDER = ["address", "id_number", "doc_number", "district", "name", "section", "land_number"]
+
+
+def make_handler(state):
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code, body, mime):
+            self.send_response(code)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _json(self, payload, code=200):
+            self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8")
+
+        def do_GET(self):  # noqa: N802
+            route = urlparse(self.path)
+            query = parse_qs(route.query)
+
+            if route.path in ("/", "/index.html"):
+                with open(PAGE, "rb") as handle:
+                    self._send(200, handle.read(), "text/html; charset=utf-8")
+            elif route.path == "/api/records":
+                self._json(describe(state))
+            elif route.path == "/api/crop":
+                index = int(query.get("record", ["-1"])[0])
+                column = query.get("column", [""])[0]
+                records = state["records"]
+                if 0 <= index < len(records) and column in records[index].crops:
+                    self._send(200, records[index].crops[column], "image/png")
+                else:
+                    self._send(404, b"no crop", "text/plain")
+            else:
+                self._send(404, b"not found", "text/plain")
+
+        def do_POST(self):  # noqa: N802
+            if urlparse(self.path).path != "/api/export":
+                self._send(404, b"not found", "text/plain")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            rows = payload.get("records", [])
+            if not rows:
+                self._json({"ok": False, "error": "沒有資料可以輸出"}, 400)
+                return
+            written = output.write_all(rows, state["out"])
+            for path in written:
+                print("已產出: %s" % path)
+            self._json({"ok": True, "files": [os.path.basename(p) for p in written]})
+
+        def log_message(self, *args):
+            pass
+
+    return Handler
+
+
+def describe(state):
+    columns = [{"key": key, "name": fieldmod.COLUMNS[key]}
+               for key in ORDER if key in fieldmod.COLUMNS]
+    records = []
+    for record in state["records"]:
+        records.append({
+            "source": record.describe(),
+            "values": record.values,
+            "raw": record.raw,
+            "flags": record.flagged(),
+            "crops": sorted(record.crops),
+        })
+    unresolved = ["%s 第 %s 頁" % (os.path.basename(document.pages[0].source),
+                                  "、".join(str(p.index + 1) for p in document.pages))
+                  for document in state["unresolved"]]
+    return {"columns": columns, "records": records, "unresolved": unresolved}
+
+
+def collect(targets):
+    paths = []
+    for target in targets:
+        if os.path.isdir(target):
+            paths.extend(sorted(os.path.join(target, name) for name in os.listdir(target)
+                                if name.lower().endswith(".pdf")))
+        else:
+            paths.append(target)
+    return paths
+
+
+def main():
+    parser = argparse.ArgumentParser(description="複核辨識結果並產生輸出檔",
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=__doc__)
+    parser.add_argument("store", help="樣板資料夾")
+    parser.add_argument("targets", nargs="+", help="掃描檔資料夾或個別 PDF")
+    parser.add_argument("--out", default="輸出", help="輸出資料夾")
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args()
+
+    paths = collect(args.targets)
+    if not paths:
+        raise SystemExit("找不到任何 PDF")
+
+    print("處理 %d 個檔案…" % len(paths))
+    converter = process.Converter(args.store)
+    records, unresolved = converter.run(
+        paths, progress=lambda r: print("  %s" % r.describe()), keep_crops=True)
+
+    print()
+    print(process.summarise(records, unresolved))
+    if not records:
+        raise SystemExit("沒有任何可以複核的資料 —— 請先用樣板編輯器定義欄位")
+
+    state = {"records": records, "unresolved": unresolved, "out": args.out}
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(state))
+    url = "http://127.0.0.1:%d/" % server.server_address[1]
+    print()
+    print("複核介面已啟動：%s" % url)
+    print("只綁 127.0.0.1，不對外開放。按 Ctrl+C 結束。")
+    if not args.no_browser:
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n已結束")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
