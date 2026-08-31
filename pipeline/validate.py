@@ -99,6 +99,10 @@ _DROP = re.compile(
 
 _FLOOR = re.compile(r"(\d+)\s*樓")
 
+# 段用中文數字（戶役政的規定），例如「中正路2段」要寫成「中正路二段」。
+# 三峽的中正路、介壽路都有一二三段。
+_SECTION = re.compile(r"(\d+)\s*段")
+
 # 地址只會有中文字與阿拉伯數字。出現英文字母一定是辨識錯的 ——
 # 手寫的數字被讀成形狀相近的字母是最常見的一種錯，照這張表換回數字。
 _LETTER_TO_DIGIT = {
@@ -144,10 +148,18 @@ def address(text, roads=None):
     head, tail = re.match(r"^([^\d]*)(.*)$", value).groups()
     if roads:
         from . import lexicon
-        name, score = lexicon.resolve_head(head, roads)
+        # 路名結尾字有讀到的話就在那裡切開，後面的「段」之類要留著 ——
+        # 不切的話「中正路二段」會整串拿去比對，match 到「二鬮路」。
+        suffix = max((head.rfind(ch) for ch in "路街道"), default=-1)
+        if suffix >= 0:
+            stem, rest = head[:suffix + 1], head[suffix + 1:]
+        else:
+            stem, rest = head, ""
+
+        name, score = lexicon.resolve_head(stem, roads)
         if name:
             # 地址一定以路街名開頭，前面黏著的行政區之類一律丟掉
-            value = name + tail
+            value = name + rest + tail
         elif head:
             return value, "路街名不在字典裡（讀到「%s」）" % head
 
@@ -157,7 +169,8 @@ def address(text, roads=None):
     if leftover:
         return value, "出現英文字母 %s，地址不會有英文" % "".join(sorted(set(leftover)))
 
-    # 樓層轉中文：17樓 → 十七樓
+    # 段與樓層轉中文：2段 → 二段、17樓 → 十七樓
+    value = _SECTION.sub(lambda m: to_chinese_number(m.group(1)) + "段", value)
     value = _FLOOR.sub(lambda m: to_chinese_number(m.group(1)) + "樓", value)
 
     if not value:
