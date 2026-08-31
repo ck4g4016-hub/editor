@@ -52,17 +52,24 @@ def main():
                                      epilog=__doc__)
     parser.add_argument("store", help="樣板資料夾")
     parser.add_argument("sources", nargs="*", help="路名來源檔（純文字或 CSV）")
+    parser.add_argument("--district", default="全部",
+                        help="這批路名屬於哪一區。不同區可能有同名不同尾的路"
+                             "（三峽「仁愛街」、鶯歌「仁愛路」），要分開存")
     parser.add_argument("--list", action="store_true", help="列出目前字典內容")
     parser.add_argument("--replace", action="store_true", help="取代而不是累加")
     args = parser.parse_args()
 
-    existing = set() if args.replace else set(lexicon.load(args.store))
+    existing = {} if args.replace else dict(lexicon.load(args.store))
 
     if args.list:
-        names = sorted(existing)
-        print("字典共 %d 個路街名：" % len(names))
-        for name in names:
-            print("   " + name)
+        total = 0
+        for district in sorted(existing):
+            names = sorted(existing[district])
+            print("## %s（%d 個）" % (district, len(names)))
+            for name in names:
+                print("   " + name)
+            total += len(names)
+        print("合計 %d 個路街名" % total)
         return 0
 
     if not args.sources:
@@ -74,7 +81,9 @@ def main():
         print("  %-40s 取出 %d 個" % (os.path.basename(source), len(names)))
         found |= names
 
-    target, count = lexicon.save(args.store, existing | found)
+    existing.setdefault(args.district, [])
+    existing[args.district] = sorted(set(existing[args.district]) | found)
+    target, count = lexicon.save(args.store, existing)
     print("字典已更新：%s（共 %d 個）" % (target, count))
     return 0
 

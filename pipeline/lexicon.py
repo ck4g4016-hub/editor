@@ -19,36 +19,87 @@ import re
 # 路街名的結尾字
 SUFFIXES = ("路", "街", "大道", "巷")
 
-# 從現有樣本抽出來的種子。這不是完整清單，只是讓程式一開始就能動。
-SEED = [
-    "民生路", "中山路", "大學路", "橫溪路", "尖山路", "鳳吉街", "華江路", "仁愛路",
-]
+# 內建字典的位置。內容見該檔開頭的說明 —— 它不是政府開放資料的權威清單。
+BUILTIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "data", "roads-三峽-鶯歌.txt")
+
+
+def _read(path):
+    """讀字典檔，回傳 {行政區: [路街名]}。
+
+    「## 區名」以下的路名屬於該區。分區是必要的 ——
+    三峽有「仁愛街」、鶯歌有「仁愛路」，合在一起就分不出該用哪一個。
+    沒有任何區段標題的檔案，全部收在 ALL 底下。
+    """
+    groups, current = {}, ALL
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line.startswith("##"):
+                current = line.lstrip("#").strip()
+                groups.setdefault(current, [])
+            elif line and not line.startswith("#"):
+                groups.setdefault(current, []).append(line)
+    return groups
+
+
+def builtin():
+    """內建的三峽、鶯歌路街名，依區分組。"""
+    try:
+        return _read(BUILTIN)
+    except OSError:
+        return {}
 
 
 def path_for(store):
     return os.path.join(store, "roads.txt")
 
 
+ALL = "全部"
+
+
 def load(store):
-    """載入路街名字典。沒有檔案就用種子清單。"""
+    """載入路街名字典。樣板資料夾裡有自己的就用那份，否則用內建的。"""
     target = path_for(store)
-    if not os.path.isfile(target):
-        return list(SEED)
-    with open(target, encoding="utf-8") as handle:
-        names = [line.strip() for line in handle if line.strip()
-                 and not line.startswith("#")]
-    return names or list(SEED)
+    if os.path.isfile(target):
+        groups = _read(target)
+        if any(groups.values()):
+            return groups
+    return builtin()
 
 
-def save(store, names):
+def for_district(groups, district=None):
+    """取某一區的路名。沒指定或那一區沒資料，就把全部合起來。"""
+    if not groups:
+        return []
+    if district:
+        for name, names in groups.items():
+            if name == district or name.rstrip("區") == district.rstrip("區"):
+                return names
+    merged = []
+    for names in groups.values():
+        merged.extend(names)
+    return merged
+
+
+def save(store, groups):
+    """存檔。groups 是 {行政區: [路街名]}。"""
     target = path_for(store)
     os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
-    unique = sorted({name.strip() for name in names if name.strip()})
+    total = 0
     with open(target, "w", encoding="utf-8") as handle:
-        handle.write("# 路街名字典，一行一個。地址辨識會把結果吸附到這裡最接近的名稱。\n")
-        for name in unique:
-            handle.write(name + "\n")
-    return target, len(unique)
+        handle.write("# 路街名字典。地址辨識會把結果吸附到這裡最接近的名稱。\n")
+        handle.write("# 「## 區名」以下的路名屬於該區 —— 不同區可能有同名不同尾的路，\n")
+        handle.write("# 例如三峽的「仁愛街」與鶯歌的「仁愛路」。\n")
+        for district in sorted(groups):
+            unique = sorted({n.strip() for n in groups[district] if n.strip()})
+            if not unique:
+                continue
+            handle.write("\n## %s\n" % district)
+            for name in unique:
+                handle.write(name + "\n")
+            total += len(unique)
+    return target, total
 
 
 def _similarity(a, b):

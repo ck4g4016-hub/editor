@@ -124,16 +124,21 @@ class Converter:
             sheet = baseimage.as_gray(page)
 
         record = Record(front.code, front.source, front.index)
-        for definition in definitions:
-            if definition.page != "front":
-                continue
+
+        # 行政區要先讀 —— 地址的路名字典是分區的，
+        # 三峽有「仁愛街」、鶯歌有「仁愛路」，不知道哪一區就選不出來。
+        ordered = sorted((d for d in definitions if d.page == "front"),
+                         key=lambda d: 0 if d.kind == "district" else 1)
+
+        for definition in ordered:
             crop = recognise.crop_field(sheet, definition.box)
             raw, confidence = recognise.read(crop)
             extra = {}
             if definition.kind == "district":
                 extra["known"] = self.districts
             elif definition.kind == "address":
-                extra["roads"] = self.roads
+                extra["roads"] = lexicon.for_district(
+                    self.roads, record.values.get("district"))
             value, problem = validate.check(definition.kind, raw, **extra)
 
             record.raw[definition.column] = raw
