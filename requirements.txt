@@ -1,0 +1,9 @@
+# 正式程式要用到的套件。
+# numpy 的版本必須落在 opencv-python-headless 允許的範圍 (>=2, <2.3.0)，否則 pip 無解。
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
+PyMuPDF==1.26.4
+Pillow==11.3.0
+onnxruntime==1.22.1
+openpyxl==3.1.5
+rapidocr-onnxruntime==1.4.4
