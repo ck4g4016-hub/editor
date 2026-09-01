@@ -2,13 +2,25 @@
 """產生兩個輸出檔。規格依據見 docs/output-spec.md。
 
 外網給 RPA 讀，用門牌到地政系統查地建號、下載謄本。
-內網是戶役政全戶戶籍資料查調的匯入檔。
+內網這一份**不是**戶政系統的上傳檔，是餵給內網腳本 2 的中繼檔 ——
+腳本 2 讀它，自己轉出 upload1.xls／upload2.xls 再上傳。這點一開始弄錯過。
 
-兩邊的格式限制不一樣，不能共用一個檔：
-外網腳本的檔案選取寫死 `*.xlsx`，內網系統只收 xls/ods/csv 且不收 xlsx。
+內網腳本 2（產製地址清冊並上傳至戶政系統）的兩行決定了格式：
+
+    If LCase(fso.GetExtensionName(objFile.Name)) = "xlsx" Then   '第 234 行
+    District = firstRow.RawData("行政區")                          '第 126 行
+
+第一行：它在資料夾裡**只找 .xlsx**，csv、xls 一律看不到，找不到就跳
+「資料夾內找不到 Excel 檔案」然後中止。所以這一份必須是 xlsx。
+
+第二行：欄位是**用名稱取值**不是用位置，所以標題列一定要有、名稱要一字不差，
+但多給一個「姓名」欄不會干擾它（腳本 2 不會去讀那一欄）。
+
+還有一個坑：`GetTargetExcel` 撿到第一個 xlsx 就 `Exit Function`，
+所以那個資料夾裡**只能有這一個 xlsx**。外網那份也是 xlsx，兩個混在一起
+會撿到哪一個看檔案系統的順序，不是檔名順序 —— 所以兩份不要放同一個資料夾。
 """
 
-import csv
 import datetime
 import os
 
@@ -24,7 +36,14 @@ OUTER_HEADERS = ["行政區", "門牌", "申請案號或事由", "身分證字�
 # RPA 只讀到 H，排序也只到 D，所以新增的姓名放 I 欄不會影響它
 OUTER_RPA_COLUMNS = 8
 
+# 內網中繼檔的欄位。前四個是腳本 0 原本產的（它的第 56~59 行），
+# 名稱必須一字不差，腳本 2 靠名稱取值。姓名是我們多加的，只給人核對用。
 INNER_HEADERS = ["序號", "行政區", "所有權人IDN", "完整地址", "姓名"]
+
+# 「完整地址」照腳本 0 的寫法要含縣市與行政區 —— 它的第 130 行
+# `district = Mid(address, 4, 3)` 是從地址的第 4~6 個字取出行政區，
+# 反推回去第 1~3 個字就是縣市。外網那份則相反，只留路街門牌。
+INNER_CITY = "新北市"
 
 _HEADER_FILL = PatternFill("solid", fgColor="EFE6D0")
 _RESERVED_FILL = PatternFill("solid", fgColor="F5F5F5")
@@ -41,8 +60,14 @@ def outer_path(folder, when=None):
 
 
 def inner_path(folder, serial=1, when=None):
-    """內網檔名只能用英數 —— 系統的限制。"""
-    return os.path.join(folder, "HH%s_%02d.csv" % (roc_date(when), serial))
+    """內網檔名只能用英數 —— 系統的限制。
+
+    腳本 2 的 `GetTargetExcel` 會用 `^(\d+)` 抓檔名開頭的數字當案號，
+    要 9 位以上才算數。我們的檔名開頭是 HH，抓不到，案號會是空字串 ——
+    腳本 0 自己產的「跨機關通報_….xlsx」開頭是中文，一樣抓不到，
+    所以空的案號本來就是正常情況，不用為了這個去遷就檔名。
+    """
+    return os.path.join(folder, "HH%s_%02d.xlsx" % (roc_date(when), serial))
 
 
 def write_outer(records, path):
@@ -75,21 +100,41 @@ def write_outer(records, path):
     return path
 
 
+def inner_address(record):
+    """內網要的「完整地址」：縣市 + 行政區 + 門牌。
+
+    我們平常把行政區跟門牌分開存，外網那份也要分開；
+    但腳本 0 產的中繼檔是把三段黏成一串的，腳本 2 沿用那個寫法。
+    """
+    return INNER_CITY + record.get("district", "") + record.get("address", "")
+
+
 def write_inner(records, path):
-    """內網戶役政匯入檔（csv、UTF-8）。"""
+    """內網中繼檔（xlsx）—— 給腳本 2 讀，不是上傳檔。"""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "工作表1"
+
+    sheet.append(INNER_HEADERS)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = _HEADER_FILL
+        cell.alignment = Alignment(horizontal="center")
+
+    for serial, record in enumerate(records, start=1):
+        sheet.append([
+            serial,
+            record.get("district", ""),
+            record.get("id_number", ""),
+            inner_address(record),
+            record.get("name", ""),
+        ])
+
+    for column, width in zip("ABCDE", (8, 10, 14, 40, 12)):
+        sheet.column_dimensions[column].width = width
+
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    # 用 utf-8-sig，Excel 直接開才不會把中文顯示成亂碼
-    with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(INNER_HEADERS)
-        for serial, record in enumerate(records, start=1):
-            writer.writerow([
-                serial,
-                record.get("district", ""),
-                record.get("id_number", ""),
-                record.get("address", ""),
-                record.get("name", ""),
-            ])
+    book.save(path)
     return path
 
 
