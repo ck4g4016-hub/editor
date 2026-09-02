@@ -18,7 +18,7 @@ import os
 import cv2
 import numpy as np
 
-from . import render
+from . import render, resources
 
 # 一頁在文件中的角色
 FRONT = "front"      # 表格正面，看到它就是新的一件
@@ -131,9 +131,14 @@ class TemplateSet:
             with open(index, encoding="utf-8") as handle:
                 meta = json.load(handle)
             for role, filename in meta["pages"].items():
-                image = cv2.imread(os.path.join(folder, filename), cv2.IMREAD_GRAYSCALE)
+                image = resources.imread(os.path.join(folder, filename), cv2.IMREAD_GRAYSCALE)
                 if image is None:
-                    raise SystemExit("樣板影像讀不到: %s/%s" % (folder, filename))
+                    # 不要用 SystemExit —— 它繼承自 BaseException，會直接穿過
+                    # except Exception，整個程式無聲無息地關掉，連紀錄都沒有。
+                    raise ValueError(
+                        "樣板 %s 的影像讀不到：%s\n"
+                        "這個樣板沒有建完整，請重新執行「新增表格」。"
+                        % (meta.get("code", entry), os.path.join(folder, filename)))
                 templates.append(Template(meta["code"], meta["name"], role, image))
         return cls(templates)
 

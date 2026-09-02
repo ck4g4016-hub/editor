@@ -13,7 +13,7 @@ import time
 
 import cv2
 
-from . import baseimage, diagnose, fields as fieldmod, layout, lexicon, recognise, render, validate
+from . import baseimage, diagnose, fields as fieldmod, layout, lexicon, recognise, render, resources, validate
 
 # 這三欄錯了，RPA 會拿著錯的資料去查別人的房子，而且從輸出的表格上看不出來。
 # 驗證不通過就一定要人工確認，不管信心值多高。
@@ -84,7 +84,7 @@ class Converter:
     def base_of(self, code):
         if code not in self._bases:
             path = os.path.join(self.store, code, "base.png")
-            self._bases[code] = cv2.imread(path, cv2.IMREAD_COLOR) if os.path.isfile(path) else None
+            self._bases[code] = resources.imread(path, cv2.IMREAD_COLOR) if os.path.isfile(path) else None
         return self._bases[code]
 
     def fields_of(self, code):

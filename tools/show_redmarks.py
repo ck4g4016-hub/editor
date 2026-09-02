@@ -18,7 +18,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import layout, redmarks, render  # noqa: E402
+from pipeline import layout, redmarks, render, resources  # noqa: E402
 
 
 def main():
@@ -43,7 +43,7 @@ def main():
     scan = render.rotate(render.render(args.pdf, args.page - 1, dpi=render.FULL_DPI, gray=False),
                          rotation)
     base_path = os.path.join(args.store, code, "base.png")
-    base = cv2.imread(base_path, cv2.IMREAD_COLOR) if os.path.isfile(base_path) else None
+    base = resources.imread(base_path, cv2.IMREAD_COLOR) if os.path.isfile(base_path) else None
     if base is None:
         print("找不到底圖 %s —— 粉紅色紙的表格沒有底圖會把整張紙判成紅筆" % base_path)
 
@@ -55,7 +55,7 @@ def main():
     for kind, x, y, w, h in marks:
         print("  %-6s 位置(%4d,%4d) 大小 %3dx%-3d" % (kind, x, y, w, h))
 
-    cv2.imwrite(args.out, redmarks.draw(scan, marks))
+    resources.imwrite(args.out, redmarks.draw(scan, marks))
     print("已存檔: %s（綠框=勾號，藍框=框選區域）" % args.out)
 
 

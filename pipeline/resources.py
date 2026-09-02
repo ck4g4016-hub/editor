@@ -51,3 +51,42 @@ def version():
             stderr=subprocess.DEVNULL, text=True).strip() + "（原始碼）"
     except Exception:                                               # noqa: BLE001
         return "不明"
+
+
+def imread(path, flags=None):
+    """讀影像。**不要直接用 cv2.imread。**
+
+    OpenCV 的 imread／imwrite 走的是 ANSI API，路徑只要有非 ASCII 字元
+    就整個失效 —— 而且不會丟例外：imread 回傳 None，imwrite 回傳 False。
+    使用者的工作資料夾是「D:\\claude\\紙本轉excel\\樣板\\F」，
+    每一層都有中文，所以樣板影像根本寫不出去，也讀不回來。
+
+    改成自己讀 bytes 再交給 OpenCV 解碼，路徑就由 Python 處理，中文沒問題。
+    """
+    import cv2
+    import numpy as np
+
+    if not os.path.isfile(path):
+        return None
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError:
+        return None
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR if flags is None else flags)
+
+
+def imwrite(path, image):
+    """寫影像。回傳 True/False，理由同 imread。"""
+    import cv2
+
+    extension = os.path.splitext(path)[1] or ".png"
+    ok, buffer = cv2.imencode(extension, image)
+    if not ok:
+        return False
+    try:
+        buffer.tofile(path)
+    except OSError:
+        return False
+    return True

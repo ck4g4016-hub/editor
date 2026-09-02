@@ -75,7 +75,7 @@ class Workspace:
                     render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
                     page.rotation)
                 base_path = os.path.join(self.store, code, "base.png")
-                base = cv2.imread(base_path, cv2.IMREAD_COLOR) \
+                base = resources.imread(base_path, cv2.IMREAD_COLOR) \
                     if os.path.isfile(base_path) else None
                 try:
                     marks = redmarks.find(scan, base)

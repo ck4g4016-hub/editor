@@ -25,7 +25,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import baseimage, layout, render  # noqa: E402
+from pipeline import baseimage, layout, render, resources  # noqa: E402
 
 BLANK = "blank"
 COMPOSE = "compose"
@@ -54,7 +54,9 @@ def create(store, code, name, pdf, front, back=None, rotate=0):
         image = render.rotate(
             render.render(pdf, number - 1, dpi=render.CLASSIFY_DPI), rotate)
         filename = "%s.png" % role
-        cv2.imwrite(os.path.join(folder, filename), image)
+        target = os.path.join(folder, filename)
+        if not resources.imwrite(target, image):
+            raise ValueError("寫不出樣板影像：%s" % target)
         pages[role] = filename
         notes.append("%s ← 第 %d 頁 (%dx%d)" % (role, number, image.shape[1], image.shape[0]))
 
@@ -68,7 +70,8 @@ def base_from_blank(store, code, pdf, page=1):
     """空白原稿直接當底圖。彩色 —— 紅筆偵測要用到色彩。"""
     image = render.render(pdf, page - 1, dpi=render.FULL_DPI, gray=False)
     target = os.path.join(store, code, "base.png")
-    cv2.imwrite(target, image)
+    if not resources.imwrite(target, image):
+        raise ValueError("寫不出底圖：%s" % target)
     return target, "底圖來源：空白原稿第 %d 頁" % page
 
 
@@ -85,7 +88,8 @@ def base_from_scans(store, code, paths):
         for p in pages]
     image, weak = baseimage.compose(samples)
     target = os.path.join(store, code, "base.png")
-    cv2.imwrite(target, image)
+    if not resources.imwrite(target, image):
+        raise ValueError("寫不出底圖：%s" % target)
     note = "底圖來源：%d 份掃描件合成" % (len(samples) - len(weak))
     if weak:
         note += "（有 %d 份對不齊，沒有納入）" % len(weak)
@@ -100,7 +104,7 @@ def check(store, code, paths):
     因為抓出來的東西看起來像模像樣，只是屬於別人。
     """
     path = os.path.join(store, code, "base.png")
-    base = cv2.imread(path, cv2.IMREAD_COLOR)
+    base = resources.imread(path, cv2.IMREAD_COLOR)
     if base is None:
         return ["沒有底圖，跳過檢查"], 0.0
 

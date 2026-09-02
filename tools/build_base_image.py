@@ -30,7 +30,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import baseimage, layout, render  # noqa: E402
+from pipeline import baseimage, layout, render, resources  # noqa: E402
 
 
 def front_pages(paths, templates, code):
@@ -83,7 +83,7 @@ def main():
             print("    ⚠ 第 %d 份對不齊，未納入合成" % (index + 1))
 
     target = os.path.join(folder, "base.png")
-    cv2.imwrite(target, base)
+    resources.imwrite(target, base)
     print("底圖已存檔: %s  (%dx%d)" % (target, base.shape[1], base.shape[0]))
 
     checks = args.check or args.compose

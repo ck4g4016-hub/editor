@@ -198,7 +198,7 @@ def main():
             if stats[index, cv2.CC_STAT_AREA] >= 40:      # 小於這個面積的視為雜訊
                 keep[labels == index] = 255
         keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-        cv2.imwrite(args.save, 255 - keep)
+        cv2.imwrite(args.save, 255 - keep)  # 開發用腳本，輸出路徑自己給，維持 cv2
         print()
         print("已存出抽取結果: %s (只剩手寫內容就代表成功)" % args.save)
 

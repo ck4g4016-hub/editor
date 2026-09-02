@@ -24,7 +24,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import render  # noqa: E402
+from pipeline import render, resources  # noqa: E402
 
 
 def main():
@@ -52,7 +52,7 @@ def main():
         image = render.rotate(render.render(args.pdf, number - 1, dpi=render.CLASSIFY_DPI),
                               args.rotate)
         filename = "%s.png" % role
-        cv2.imwrite(os.path.join(folder, filename), image)
+        resources.imwrite(os.path.join(folder, filename), image)
         pages[role] = filename
         turned = "，轉正 %d°" % args.rotate if args.rotate else ""
         print("  %-6s ← %s 第 %d 頁  (%dx%d%s)" % (role, os.path.basename(args.pdf),

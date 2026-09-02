@@ -420,7 +420,7 @@ def main():
             return 0
         try:
             actions[action]()
-        except Exception as error:                                  # noqa: BLE001
+        except (Exception, SystemExit) as error:                    # noqa: BLE001
             # 一件事失敗不該讓整個程式關掉，記下來然後回主選單再試
             path = crash_report(error)
             print("發生錯誤，已寫下紀錄：%s" % path)
