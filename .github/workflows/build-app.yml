@@ -41,6 +41,16 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller==6.15.0 pyinstaller-hooks-contrib
 
+      - name: 自我檢查
+        shell: pwsh
+        run: |
+          # 先跑過再打包。有一次改動把 summarise() 連帶刪掉，每個模組
+          # 單獨 import 都正常，只有使用者按下「轉換」才會炸 ——
+          # 壞掉的版本照樣發布出去了。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python tools/selftest.py
+
       - name: 打包
         shell: pwsh
         run: |

@@ -287,13 +287,23 @@ class Converter:
         raw = "".join(pieces)
         confidence = min(scores) if scores else 0.0
 
-        extra = {}
-        if definition.kind == "district":
-            extra["known"] = self.districts
-        elif definition.kind == "address":
-            extra["roads"] = lexicon.for_district(
-                self.roads, record.values.get("district"))
-        value, problem = validate.check(definition.kind, raw, **extra)
+        if definition.kind == "id_number":
+            # 身分證有檢查碼，可以直接驗證哪一種讀法是對的 —— 別的欄位沒這個優勢。
+            # 一字一格的欄位整行讀常會漏字（實測讀到 9 碼、5 碼都有），
+            # 所以再逐格讀一次，兩種都套位置規則，誰通過檢查碼就用誰。
+            spaced, spaced_confidence = recognise.read_cells(
+                recognise.crop_field(sheet, definition.box))
+            value, problem = validate.best_id(raw, spaced)
+            if spaced and value == validate.fix_id_positions(spaced):
+                raw, confidence = spaced, spaced_confidence
+        else:
+            extra = {}
+            if definition.kind == "district":
+                extra["known"] = self.districts
+            elif definition.kind == "address":
+                extra["roads"] = lexicon.for_district(
+                    self.roads, record.values.get("district"))
+            value, problem = validate.check(definition.kind, raw, **extra)
 
         record.raw[definition.column] = raw
         record.values[definition.column] = value
@@ -315,3 +325,23 @@ def _stack(crops):
             crop = np.hstack([crop, pad])
         padded.append(crop)
     return np.vstack(padded)
+
+
+def summarise(records, unresolved):
+    """給人看的統計。"""
+    ok = sum(1 for r in records if r.status == OK)
+    lines = [
+        "共 %d 件，%d 件通過、%d 件需要人工確認" % (len(records), ok, len(records) - ok),
+    ]
+    if unresolved:
+        lines.append("另有 %d 組頁面切不出完整的一件，需要人工分頁" % len(unresolved))
+
+    counts = {}
+    for record in records:
+        for column, note in record.flagged().items():
+            counts[column] = counts.get(column, 0) + 1
+    if counts:
+        lines.append("各欄位被標記的次數：")
+        for column, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+            lines.append("    %-14s %d 次" % (fieldmod.COLUMNS.get(column, column), count))
+    return "\n".join(lines)

@@ -42,6 +42,51 @@ def to_chinese_number(value):
     return str(value)
 
 
+# 位置本身就是規則：第 1 碼一定是英文字母，後 9 碼一定是數字。
+# 手寫的 1 常被讀成 L 或 I、2 讀成 Z、0 讀成 O —— 知道那一格該是數字，
+# 就能直接換回來，不用等檢查碼失敗才說「錯了」。
+_DIGIT_TO_LETTER = {"0": "O", "1": "I", "2": "Z", "3": "E", "4": "A",
+                    "5": "S", "6": "G", "7": "T", "8": "B", "9": "G"}
+
+
+def fix_id_positions(text):
+    """照「1 碼英文 + 9 碼數字」把讀錯的字換回來。長度不對就原樣回傳。"""
+    value = re.sub(r"[^0-9A-Za-z]", "", to_halfwidth(text or "")).upper()
+    if len(value) != 10:
+        return value
+    head = value[0]
+    if head.isdigit():
+        head = _DIGIT_TO_LETTER.get(head, head)
+    tail = "".join(_LETTER_TO_DIGIT.get(ch, ch).upper() if ch.isalpha() else ch
+                   for ch in value[1:])
+    return head + tail
+
+
+def best_id(*texts):
+    """好幾種讀法裡挑一個。
+
+    身分證有檢查碼 —— 這讓我們可以**直接驗證**哪一種讀法是對的，不必猜。
+    整行讀一次、逐格讀一次，位置規則各套一遍，誰通過檢查碼就用誰。
+    都沒過的話回傳最像的那一個，讓人去看。
+    """
+    tried = []
+    for text in texts:
+        # fixed 排在後面但優先採用 —— 平手時要選套過位置規則的那個，
+        # 「後 8 碼不全是數字」這種錯它已經處理掉了
+        for rank, candidate in enumerate((fix_id_positions(text), text)):
+            if not candidate or candidate in [t[0] for t in tried]:
+                continue
+            value, problem = id_number(candidate)
+            if problem is None:
+                return value, None
+            tried.append((candidate, value, problem, rank))
+    if not tried:
+        return "", "沒有讀到內容"
+    # 沒有一個通過檢查碼。長度對的優先，再來才是套過位置規則的
+    tried.sort(key=lambda item: (abs(len(item[1]) - 10), item[3], -len(item[1])))
+    return tried[0][1], tried[0][2]
+
+
 def id_number(text):
     """身分證字號：轉成標準寫法並驗檢查碼。
 
