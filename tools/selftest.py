@@ -87,6 +87,62 @@ def check():
                 problems.append("路名比對 %s 得到 %r，應該是 %r" % (got, name, want))
     else:
         problems.append("路名字典是空的")
+
+    # 門牌正規化的每一條規則（規格書 docs/output-spec.md 談出來的）
+    if roads:
+        for label, raw, want in (
+            ("樓層一律中文", "中華路38巷14號17樓", "中華路38巷14號十七樓"),
+            ("段也是中文", "中正路2段15號", "中正路二段15號"),
+            ("之用國字", "中華路38巷14-6號", "中華路38巷14之6號"),
+            ("巷弄號半形", "中華路３８巷１４號", "中華路38巷14號"),
+            ("去掉縣市行政區", "新北市三峽區中華路14號", "中華路14號"),
+            ("去掉里鄰", "中華里5鄰中華路14號", "中華路14號"),
+            ("英文換數字", "中華路I4號", "中華路14號"),
+        ):
+            got, _problem = validate.address(raw, roads=roads)
+            if got != want:
+                problems.append("門牌「%s」得到 %r，應該是 %r" % (label, got, want))
+        for label, raw in (("沒有號", "中華路38巷"), ("空的", ""),
+                           ("路名不在字典", "不存在路14號")):
+            _got, problem = validate.address(raw, roads=roads)
+            if not problem:
+                problems.append("門牌「%s」應該被標記卻放行了" % label)
+
+    # 這些邊界情況以前每一個都會丟例外，而且都在最不能出事的地方 ——
+    # 輸出檔產不出來等於整批複核白做，診斷報告產不出來等於出事時沒有線索。
+    import numpy as np
+
+    from pipeline import diagnose, output, process, recognise
+
+    edge = [
+        ("輸出檔的值是 None",
+         lambda: output.write_all([{"district": None, "address": None,
+                                    "id_number": None, "name": None}], _scratch())),
+        ("輸出檔沒有資料", lambda: output.write_all([], _scratch())),
+        ("診斷報告：空的一批", lambda: diagnose.build(diagnose.Journal())),
+        ("診斷報告：意見的鍵不是數字",
+         lambda: diagnose.build(diagnose.Journal(),
+                                notes={"overall": "x", "records": {"abc": "y"}})),
+        ("路名字典是 None", lambda: lexicon.resolve_head("中華", None)),
+        ("裁切圖灰階與彩色混合",
+         lambda: process._stack([np.zeros((20, 30), np.uint8),
+                                 np.zeros((20, 30, 3), np.uint8)])),
+        ("辨識空影像",
+         lambda: (recognise.read(None), recognise.cells(None),
+                  recognise.read_cells(np.zeros((0, 0), np.uint8)))),
+    ]
+    for label, run in edge:
+        try:
+            run()
+        except Exception as error:                                  # noqa: BLE001
+            problems.append("%s 出錯：%s: %s" % (label, type(error).__name__, error))
+
+    # 寬欄位不可以放大 —— 放大之後偵測框會重疊，同一個字讀兩次
+    if recognise.scale_for(1600) * 1600 > recognise.MAX_WIDTH + 1:
+        problems.append("寬欄位的縮放沒有壓到 MAX_WIDTH 以內")
+    if recognise.scale_for(100) < 1.5:
+        problems.append("窄欄位沒有放大")
+
     for label, run, want in cases:
         try:
             got = run()
@@ -108,6 +164,12 @@ def main():
         return 1
     print("自我檢查通過")
     return 0
+
+
+def _scratch():
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="paper2excel-selftest-")
 
 
 if __name__ == "__main__":
