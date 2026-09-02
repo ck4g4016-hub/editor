@@ -5,8 +5,11 @@
 
 執行後會出現一個小視窗，選要做什麼：
 
-    設定樣板    第一次使用，或新增一種表格／新版本時用。
-                在掃描影像上框出欄位，設定它對應到輸出的哪一欄。
+    新增表格    每一種表格做一次。告訴程式這種表格長什麼樣、正反面各是
+                第幾頁，順便做底圖。做完才輪得到「設定樣板」——
+                樣板編輯器開場要載入既有樣板，第一個樣板不可能由它自己生。
+
+    設定樣板    在掃描影像上框出欄位，設定它對應到輸出的哪一欄。
 
     轉換        平常的工作。選掃描檔資料夾，程式辨識完開複核畫面，
                 確認過再產生輸出檔。
@@ -47,6 +50,20 @@ def ask_folder(title, initial=None):
     return folder or None
 
 
+def ask_file(title, initial=None):
+    """跳出檔案選取視窗，只讓選 PDF。"""
+    import tkinter
+    from tkinter import filedialog
+
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    path = filedialog.askopenfilename(title=title, initialdir=initial or WORKSPACE,
+                                      filetypes=[("PDF", "*.pdf"), ("所有檔案", "*.*")])
+    root.destroy()
+    return path or None
+
+
 def message(title, text):
     import tkinter
     from tkinter import messagebox
@@ -69,6 +86,145 @@ def serve(server, url, label):
         pass
 
 
+def ask_new_form():
+    """新增表格的填寫視窗。一次問完，回傳一個 dict 或 None。
+
+    做成單一視窗而不是一連串的小對話 —— 這件事要做七次，
+    每次跳五個對話框按到最後會想砸電腦。
+    """
+    import tkinter
+    from tkinter import messagebox
+
+    from pipeline import render
+    from tools import newform
+
+    pdf = ask_file("選擇這種表格的 PDF（空白原稿或任何一份掃描件都可以）")
+    if not pdf:
+        return None
+    try:
+        total = render.page_count(pdf)
+    except Exception as error:  # noqa: BLE001
+        message("讀不到這個 PDF", "%s：%s" % (type(error).__name__, error))
+        return None
+
+    result = {}
+    root = tkinter.Tk()
+    root.title("新增表格")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+
+    frame = tkinter.Frame(root, padx=16, pady=14)
+    frame.pack()
+
+    tkinter.Label(frame, text=os.path.basename(pdf), font=("", 10, "bold")).grid(
+        row=0, column=0, columnspan=2, sticky="w")
+    tkinter.Label(frame, text="共 %d 頁" % total, fg="#666").grid(
+        row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+    entries = {}
+    rows = [("code", "代號", "英數，例如 F。會變成資料夾名稱"),
+            ("name", "表格全名", "給人看的，例如 地價稅自用住宅申請書(舊)"),
+            ("front", "正面在第幾頁", "從 1 起算"),
+            ("back", "背面在第幾頁", "單面表格留空")]
+    for index, (key, label, hint) in enumerate(rows, start=2):
+        tkinter.Label(frame, text=label).grid(row=index * 2, column=0, sticky="e", padx=(0, 8))
+        entry = tkinter.Entry(frame, width=34)
+        entry.grid(row=index * 2, column=1, sticky="w")
+        entries[key] = entry
+        tkinter.Label(frame, text=hint, fg="#888", font=("", 8)).grid(
+            row=index * 2 + 1, column=1, sticky="w", pady=(0, 6))
+    entries["front"].insert(0, "1")
+
+    tkinter.Label(frame, text="底圖來源").grid(row=12, column=0, sticky="ne", padx=(0, 8))
+    source = tkinter.StringVar(value=newform.BLANK)
+    box = tkinter.Frame(frame)
+    box.grid(row=12, column=1, sticky="w")
+    for value, text in ((newform.BLANK, "這份是空白原稿"),
+                        (newform.COMPOSE, "這份是填過的掃描件，用多份合成"),
+                        (newform.NONE, "先不做底圖")):
+        tkinter.Radiobutton(box, text=text, variable=source, value=value,
+                            anchor="w").pack(anchor="w")
+    tkinter.Label(frame,
+                  text="底圖是「只有印刷版面、沒有手寫」的參考影像，用來把版面減掉。\n"
+                       "別的單位送來的影印本要選第二個 —— 影印會歪會縮，\n"
+                       "原版空白表格對不上影印件。合成至少要三份。",
+                  fg="#888", font=("", 8), justify="left").grid(
+        row=13, column=1, sticky="w", pady=(4, 10))
+
+    def submit():
+        code, problem = newform.valid_code(entries["code"].get())
+        if problem:
+            messagebox.showwarning("代號不行", problem, parent=root)
+            return
+        name = entries["name"].get().strip()
+        if not name:
+            messagebox.showwarning("還沒填", "請填表格全名", parent=root)
+            return
+        numbers = {}
+        for key, required in (("front", True), ("back", False)):
+            text = entries[key].get().strip()
+            if not text:
+                if required:
+                    messagebox.showwarning("還沒填", "正面頁碼一定要填", parent=root)
+                    return
+                numbers[key] = None
+                continue
+            if not text.isdigit() or not 1 <= int(text) <= total:
+                messagebox.showwarning("頁碼不對",
+                                       "「%s」不是 1 到 %d 之間的頁碼" % (text, total),
+                                       parent=root)
+                return
+            numbers[key] = int(text)
+        result.update(pdf=pdf, code=code, name=name, source=source.get(), **numbers)
+        root.destroy()
+
+    buttons = tkinter.Frame(frame)
+    buttons.grid(row=14, column=0, columnspan=2, pady=(6, 0))
+    tkinter.Button(buttons, text="建立", width=12, command=submit).pack(side="left", padx=4)
+    tkinter.Button(buttons, text="取消", width=8, command=root.destroy).pack(side="left", padx=4)
+
+    root.mainloop()
+    return result or None
+
+
+def run_new_form():
+    from tools import newform
+
+    answer = ask_new_form()
+    if not answer:
+        return
+
+    os.makedirs(STORE, exist_ok=True)
+    folder, notes = newform.create(STORE, answer["code"], answer["name"],
+                                   answer["pdf"], answer["front"], answer["back"])
+    lines = ["已建立樣板：%s" % answer["code"]] + notes
+
+    if answer["source"] == newform.BLANK:
+        _, note = newform.base_from_blank(STORE, answer["code"], answer["pdf"],
+                                          answer["front"])
+        lines.append(note)
+    elif answer["source"] == newform.COMPOSE:
+        try:
+            _, note = newform.base_from_scans(STORE, answer["code"], [answer["pdf"]])
+            lines.append(note)
+        except ValueError as error:
+            lines.append("底圖沒做成：%s" % error)
+
+    if answer["source"] != newform.NONE:
+        checks, worst = newform.check(STORE, answer["code"], [answer["pdf"]])
+        lines.append("")
+        lines.append("對位品質（覆蓋率越高越準，0.75 以下要處理）：")
+        lines.extend("    " + line for line in checks[:8])
+        if worst < 0.75:
+            lines.append("")
+            lines.append("⚠ 對得不夠準，欄位框可能會偏掉抓到隔壁格。")
+            lines.append("   影印本請改用「多份合成」，並且多給幾份。")
+
+    for line in lines:
+        print(line)
+    message("新增表格完成", "\n".join(lines) + "\n\n接下來按「設定樣板」框欄位。")
+
+
 def run_editor():
     from http.server import ThreadingHTTPServer
 
@@ -82,9 +238,8 @@ def run_editor():
     workspace = template_editor.Workspace(STORE, template_editor.collect([folder]))
     if not len(workspace.templates):
         message("還沒有樣板",
-                "樣板資料夾是空的。\n\n"
-                "第一次使用要先替每一種表格建立樣板，"
-                "請參考 說明.txt 裡的步驟。")
+                "樣板資料夾是空的，樣板編輯器沒有東西可以編。\n\n"
+                "請先按「新增表格」，把每一種表格建立起來，再回來框欄位。")
         return
     server = ThreadingHTTPServer(("127.0.0.1", 0), template_editor.make_handler(workspace))
     serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "樣板編輯器")
@@ -97,7 +252,7 @@ def run_convert():
     from tools import review
 
     if not os.path.isdir(STORE) or not os.listdir(STORE):
-        message("還沒有樣板", "請先執行「設定樣板」，替每一種表格框出欄位。")
+        message("還沒有樣板", "請先按「新增表格」建立表格，再按「設定樣板」框出欄位。")
         return
 
     folder = ask_folder("選擇要轉換的掃描檔資料夾")
@@ -141,7 +296,7 @@ def menu():
     choice = {"value": None}
     root = tkinter.Tk()
     root.title("紙本轉 Excel")
-    root.geometry("380x230")
+    root.geometry("380x280")
     root.resizable(False, False)
 
     tkinter.Label(root, text="紙本轉 Excel", font=("", 15, "bold")).pack(pady=(22, 4))
@@ -156,6 +311,8 @@ def menu():
                    command=lambda: pick("convert")).pack(pady=4)
     tkinter.Button(root, text="設定樣板", width=26,
                    command=lambda: pick("editor")).pack(pady=4)
+    tkinter.Button(root, text="新增表格", width=26,
+                   command=lambda: pick("newform")).pack(pady=4)
 
     root.mainloop()
     return choice["value"]
@@ -201,6 +358,8 @@ def main():
             run_convert()
         elif action == "editor":
             run_editor()
+        elif action == "newform":
+            run_new_form()
     except Exception as error:                                      # noqa: BLE001
         path = crash_report(error)
         print("程式發生錯誤，已寫下紀錄：%s" % path)
