@@ -131,13 +131,21 @@ def load(store, code):
 def save(store, code, fields):
     """存檔。會先檢查有沒有明顯的設定錯誤。"""
     problems = []
-    seen = set()
+    seen, columns = set(), {}
     for field in fields:
         for issue in field.problems():
             problems.append("%s：%s" % (field.name or field.id, issue))
         if field.id in seen:
             problems.append("欄位代號 %s 重複" % field.id)
         seen.add(field.id)
+        # 兩個框指到同一個輸出欄，寫檔的時候後面那個會蓋掉前面那個，
+        # 而且輸出表上看不出來少了東西 —— 擋在這裡最保險。
+        if field.column:
+            if field.column in columns:
+                problems.append("「%s」被指派了兩次（%s 與 %s）"
+                                % (COLUMNS.get(field.column, field.column),
+                                   columns[field.column], field.name or field.id))
+            columns[field.column] = field.name or field.id
     if problems:
         raise ValueError("；".join(problems))
 

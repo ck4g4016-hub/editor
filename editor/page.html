@@ -15,7 +15,7 @@
   #wrap{position:relative;display:inline-block}
   #sheet{display:block;box-shadow:0 2px 12px rgba(0,0,0,.18);background:#fff}
   #overlay{position:absolute;inset:0;cursor:crosshair}
-  aside{width:400px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
+  aside{width:410px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
         display:flex;flex-direction:column}
   header{padding:14px 16px;border-bottom:1px solid var(--line)}
   header h1{margin:0 0 4px;font-size:15px}
@@ -29,20 +29,25 @@
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   button.primary:hover{background:#a04a4a}
-  button.link{border:none;background:none;color:var(--accent);padding:2px 4px;text-decoration:underline}
-  .field{border:1px solid var(--line);border-radius:6px;padding:10px;margin-bottom:10px;background:#fdfcfa}
-  .field.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,61,61,.14)}
-  .field .row{display:grid;grid-template-columns:70px 1fr;gap:6px;align-items:center;margin-bottom:6px}
-  .field .row:last-child{margin-bottom:0}
+  .field{border:1px solid var(--line);border-radius:6px;padding:10px 10px 8px;margin-bottom:10px;
+         background:#fdfcfa;cursor:pointer}
+  .field.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,61,61,.14);background:#fff}
+  .field .top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .field .num{font-weight:600;font-size:12.5px;color:var(--soft);flex:1}
+  .field .del{padding:3px 10px;font-size:12px;border-color:#e0d6d6;color:var(--accent)}
+  .field .del:hover{background:#8a3d3d;border-color:#8a3d3d;color:#fff}
+  .field .row{display:grid;grid-template-columns:64px 1fr;gap:6px;align-items:center;margin-bottom:6px}
   .field label{color:var(--soft);font-size:12px}
+  .field select.unset{border-color:var(--accent);background:#fdf3f3;color:var(--accent);font-weight:600}
+  .field.dup{border-color:var(--warn);box-shadow:0 0 0 2px rgba(176,106,31,.16)}
+  .field .warn{font-size:12px;color:var(--warn);margin:2px 0 6px}
   .boxrow{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
   .hint{color:var(--soft);font-size:12px;margin:0 0 10px}
   .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:6px;padding:9px 11px;
         font-size:12.5px;margin-bottom:12px}
   .note b{color:var(--warn)}
   .miss{color:var(--accent);font-weight:600}
-  .tag{display:inline-block;font-size:11px;padding:1px 6px;border-radius:9px;background:#eee7db;
-       color:var(--soft);margin-left:5px}
+  .empty{color:var(--soft);font-size:13px;text-align:center;padding:26px 10px;line-height:1.9}
   #msg{flex:1;font-size:12px;color:var(--soft)}
   #msg.ok{color:var(--ok)}
   #msg.err{color:var(--accent)}
@@ -56,10 +61,8 @@
     <p id="subtitle"></p>
   </header>
   <div class="scroll">
-    <div class="row" style="margin-bottom:12px">
-      <select id="code"></select>
-    </div>
-    <p class="hint">在左邊圖上<b>拖曳</b>畫出欄位範圍；點<b>虛線候選框</b>可直接採用紅筆標記的位置。</p>
+    <div style="margin-bottom:12px"><select id="code"></select></div>
+    <p class="hint">在左邊圖上<b>拖曳</b>畫出欄位範圍，右邊選它是哪一欄。</p>
     <div id="missing"></div>
     <div id="list"></div>
   </div>
@@ -71,13 +74,25 @@
 </aside>
 <script>
 const el = id => document.getElementById(id);
-let state = {code:null, scale:1, fields:[], candidates:[], sel:-1, columns:{}, kinds:{}};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let state = {code:null, scale:1, fields:[], sel:-1, columns:{}, kinds:{}};
+
+/* 選了輸出欄就自動配對應的型別。型別決定用哪一種驗證，
+   選錯不會報錯只會靜靜失效 —— 身分證不驗檢查碼、地址不套門牌正規化。
+   所以不讓使用者自己記，選欄位就幫他帶好，要改還是可以改。 */
+const KIND_OF = {district:'district', address:'address', doc_number:'doc_number',
+                 id_number:'id_number', name:'chinese', section:'chinese',
+                 land_number:'land_number'};
+const CRITICAL = ['address', 'id_number', 'doc_number'];
 
 function say(text, cls){ el('msg').textContent = text; el('msg').className = cls || ''; }
 
 async function loadCodes(){
   const codes = await (await fetch('api/codes')).json();
-  el('code').innerHTML = codes.map(c => `<option value="${c.code}">${c.code} — ${c.name}</option>`).join('');
+  el('code').innerHTML = codes.map(c =>
+      `<option value="${esc(c.code)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
   if (codes.length) selectCode(codes[0].code);
 }
 
@@ -88,10 +103,9 @@ async function selectCode(code){
   state.columns = data.columns;
   state.kinds = data.kinds;
   state.fields = data.fields;
-  state.candidates = data.candidates;
   state.sel = -1;
   el('title').textContent = data.name;
-  el('subtitle').textContent = `${data.width}×${data.height} px @300dpi　候選框 ${data.candidates.length} 個`
+  el('subtitle').textContent = `${data.width}×${data.height} px @300dpi`
       + (data.has_base ? '' : '　（沒有底圖）');
   const img = el('sheet');
   img.onload = () => { sizeOverlay(); draw(); };
@@ -111,45 +125,86 @@ const toView = v => v * state.scale;
 function draw(){
   const cv = el('overlay'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
-
-  g.setLineDash([5,4]); g.strokeStyle = '#4f7a4a'; g.lineWidth = 1.5;
-  state.candidates.forEach(c => g.strokeRect(toView(c.x), toView(c.y), toView(c.w), toView(c.h)));
-
   g.setLineDash([]);
   state.fields.forEach((f, i) => {
     const [x,y,w,h] = f.box;
-    g.lineWidth = i === state.sel ? 3 : 2;
-    g.strokeStyle = i === state.sel ? '#8a3d3d' : '#3b6ea5';
+    const on = i === state.sel;
+    g.lineWidth = on ? 3 : 2;
+    g.strokeStyle = on ? '#8a3d3d' : (f.column ? '#3b6ea5' : '#b06a1f');
     g.strokeRect(toView(x), toView(y), toView(w), toView(h));
-    const label = f.name || f.id;
+    const label = (i + 1) + (f.column ? '. ' + state.columns[f.column] : '. 未指定');
     g.font = '12px sans-serif';
     const tw = g.measureText(label).width + 8;
-    g.fillStyle = i === state.sel ? '#8a3d3d' : '#3b6ea5';
+    g.fillStyle = g.strokeStyle;
     g.fillRect(toView(x), toView(y) - 16, tw, 16);
     g.fillStyle = '#fff';
     g.fillText(label, toView(x) + 4, toView(y) - 4);
   });
 }
 
-function render(){
+/* 哪些輸出欄被指派了不只一次 */
+function duplicates(){
+  const seen = {}, bad = new Set();
+  state.fields.forEach(f => {
+    if (!f.column) return;
+    if (seen[f.column]) bad.add(f.column);
+    seen[f.column] = true;
+  });
+  return bad;
+}
+
+function refreshNotes(){
   const missing = Object.keys(state.columns).filter(
       k => !state.fields.some(f => f.column === k));
-  const critical = missing.filter(k => ['id_number','address','doc_number'].includes(k));
-  el('missing').innerHTML = missing.length
-      ? `<div class="note">尚未指派的輸出欄位：${missing.map(k =>
-            critical.includes(k) ? `<span class="miss">${state.columns[k]}</span>` : state.columns[k]
-         ).join('、')}${critical.length ? '<br><b>紅字的三欄是必要欄位</b>，缺了辨識結果沒辦法用。' : ''}</div>`
-      : '';
+  const critical = missing.filter(k => CRITICAL.includes(k));
+  const dup = duplicates();
+  let html = '';
+  if (missing.length){
+    html += `<div class="note">尚未指派的輸出欄位：${missing.map(k =>
+        critical.includes(k) ? `<span class="miss">${esc(state.columns[k])}</span>`
+                             : esc(state.columns[k])).join('、')}`
+         + (critical.length ? '<br><b>紅字的三欄是必要欄位</b>，缺了辨識結果沒辦法用。' : '')
+         + '</div>';
+  }
+  if (dup.size){
+    html += `<div class="note"><b>有重複指派</b>：${[...dup].map(k =>
+        esc(state.columns[k])).join('、')}<br>`
+         + '同一個輸出欄只能有一個欄位，儲存會被擋下來。</div>';
+  }
+  el('missing').innerHTML = html;
+
+  const dupSet = duplicates();
+  el('list').querySelectorAll('.field').forEach(node => {
+    const f = state.fields[+node.dataset.i];
+    node.classList.toggle('dup', !!f.column && dupSet.has(f.column));
+  });
+}
+
+/* 只有「欄位數量或版面改變」才重建清單。
+   選取、改值都不重建 —— 原本每次 mousedown 都重建整份 innerHTML，
+   按下去的那個 <select>／按鈕當場被換掉，所以下拉打不開、刪除也按不動。 */
+function render(){
+  if (!state.fields.length){
+    el('list').innerHTML = '<div class="empty">還沒有欄位。<br>'
+        + '在左邊圖上拖曳畫一個框，<br>或按左下角的「空白欄位」。</div>';
+    refreshNotes();
+    return;
+  }
 
   el('list').innerHTML = state.fields.map((f, i) => `
     <div class="field ${i===state.sel?'sel':''}" data-i="${i}">
-      <div class="row"><label>名稱</label><input type="text" data-k="name" value="${esc(f.name)}"></div>
-      <div class="row"><label>輸出欄</label><select data-k="column">${
+      <div class="top">
+        <span class="num">欄位 ${i + 1}</span>
+        <button class="del" data-act="del">刪除</button>
+      </div>
+      <div class="row"><label>輸出欄</label><select data-k="column" class="${f.column?'':'unset'}">
+        <option value="" ${f.column?'':'selected'}>— 請選擇 —</option>${
         Object.entries(state.columns).map(([k,v]) =>
-          `<option value="${k}" ${f.column===k?'selected':''}>${v}</option>`).join('')}</select></div>
+          `<option value="${k}" ${f.column===k?'selected':''}>${esc(v)}</option>`).join('')}</select></div>
+      <div class="row"><label>名稱</label><input type="text" data-k="name" value="${esc(f.name)}"></div>
       <div class="row"><label>型別</label><select data-k="kind">${
         Object.entries(state.kinds).map(([k,v]) =>
-          `<option value="${k}" ${f.kind===k?'selected':''}>${v}</option>`).join('')}</select></div>
+          `<option value="${k}" ${f.kind===k?'selected':''}>${esc(v)}</option>`).join('')}</select></div>
       <div class="row"><label>定位</label><select data-k="mode">
         <option value="fixed" ${f.mode==='fixed'?'selected':''}>固定框</option>
         <option value="anchor" ${f.mode==='anchor'?'selected':''}>錨點相對</option></select></div>
@@ -158,42 +213,73 @@ function render(){
       <div class="row"><label>往下第幾個</label><input type="number" data-k="anchor_index" min="1" value="${f.anchor_index||1}"></div>` : ''}
       <div class="row"><label>範圍</label><div class="boxrow">${
         [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')}</div></div>
-      <div class="row"><label></label><div>
-        <button class="link" data-act="del">刪除</button>
-        <span class="tag">${f.page === 'front' ? '正面' : '背面'}</span>
-      </div></div>
     </div>`).join('');
 
   el('list').querySelectorAll('.field').forEach(node => {
     const i = +node.dataset.i;
-    node.addEventListener('mousedown', () => { state.sel = i; render(); draw(); });
+
+    // 點卡片空白處＝選取。點到表單元件就不管它，讓瀏覽器自己處理，
+    // 不然下拉還沒展開就被我們攔走了。
+    node.addEventListener('click', event => {
+      if (event.target.closest('select, input, button')) return;
+      select(i);
+    });
+
     node.querySelectorAll('[data-k]').forEach(input => {
+      input.addEventListener('focus', () => select(i));
       input.addEventListener('change', () => {
         const key = input.dataset.k;
-        state.fields[i][key] = input.type === 'number' ? +input.value : input.value;
-        render(); draw();
+        const field = state.fields[i];
+        field[key] = input.type === 'number' ? +input.value : input.value;
+
+        if (key === 'column' && input.value){
+          // 型別跟著輸出欄走，名稱還是預設值的話也一起帶
+          field.kind = KIND_OF[input.value] || 'text';
+          if (!field.name || /^欄位\s*\d+$/.test(field.name)) field.name = state.columns[input.value];
+          render();                       // 型別與名稱都變了，這張卡要重畫
+          draw();
+          return;
+        }
+        if (key === 'mode'){ render(); draw(); return; }   // 錨點模式會多兩列
+        refreshNotes();
+        draw();
       });
     });
+
     node.querySelectorAll('[data-box]').forEach(input => {
+      input.addEventListener('focus', () => select(i));
       input.addEventListener('change', () => {
         state.fields[i].box[+input.dataset.box] = +input.value;
         draw();
       });
     });
-    const del = node.querySelector('[data-act=del]');
-    if (del) del.addEventListener('click', () => {
-      state.fields.splice(i, 1); state.sel = -1; render(); draw();
+
+    node.querySelector('[data-act=del]').addEventListener('click', event => {
+      event.stopPropagation();
+      state.fields.splice(i, 1);
+      if (state.sel === i) state.sel = -1; else if (state.sel > i) state.sel--;
+      render(); draw();
     });
   });
+
+  refreshNotes();
 }
 
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
-    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* 換選取只動 class 與畫布，不重建 DOM */
+function select(i){
+  if (state.sel === i) return;
+  state.sel = i;
+  el('list').querySelectorAll('.field').forEach(node =>
+      node.classList.toggle('sel', +node.dataset.i === i));
+  draw();
+}
 
 function newField(box){
   const used = new Set(state.fields.map(f => f.id));
   let n = 1; while (used.has('f' + n)) n++;
-  return {id:'f'+n, name:'欄位' + n, column:'address', kind:'text',
+  // 輸出欄故意留空 —— 預設成某一欄的話，使用者忘了改就會靜靜地
+  // 把三個框都指到同一欄，而且畫面上看不出來。
+  return {id:'f'+n, name:'欄位' + n, column:'', kind:'text',
           box:box, page:'front', mode:'fixed', anchor_text:'', anchor_index:1, required:false};
 }
 
@@ -201,18 +287,7 @@ function newField(box){
 let drag = null;
 el('overlay').addEventListener('mousedown', e => {
   const r = el('overlay').getBoundingClientRect();
-  const px = e.clientX - r.left, py = e.clientY - r.top;
-
-  const hit = state.candidates.findIndex(c =>
-      px >= toView(c.x) && px <= toView(c.x + c.w) && py >= toView(c.y) && py <= toView(c.y + c.h));
-  if (hit >= 0){
-    const c = state.candidates[hit];
-    state.fields.push(newField([c.x, c.y, c.w, c.h]));
-    state.sel = state.fields.length - 1;
-    render(); draw();
-    return;
-  }
-  drag = {x:px, y:py};
+  drag = {x:e.clientX - r.left, y:e.clientY - r.top};
 });
 el('overlay').addEventListener('mousemove', e => {
   if (!drag) return;
@@ -242,6 +317,9 @@ el('add').addEventListener('click', () => {
 });
 el('code').addEventListener('change', e => selectCode(e.target.value));
 el('save').addEventListener('click', async () => {
+  const blank = state.fields.filter(f => !f.column).length;
+  if (blank){ say(`還有 ${blank} 個欄位沒選輸出欄`, 'err'); return; }
+  if (duplicates().size){ say('有輸出欄被指派了兩次', 'err'); return; }
   say('儲存中…');
   const res = await fetch('api/template?code=' + encodeURIComponent(state.code),
       {method:'POST', headers:{'Content-Type':'application/json'},

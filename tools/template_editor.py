@@ -5,8 +5,11 @@
 選這個做法而不是桌面視窗，是因為環境探測確認過本機伺服器可用，
 而且畫面調整起來比 GUI 工具箱快得多。
 
-啟動時會做一次前置作業：把樣本掃描件分類，每一種表格挑一張正面出來，
-偵測上面的紅筆標記當作欄位候選框。所以開起來要等幾秒。
+啟動時會做一次前置作業：把樣本掃描件分類，每一種表格挑一張正面出來。
+所以開起來要等幾秒。
+
+原本還會偵測樣本上的紅筆標記當作欄位候選框，實際用起來沒有幫助
+（框的位置跟圈的位置本來就不一樣，還是得自己拖），已經拿掉。
 
 用法：
 
@@ -29,7 +32,7 @@ import cv2
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import fields as fieldmod, resources  # noqa: E402
-from pipeline import layout, redmarks, render  # noqa: E402
+from pipeline import layout, render  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = resources.path("editor", "page.html")
@@ -50,50 +53,23 @@ class Workspace:
         self.sheets = {}
         self._prepare(sample_paths)
 
-    # 同一種表格通常有好幾份樣本。挑哪一份來顯示有差 ——
-    # 空白原稿上沒有紅筆標記，挑到它就沒有候選框可以點，得自己拖。
-    # 所以多看幾份，挑紅筆標記最多的那一份。全部都沒標記也無所謂，
-    # 欄位框的位置在哪一份上都一樣。
-    MAX_TRIES = 5          # 每種表格最多試幾份，再多就只是變慢
-    ENOUGH_MARKS = 3       # 找到這麼多標記就夠了，不用再找
-
     def _prepare(self, sample_paths):
         if not sample_paths:
             return
         print("正在分類樣本…")
         pages = layout.classify_pages(sample_paths, self.templates)
-
-        fronts = {}
         for page in pages:
-            if page.role == layout.FRONT:
-                fronts.setdefault(page.code, []).append(page)
-
-        for code, candidates in fronts.items():
-            best = None
-            for page in candidates[:self.MAX_TRIES]:
-                scan = render.rotate(
-                    render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
-                    page.rotation)
-                base_path = os.path.join(self.store, code, "base.png")
-                base = resources.imread(base_path, cv2.IMREAD_COLOR) \
-                    if os.path.isfile(base_path) else None
-                try:
-                    marks = redmarks.find(scan, base)
-                except ValueError as exc:
-                    print("    %s 紅筆偵測失敗：%s" % (code, exc))
-                    marks = []
-                if best is None or len(marks) > len(best[2]):
-                    best = (page, scan, marks, base is not None)
-                if len(marks) >= self.ENOUGH_MARKS:
-                    break
-
-            page, scan, marks, has_base = best
-            print("  %s ← %s 第 %d 頁，紅筆候選框 %d 個"
-                  % (code, os.path.basename(page.source), page.index + 1, len(marks)))
-            self.sheets[code] = {
+            if page.role != layout.FRONT or page.code in self.sheets:
+                continue
+            print("  %s ← %s 第 %d 頁"
+                  % (page.code, os.path.basename(page.source), page.index + 1))
+            scan = render.rotate(
+                render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
+                page.rotation)
+            base_path = os.path.join(self.store, page.code, "base.png")
+            self.sheets[page.code] = {
                 "image": scan,
-                "has_base": has_base,
-                "candidates": [{"x": x, "y": y, "w": w, "h": h} for _, x, y, w, h in marks],
+                "has_base": os.path.isfile(base_path),
             }
 
     def codes(self):
@@ -123,7 +99,6 @@ class Workspace:
             "columns": fieldmod.COLUMNS,
             "kinds": fieldmod.KINDS,
             "fields": [f.to_dict() for f in stored],
-            "candidates": sheet["candidates"] if sheet else [],
             "has_base": bool(sheet and sheet["has_base"]),
             "width": sheet["image"].shape[1] if sheet else 0,
             "height": sheet["image"].shape[0] if sheet else 0,
