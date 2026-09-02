@@ -84,12 +84,12 @@ def write_outer(records, path):
 
     for record in records:
         sheet.append([
-            record.get("district", ""),
-            record.get("address", ""),
-            record.get("doc_number", ""),
-            record.get("id_number", ""),
+            _text(record, "district"),
+            _text(record, "address"),
+            _text(record, "doc_number"),
+            _text(record, "id_number"),
             "", "", "", "",          # 段名、地號、建號、備註 —— 留給 RPA
-            record.get("name", ""),
+            _text(record, "name"),
         ])
 
     for column, width in zip("ABCDEFGHI", (10, 34, 16, 14, 14, 12, 12, 24, 12)):
@@ -100,13 +100,20 @@ def write_outer(records, path):
     return path
 
 
+def _text(record, key):
+    """取值。缺鍵或值是 None 都當空字串 —— 輸出這一步炸掉，
+    等於整批複核完的成果全沒了，不值得為了型別漂亮冒這個險。"""
+    value = record.get(key)
+    return "" if value is None else str(value)
+
+
 def inner_address(record):
     """內網要的「完整地址」：縣市 + 行政區 + 門牌。
 
     我們平常把行政區跟門牌分開存，外網那份也要分開；
     但腳本 0 產的中繼檔是把三段黏成一串的，腳本 2 沿用那個寫法。
     """
-    return INNER_CITY + record.get("district", "") + record.get("address", "")
+    return INNER_CITY + _text(record, "district") + _text(record, "address")
 
 
 def write_inner(records, path):
@@ -124,10 +131,10 @@ def write_inner(records, path):
     for serial, record in enumerate(records, start=1):
         sheet.append([
             serial,
-            record.get("district", ""),
-            record.get("id_number", ""),
+            _text(record, "district"),
+            _text(record, "id_number"),
             inner_address(record),
-            record.get("name", ""),
+            _text(record, "name"),
         ])
 
     for column, width in zip("ABCDE", (8, 10, 14, 40, 12)):

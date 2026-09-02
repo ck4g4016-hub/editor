@@ -141,7 +141,7 @@ def resolve_head(head, names, threshold=0.6):
 
     回傳 (路街名, 相似度)。
     """
-    if not head:
+    if not head or not names:
         return None, 0.0
     # 只留中文字去比對，把圈和雜訊丟掉
     core = "".join(ch for ch in head if "\u4e00" <= ch <= "\u9fff")

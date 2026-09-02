@@ -291,8 +291,14 @@ class Converter:
             # 身分證有檢查碼，可以直接驗證哪一種讀法是對的 —— 別的欄位沒這個優勢。
             # 一字一格的欄位整行讀常會漏字（實測讀到 9 碼、5 碼都有），
             # 所以再逐格讀一次，兩種都套位置規則，誰通過檢查碼就用誰。
-            spaced, spaced_confidence = recognise.read_cells(
-                recognise.crop_field(sheet, definition.box))
+            spaced_pieces, spaced_scores = [], []
+            for box, _suffix in definition.segments():
+                text, score = recognise.read_cells(recognise.crop_field(sheet, box))
+                if text:
+                    spaced_pieces.append(text)
+                    spaced_scores.append(score)
+            spaced = "".join(spaced_pieces)
+            spaced_confidence = min(spaced_scores) if spaced_scores else 0.0
             value, problem = validate.best_id(raw, spaced)
             if spaced and value == validate.fix_id_positions(spaced):
                 raw, confidence = spaced, spaced_confidence
@@ -315,6 +321,11 @@ class Converter:
 def _stack(crops):
     """把同一欄的幾個格子疊成一張圖，複核時才看得到完整的來源。"""
     import numpy as np
+
+    # 灰階跟彩色混在一起 vstack 會炸。現在的流程不會混，但複核畫面
+    # 少一張對照圖是小事，整批複核在這裡中斷是大事。
+    if len({c.ndim for c in crops}) > 1:
+        crops = [c if c.ndim == 3 else cv2.cvtColor(c, cv2.COLOR_GRAY2BGR) for c in crops]
 
     width = max(c.shape[1] for c in crops)
     padded = []

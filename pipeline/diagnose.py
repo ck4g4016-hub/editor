@@ -191,10 +191,23 @@ def build(journal, notes=None, version=None):
     per_record = notes.get("records") or {}
     if per_record:
         out.append("")
-        for key in sorted(per_record, key=lambda k: int(k)):
-            text = (per_record[key] or "").strip()
-            if text:
-                out.append("第 %s 件：%s" % (int(key) + 1, text))
+
+        def order(key):
+            # 鍵正常是件的序號，但這是外面傳進來的，不保證。
+            # 診斷報告是出問題時唯一的線索，不能因為一個怪鍵就整份產不出來。
+            try:
+                return (0, int(key))
+            except (TypeError, ValueError):
+                return (1, 0)
+
+        for key in sorted(per_record, key=order):
+            text = (per_record.get(key) or "").strip()
+            if not text:
+                continue
+            try:
+                out.append("第 %d 件：%s" % (int(key) + 1, text))
+            except (TypeError, ValueError):
+                out.append("%s：%s" % (mask(str(key)), text))
 
     section("環境")
     out.append("程式版本    %s" % (version or "不明"))
