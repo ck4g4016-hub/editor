@@ -154,9 +154,15 @@ def resolve_head(head, names, threshold=0.6):
         candidate = core[start:]
         if len(candidate) < 2:
             break
+        # 候選也要去掉尾巴的路／街／道再比一次。
+        # 「路」還是「街」是印刷的，民眾只是圈起來，讀出來的那個字不可信 ——
+        # 拿「中華街」整串去比，會比到「中園街」（都以街結尾，尾字加分），
+        # 而那是另一條路。去掉尾字之後比的是「中華」，才對得到中華路。
+        trimmed = re.sub(r"[路街道]$", "", candidate)
         for name in names:
             stem = re.sub(r"[路街道]$", "", name)
-            value = max(_similarity(candidate, name), _similarity(candidate, stem))
+            value = max(_similarity(candidate, name), _similarity(candidate, stem),
+                        _similarity(trimmed, stem))
             if value > score:
                 best, score = name, value
     return (best, score) if score >= threshold else (None, score)

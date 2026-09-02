@@ -74,6 +74,19 @@ def check():
         ("行政區比對",     lambda: validate.district("三山峡", ["三峽區", "鶯歌區"])[0],
          "三峽區"),
     ]
+
+    # 路街名由字典決定，讀到的那個字不算數 —— 「中華街」不可以變成「中園街」，
+    # 那是另一條路，而且驗證會放行，從輸出表上看不出來
+    from pipeline import lexicon
+    roads = lexicon.for_district(lexicon.load(resources.base_dir()), "三峽區")
+    if roads:
+        for got, want in (("中華街", "中華路"), ("中華", "中華路"),
+                          ("民生路", "民生街"), ("民生", "民生街")):
+            name, _score = lexicon.resolve_head(got, roads)
+            if name != want:
+                problems.append("路名比對 %s 得到 %r，應該是 %r" % (got, name, want))
+    else:
+        problems.append("路名字典是空的")
     for label, run, want in cases:
         try:
             got = run()
