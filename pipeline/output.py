@@ -60,7 +60,7 @@ def outer_path(folder, when=None):
 
 
 def inner_path(folder, serial=1, when=None):
-    """內網檔名只能用英數 —— 系統的限制。
+    r"""內網檔名只能用英數 —— 系統的限制。
 
     腳本 2 的 `GetTargetExcel` 會用 `^(\d+)` 抓檔名開頭的數字當案號，
     要 9 位以上才算數。我們的檔名開頭是 HH，抓不到，案號會是空字串 ——

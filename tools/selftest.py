@@ -13,6 +13,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# GitHub 的 Windows runner 主控台是 cp1252，印中文會丟 UnicodeEncodeError ——
+# 檢查明明通過了，卻死在印出「自我檢查通過」那一行，整個建置失敗。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
 
 def check():
     problems = []

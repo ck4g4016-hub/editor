@@ -49,6 +49,9 @@ jobs:
           # 壞掉的版本照樣發布出去了。
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
+          # runner 的主控台是 cp1252，不指定的話印中文就炸
+          $env:PYTHONIOENCODING = 'utf-8'
+          $env:PYTHONWARNINGS = 'error::SyntaxWarning'
           python tools/selftest.py
 
       - name: 打包
