@@ -57,10 +57,23 @@ class Field:
 
     box 一律是 300dpi、已轉正、已對齊到底圖座標系之後的 (x, y, w, h)。
     anchor 模式下 box 的 y 是相對於錨點列的位移，不是絕對座標。
+
+    **一個欄位可以有好幾個框。** 紙本表格的門牌是一整排印好的格子：
+
+        [三峽] 鄉鎮市區 [民生] 路街 [ ] 段 [38] 巷 [22] 弄 [14] 號 [ ] 樓
+
+    整排拉一個大框，讀出來會是「民生382214」—— 數字全黏在一起，
+    分不出哪個是巷哪個是號，而那正是這個欄位唯一有用的資訊。
+    所以每一格各自框，各自標它後面印的字（段、巷、弄、號、樓），
+    讀完再照順序接起來：民生路38巷22弄14號。
+
+    parts 是額外的格子，每個是 {"box": [x,y,w,h], "suffix": "巷"}。
+    主框自己的後綴放在 suffix。空的格子會整段跳過 —— 沒有段就不會冒出一個「段」。
     """
 
     def __init__(self, id, name, column, kind, box, page="front",
-                 mode=FIXED, anchor_text=None, anchor_index=1, required=False):
+                 mode=FIXED, anchor_text=None, anchor_index=1, required=False,
+                 suffix="", parts=None):
         self.id = id
         self.name = name
         self.column = column
@@ -71,6 +84,13 @@ class Field:
         self.anchor_text = anchor_text
         self.anchor_index = anchor_index
         self.required = required
+        self.suffix = suffix or ""
+        self.parts = [{"box": list(p["box"]), "suffix": p.get("suffix", "")}
+                      for p in (parts or [])]
+
+    def segments(self):
+        """所有的框，照讀取順序。回傳 [(box, suffix), ...]。"""
+        return [(self.box, self.suffix)] + [(p["box"], p["suffix"]) for p in self.parts]
 
     def to_dict(self):
         data = {
@@ -83,6 +103,10 @@ class Field:
             "mode": self.mode,
             "required": self.required,
         }
+        if self.suffix:
+            data["suffix"] = self.suffix
+        if self.parts:
+            data["parts"] = self.parts
         if self.mode == ANCHOR:
             data["anchor_text"] = self.anchor_text
             data["anchor_index"] = self.anchor_index
@@ -95,7 +119,8 @@ class Field:
             kind=data["kind"], box=data["box"], page=data.get("page", "front"),
             mode=data.get("mode", FIXED), anchor_text=data.get("anchor_text"),
             anchor_index=data.get("anchor_index", 1),
-            required=data.get("required", False))
+            required=data.get("required", False),
+            suffix=data.get("suffix", ""), parts=data.get("parts"))
 
     def problems(self):
         """回傳這個欄位設定上的問題，沒有問題就回傳空清單。"""
@@ -106,9 +131,10 @@ class Field:
             issues.append("輸出欄位 %r 不認得" % self.column)
         if self.kind not in KINDS:
             issues.append("型別 %r 不認得" % self.kind)
-        x, y, w, h = self.box
-        if w <= 0 or h <= 0:
-            issues.append("框的大小不對")
+        for index, (box, _suffix) in enumerate(self.segments()):
+            x, y, w, h = box
+            if w <= 0 or h <= 0:
+                issues.append("第 %d 個框的大小不對" % (index + 1))
         if self.mode == ANCHOR and not (self.anchor_text or "").strip():
             issues.append("錨點模式但沒有指定錨點文字")
         return issues

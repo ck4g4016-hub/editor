@@ -159,29 +159,47 @@ function render(){
 
 el('report').addEventListener('click', async () => {
   el('msg').textContent = '整理中…'; el('msg').className = '';
-  const res = await fetch('api/diagnose', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({notes: {overall: el('overall-note').value, records: notes}})});
-  const out = await res.json();
-  if (!out.ok){ el('msg').textContent = out.error; el('msg').className = 'err'; return; }
-  el('msg').textContent = '診斷報告已產出'; el('msg').className = 'ok';
-  el('preview-path').textContent = out.path;
-  el('preview-text').textContent = out.text;
-  el('preview').showModal();
+  try {
+    const res = await fetch('api/diagnose', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({notes: {overall: el('overall-note').value, records: notes}})});
+    const out = await res.json();
+    if (!out.ok){ showFailure(out); return; }
+    el('msg').textContent = '診斷報告已產出'; el('msg').className = 'ok';
+    el('preview-path').textContent = out.path;
+    el('preview-text').textContent = out.text;
+    el('preview').showModal();
+  } catch (error) {
+    // 不接住的話畫面會永遠停在「整理中…」，什麼都看不到
+    showFailure({error: '連不上程式：' + error.message});
+  }
 });
+
+/* 把失敗的內容直接攤在畫面上，不要只留一句話 */
+function showFailure(out){
+  el('msg').textContent = out.error || '失敗'; el('msg').className = 'err';
+  el('preview-path').textContent = out.path || '';
+  el('preview-text').textContent =
+      (out.error || '') + '\n\n' + (out.detail || '沒有更多資訊。');
+  el('preview').showModal();
+}
 el('preview-close').addEventListener('click', () => el('preview').close());
 
 el('export').addEventListener('click', async () => {
   el('msg').textContent = '產生中…'; el('msg').className = '';
-  const res = await fetch('api/export', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({records: data.records.map(r => r.values)})});
-  const out = await res.json();
-  if (out.ok){
-    el('msg').textContent = '已產出：' + out.files.join('、');
-    el('msg').className = 'ok';
-  } else {
-    el('msg').textContent = out.error; el('msg').className = 'err';
+  try {
+    const res = await fetch('api/export', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({records: data.records.map(r => r.values)})});
+    const out = await res.json();
+    if (out.ok){
+      el('msg').textContent = '已產出：' + out.files.join('、');
+      el('msg').className = 'ok';
+    } else {
+      showFailure(out);
+    }
+  } catch (error) {
+    showFailure({error: '連不上程式：' + error.message});
   }
 });
 load();

@@ -67,9 +67,28 @@ def id_number(text):
     return value, None
 
 
+# 收文戳上除了條碼號還印著收文日期（115/08/28）。框選時很難只框到條碼下面
+# 那一行，日期通常會一起被讀進來，兩串數字黏成 17 碼。先把日期挑掉。
+_DOC_DATE = re.compile(r"\d{2,3}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{1,2}")
+
+
 def doc_number(text):
-    """公文文號（機關收文條碼號）：10 碼數字，開頭是民國年。"""
-    value = re.sub(r"\D", "", to_halfwidth(text or ""))
+    """公文文號（機關收文條碼號）：10 碼數字，開頭是民國年。
+
+    只要條碼下面那一行數字。「機關收文」這種標籤是中文，去掉非數字就沒了；
+    收文日期是數字，會黏在文號後面變成 17 碼，所以要先照日期格式挑掉。
+    """
+    cleaned = _DOC_DATE.sub("", to_halfwidth(text or ""))
+    value = re.sub(r"\D", "", cleaned)
+
+    # 還是太長就從頭找第一段像民國年開頭的 10 碼
+    if len(value) > 10:
+        for start in range(len(value) - 9):
+            window = value[start:start + 10]
+            if 100 <= int(window[:3]) <= 199:
+                value = window
+                break
+
     if len(value) != 10:
         return value, "長度是 %d 碼，應該是 10 碼" % len(value)
     year = int(value[:3])

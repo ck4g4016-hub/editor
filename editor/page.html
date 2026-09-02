@@ -52,7 +52,12 @@
   .col .row{display:grid;grid-template-columns:64px 1fr;gap:6px;align-items:center;margin:8px 0 0}
   .col label{color:var(--soft);font-size:12px}
   .boxrow{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
-  .acts{display:flex;gap:6px;margin-top:10px}
+  .acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+  .part{display:grid;grid-template-columns:1fr 74px auto;gap:5px;align-items:center;
+        margin-top:6px;padding:6px 8px;background:#f6f3ec;border-radius:5px}
+  .part .co{font-size:12px;color:var(--soft);font-family:monospace}
+  .part button{padding:3px 8px;font-size:12px}
+  .tip{font-size:12px;color:var(--soft);margin:8px 0 0;line-height:1.7}
   .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:6px;padding:9px 11px;
         font-size:12.5px;margin-bottom:12px}
   .note b{color:var(--warn)}
@@ -94,7 +99,7 @@ const KIND_OF = {district:'district', address:'address', doc_number:'doc_number'
                  id_number:'id_number', name:'chinese', section:'chinese',
                  land_number:'land_number'};
 
-let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[],
+let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[], adding:false,
              fields:{},          // column -> 欄位定義
              open:null,          // 展開中的那一欄
              aiming:null};       // 正在框選哪一欄
@@ -159,12 +164,22 @@ function draw(){
   // 只畫屬於目前這一面的框，不然正反面的框會疊在一起看不懂
   Object.entries(state.fields).forEach(([column, f]) => {
     if ((f.page || 'front') !== role()) return;
-    const [x,y,w,h] = f.box;
     const on = column === state.open;
     g.lineWidth = on ? 3 : 2;
     g.strokeStyle = on ? '#8a3d3d' : '#3b6ea5';
+    (f.parts || []).forEach(p => {
+      g.setLineDash([4,3]);
+      g.strokeRect(toView(p.box[0]), toView(p.box[1]), toView(p.box[2]), toView(p.box[3]));
+      if (p.suffix){
+        g.font = '12px sans-serif'; g.fillStyle = g.strokeStyle;
+        g.fillText(p.suffix, toView(p.box[0]) + 2, toView(p.box[1]) - 3);
+      }
+    });
+    g.setLineDash([]);
+    const [x,y,w,h] = f.box;
     g.strokeRect(toView(x), toView(y), toView(w), toView(h));
-    const label = state.columns[column];
+    const label = state.columns[column] + ((f.parts||[]).length
+        ? ` (${(f.parts.length + 1)} 格)` : '');
     g.font = '12px sans-serif';
     const tw = g.measureText(label).width + 8;
     g.fillStyle = g.strokeStyle;
@@ -174,14 +189,18 @@ function draw(){
   });
 }
 
-function aim(column){
+function aim(column, adding){
   state.aiming = column;
+  state.adding = !!adding;
   el('overlay').classList.add('aiming');
   el('banner').classList.add('on');
-  el('banner').textContent = `在左邊圖上拖曳框出「${state.columns[column]}」　（Esc 取消）`;
+  el('banner').textContent = adding
+      ? `在左邊圖上框出「${state.columns[column]}」的下一格　（Esc 取消）`
+      : `在左邊圖上拖曳框出「${state.columns[column]}」　（Esc 取消）`;
 }
 function stopAiming(){
   state.aiming = null;
+  state.adding = false;
   el('overlay').classList.remove('aiming');
   el('banner').classList.remove('on');
 }
@@ -224,10 +243,23 @@ function render(){
         <div class="row"><label>範圍</label><div class="boxrow">${
           [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')
         }</div></div>
+        <div class="row"><label>後綴</label>
+          <input type="text" data-k="suffix" value="${esc(f.suffix||'')}"
+                 placeholder="這一格後面印的字，例如 路、段、巷、號"></div>
+        ${(f.parts||[]).map((p, j) => `
+        <div class="part">
+          <span class="co">${p.box.join(', ')}</span>
+          <input type="text" data-part="${j}" value="${esc(p.suffix||'')}" placeholder="後綴">
+          <button data-drop="${j}">移除</button>
+        </div>`).join('')}
         <div class="acts">
-          <button class="small" data-act="aim">重新框選</button>
+          <button class="small" data-act="aim">重新框選第一格</button>
+          <button class="small" data-act="more">再加一格</button>
           <button class="small" data-act="clear">清除這一欄</button>
-        </div>` : `
+        </div>
+        <p class="tip">格子分開的欄位（門牌的 段／巷／弄／號／樓）要一格一框，
+          每格填它後面印的字。讀完會照順序接起來：民生<b>路</b>38<b>巷</b>14<b>號</b>。<br>
+          整排拉一個大框的話會變成「民生3814」，分不出哪個是巷哪個是號。</p>` : `
         <div class="acts"><button class="small primary" data-act="aim">在圖上框選</button></div>
         <p style="font-size:12px;color:var(--soft);margin:8px 0 0">
           按下之後到左邊圖上拖曳，框住這一欄要抓的位置。<br>
@@ -264,9 +296,31 @@ function render(){
     if (aimBtn) aimBtn.addEventListener('click', event => {
       event.stopPropagation();
       state.open = column;
-      aim(column);
+      state.adding = false;
       render(); draw();
-      aim(column);                          // render() 會重建，旗標要再設一次
+      aim(column, false);                   // render() 會重建，旗標要在之後設
+    });
+
+    node.querySelectorAll('[data-part]').forEach(input => {
+      input.addEventListener('change', () => {
+        state.fields[column].parts[+input.dataset.part].suffix = input.value;
+      });
+    });
+    node.querySelectorAll('[data-drop]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        state.fields[column].parts.splice(+button.dataset.drop, 1);
+        render(); draw();
+      });
+    });
+
+    const more = node.querySelector('[data-act=more]');
+    if (more) more.addEventListener('click', event => {
+      event.stopPropagation();
+      state.open = column;
+      state.adding = true;          // 框好之後要接在 parts 後面，不是取代主框
+      render(); draw();
+      aim(column, true);
     });
 
     const clear = node.querySelector('[data-act=clear]');
@@ -317,6 +371,14 @@ window.addEventListener('mouseup', () => {
     const box = [toReal(Math.min(drag.x,drag.x2)), toReal(Math.min(drag.y,drag.y2)),
                  toReal(w), toReal(h)];
     const old = state.fields[column];
+    if (state.adding && old){
+      old.parts = old.parts || [];
+      old.parts.push({box: box, suffix: ''});
+      stopAiming();
+      say(`「${state.columns[column]}」多了一格，記得填後綴`, 'ok');
+      render(); drag = null; draw();
+      return;
+    }
     state.fields[column] = {
       id: old ? old.id : 'f_' + column,
       name: old ? old.name : state.columns[column],
@@ -325,6 +387,8 @@ window.addEventListener('mouseup', () => {
       box: box,
       page: role(),
       mode: old ? old.mode : 'fixed',
+      suffix: old ? (old.suffix || '') : '',
+      parts: old ? (old.parts || []) : [],
       anchor_text: old ? old.anchor_text : '',
       anchor_index: old ? old.anchor_index : 1,
       required: state.critical.includes(column),

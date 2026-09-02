@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -73,13 +74,39 @@ def make_handler(state):
             if route not in ("/api/export", "/api/diagnose"):
                 self._send(404, b"not found", "text/plain")
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            # 這裡不接住例外的話，連線會直接斷掉，瀏覽器那邊只會永遠停在
+            # 「整理中…」，使用者看不到任何原因，我也拿不到線索。
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if route == "/api/diagnose":
+                    self._diagnose(payload)
+                else:
+                    self._export(payload)
+            except Exception as error:                              # noqa: BLE001
+                self._fail(error)
 
-            if route == "/api/diagnose":
-                self._diagnose(payload)
-                return
+        def _fail(self, error):
+            import traceback
 
+            detail = "".join(traceback.format_exception(
+                type(error), error, error.__traceback__))
+            print(detail)
+            path = None
+            try:
+                folder = os.path.join(state["out"], "診斷")
+                os.makedirs(folder, exist_ok=True)
+                path = os.path.join(folder, "error-%s.txt" % time.strftime("%Y%m%d-%H%M%S"))
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(detail)
+            except Exception:                                       # noqa: BLE001
+                pass
+            self._json({"ok": False,
+                        "error": "%s：%s" % (type(error).__name__, error),
+                        "detail": detail,
+                        "path": path}, 500)
+
+        def _export(self, payload):
             rows = payload.get("records", [])
             if not rows:
                 self._json({"ok": False, "error": "沒有資料可以輸出"}, 400)

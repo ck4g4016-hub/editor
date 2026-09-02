@@ -262,12 +262,30 @@ class Converter:
         return record
 
     def _read_field(self, record, sheet, definition, keep_crops):
-        crop = recognise.crop_field(sheet, definition.box)
-        if keep_crops and crop is not None and crop.size:
-            ok, buffer = cv2.imencode(".png", crop)
+        """讀一個欄位。有好幾個格子就逐格讀，照順序接起來。"""
+        pieces, crops, scores = [], [], []
+        for box, suffix in definition.segments():
+            crop = recognise.crop_field(sheet, box)
+            text, confidence = recognise.read(crop)
+            if crop is not None and crop.size:
+                crops.append(crop)
+            text = (text or "").strip()
+            if text:
+                pieces.append(text + suffix)
+                scores.append(confidence)
+            elif not suffix:
+                # 沒有後綴的空格子代表真的沒讀到，信心要算進去；
+                # 有後綴的空格子（例如沒有「段」）是正常的，整段跳過。
+                scores.append(confidence)
+
+        if keep_crops and crops:
+            stacked = crops[0] if len(crops) == 1 else _stack(crops)
+            ok, buffer = cv2.imencode(".png", stacked)
             if ok:
                 record.crops[definition.column] = buffer.tobytes()
-        raw, confidence = recognise.read(crop)
+
+        raw = "".join(pieces)
+        confidence = min(scores) if scores else 0.0
 
         extra = {}
         if definition.kind == "district":
@@ -284,21 +302,16 @@ class Converter:
             record.problems[definition.column] = problem
 
 
-def summarise(records, unresolved):
-    """給人看的統計。"""
-    ok = sum(1 for r in records if r.status == OK)
-    lines = [
-        "共 %d 件，%d 件通過、%d 件需要人工確認" % (len(records), ok, len(records) - ok),
-    ]
-    if unresolved:
-        lines.append("另有 %d 組頁面切不出完整的一件，需要人工分頁" % len(unresolved))
+def _stack(crops):
+    """把同一欄的幾個格子疊成一張圖，複核時才看得到完整的來源。"""
+    import numpy as np
 
-    counts = {}
-    for record in records:
-        for column, note in record.flagged().items():
-            counts[column] = counts.get(column, 0) + 1
-    if counts:
-        lines.append("各欄位被標記的次數：")
-        for column, count in sorted(counts.items(), key=lambda kv: -kv[1]):
-            lines.append("    %-14s %d 次" % (fieldmod.COLUMNS.get(column, column), count))
-    return "\n".join(lines)
+    width = max(c.shape[1] for c in crops)
+    padded = []
+    for crop in crops:
+        if crop.shape[1] < width:
+            pad = np.full((crop.shape[0], width - crop.shape[1]) + crop.shape[2:],
+                          255, crop.dtype)
+            crop = np.hstack([crop, pad])
+        padded.append(crop)
+    return np.vstack(padded)
