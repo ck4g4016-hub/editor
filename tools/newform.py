@@ -66,13 +66,16 @@ def create(store, code, name, pdf, front, back=None, rotate=0):
     return folder, notes
 
 
-def base_from_blank(store, code, pdf, page=1):
-    """空白原稿直接當底圖。彩色 —— 紅筆偵測要用到色彩。"""
+def base_from_blank(store, code, pdf, page=1, role="front"):
+    """空白原稿直接當底圖。存成彩色 —— 存成灰階的話紅色會變成灰色，
+    後續要靠色彩判斷的東西就全毀了。"""
     image = render.render(pdf, page - 1, dpi=render.FULL_DPI, gray=False)
-    target = os.path.join(store, code, "base.png")
+    name = "base.png" if role == "front" else "base_back.png"
+    target = os.path.join(store, code, name)
     if not resources.imwrite(target, image):
         raise ValueError("寫不出底圖：%s" % target)
-    return target, "底圖來源：空白原稿第 %d 頁" % page
+    return target, "%s底圖來源：空白原稿第 %d 頁" % (
+        "" if role == "front" else "背面", page)
 
 
 def base_from_scans(store, code, paths):

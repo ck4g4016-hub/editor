@@ -81,11 +81,14 @@ class Converter:
         # 每跑一次 run() 就換一本新的。診斷報告完全靠它。
         self.journal = diagnose.Journal()
 
-    def base_of(self, code):
-        if code not in self._bases:
-            path = os.path.join(self.store, code, "base.png")
-            self._bases[code] = resources.imread(path, cv2.IMREAD_COLOR) if os.path.isfile(path) else None
-        return self._bases[code]
+    def base_of(self, code, role="front"):
+        """底圖。背面用 base_back.png，沒有就回 None（不減版面）。"""
+        key = (code, role)
+        if key not in self._bases:
+            name = "base.png" if role == "front" else "base_back.png"
+            self._bases[key] = resources.imread(os.path.join(self.store, code, name),
+                                                cv2.IMREAD_COLOR)
+        return self._bases[key]
 
     def fields_of(self, code):
         if code not in self._fields:
@@ -199,58 +202,86 @@ class Converter:
             "fields": entries,
         }
 
+    def sheet_of(self, code, page, role):
+        """把一頁算成「減掉印刷版面之後」的影像。
+
+        底圖對得上就相減，只留手寫的內容；對不上就退回灰階原圖 ——
+        減不掉頂多辨識差一點，硬減會把整頁弄糊。
+        """
+        image = render.rotate(
+            render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
+            page.rotation)
+        base = self.base_of(code, role)
+        if base is None:
+            return image, baseimage.as_gray(image)
+        try:
+            return image, baseimage.subtract(base, image)
+        except ValueError:
+            return image, baseimage.as_gray(image)
+
     def read_document(self, document, keep_crops=False):
-        """讀一件申請案的正面，把欄位辨識出來。"""
+        """讀一件申請案，把欄位辨識出來。
+
+        正面一定要讀。背面只有在樣板真的有定義背面欄位時才去算 ——
+        多算一頁 300dpi 影像要一秒多，沒欄位的話白算。
+        """
         front = document.pages[0]
         definitions = self.fields_of(front.code)
         if not definitions:
             return None
 
-        page = render.rotate(
-            render.render(front.source, front.index, dpi=render.FULL_DPI, gray=False),
-            front.rotation)
-
-        base = self.base_of(front.code)
-        if base is not None:
-            try:
-                sheet = baseimage.subtract(base, page)
-            except ValueError:
-                sheet = baseimage.as_gray(page)
-        else:
-            sheet = baseimage.as_gray(page)
-
         record = Record(front.code, front.source, front.index)
 
-        # 行政區要先讀 —— 地址的路名字典是分區的，
-        # 三峽有「仁愛街」、鶯歌有「仁愛路」，不知道哪一區就選不出來。
-        ordered = sorted((d for d in definitions if d.page == "front"),
-                         key=lambda d: 0 if d.kind == "district" else 1)
+        # 每一面各自處理：算影像、裁欄位、辨識。
+        # 行政區要先讀 —— 地址的路名字典是分區的，三峽有「仁愛街」、
+        # 鶯歌有「仁愛路」，不知道哪一區就選不出來，所以正面先做。
+        pages = {"front": front}
+        if any(d.page == "back" for d in definitions):
+            pages["back"] = next(
+                (p for p in document.pages[1:] if p.role == layout.BACK), None)
 
-        for definition in ordered:
-            crop = recognise.crop_field(sheet, definition.box)
-            if keep_crops and crop is not None and crop.size:
-                ok, buffer = cv2.imencode(".png", crop)
-                if ok:
-                    record.crops[definition.column] = buffer.tobytes()
-            raw, confidence = recognise.read(crop)
-            extra = {}
-            if definition.kind == "district":
-                extra["known"] = self.districts
-            elif definition.kind == "address":
-                extra["roads"] = lexicon.for_district(
-                    self.roads, record.values.get("district"))
-            value, problem = validate.check(definition.kind, raw, **extra)
+        for role in ("front", "back"):
+            wanted = [d for d in definitions if d.page == role]
+            if not wanted:
+                continue
+            page = pages.get(role)
+            if page is None:
+                for definition in wanted:
+                    record.problems.setdefault(
+                        definition.column, "這一件沒有掃到背面，讀不到這一欄")
+                continue
 
-            record.raw[definition.column] = raw
-            record.values[definition.column] = value
-            record.confidence[definition.column] = confidence
-            if problem:
-                record.problems[definition.column] = problem
+            _, sheet = self.sheet_of(front.code, page, role)
+            ordered = sorted(wanted, key=lambda d: 0 if d.kind == "district" else 1)
+            for definition in ordered:
+                self._read_field(record, sheet, definition, keep_crops)
 
         for column in CRITICAL:
             if not record.values.get(column):
                 record.problems.setdefault(column, "沒有讀到內容")
         return record
+
+    def _read_field(self, record, sheet, definition, keep_crops):
+        crop = recognise.crop_field(sheet, definition.box)
+        if keep_crops and crop is not None and crop.size:
+            ok, buffer = cv2.imencode(".png", crop)
+            if ok:
+                record.crops[definition.column] = buffer.tobytes()
+        raw, confidence = recognise.read(crop)
+
+        extra = {}
+        if definition.kind == "district":
+            extra["known"] = self.districts
+        elif definition.kind == "address":
+            extra["roads"] = lexicon.for_district(
+                self.roads, record.values.get("district"))
+        value, problem = validate.check(definition.kind, raw, **extra)
+
+        record.raw[definition.column] = raw
+        record.values[definition.column] = value
+        record.confidence[definition.column] = confidence
+        if problem:
+            record.problems[definition.column] = problem
 
 
 def summarise(records, unresolved):

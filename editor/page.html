@@ -14,40 +14,48 @@
   #stage{flex:1;overflow:auto;padding:16px;position:relative}
   #wrap{position:relative;display:inline-block}
   #sheet{display:block;box-shadow:0 2px 12px rgba(0,0,0,.18);background:#fff}
-  #overlay{position:absolute;inset:0;cursor:crosshair}
-  aside{width:410px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
+  #overlay{position:absolute;inset:0}
+  #overlay.aiming{cursor:crosshair}
+  #banner{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9;
+          background:var(--accent);color:#fff;padding:9px 20px;border-radius:20px;
+          font-size:13px;font-weight:600;box-shadow:0 3px 14px rgba(0,0,0,.25);display:none}
+  #banner.on{display:block}
+  aside{width:420px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
         display:flex;flex-direction:column}
-  header{padding:14px 16px;border-bottom:1px solid var(--line)}
-  header h1{margin:0 0 4px;font-size:15px}
-  header p{margin:0;color:var(--soft);font-size:12px}
+  header{padding:12px 16px;border-bottom:1px solid var(--line)}
+  header h1{margin:0 0 6px;font-size:15px}
+  header .picks{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  header p{margin:6px 0 0;color:var(--soft);font-size:12px}
   .scroll{flex:1;overflow:auto;padding:12px 16px}
   footer{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
   select,input,button{font:inherit;color:inherit}
   select,input[type=text],input[type=number]{width:100%;padding:5px 7px;border:1px solid var(--line);
         border-radius:4px;background:#fff}
-  button{padding:7px 13px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}
+  button{padding:6px 12px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}
   button:hover{border-color:var(--accent)}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   button.primary:hover{background:#a04a4a}
-  .field{border:1px solid var(--line);border-radius:6px;padding:10px 10px 8px;margin-bottom:10px;
-         background:#fdfcfa;cursor:pointer}
-  .field.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,61,61,.14);background:#fff}
-  .field .top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-  .field .num{font-weight:600;font-size:12.5px;color:var(--soft);flex:1}
-  .field .del{padding:3px 10px;font-size:12px;border-color:#e0d6d6;color:var(--accent)}
-  .field .del:hover{background:#8a3d3d;border-color:#8a3d3d;color:#fff}
-  .field .row{display:grid;grid-template-columns:64px 1fr;gap:6px;align-items:center;margin-bottom:6px}
-  .field label{color:var(--soft);font-size:12px}
-  .field select.unset{border-color:var(--accent);background:#fdf3f3;color:var(--accent);font-weight:600}
-  .field.dup{border-color:var(--warn);box-shadow:0 0 0 2px rgba(176,106,31,.16)}
-  .field .warn{font-size:12px;color:var(--warn);margin:2px 0 6px}
+  button.small{padding:4px 10px;font-size:12px}
+  h2{font-size:12px;color:var(--soft);margin:14px 0 8px;font-weight:600;letter-spacing:.05em}
+  h2:first-child{margin-top:0}
+  .col{border:1px solid var(--line);border-radius:6px;margin-bottom:8px;background:#fdfcfa}
+  .col.set{background:#fff}
+  .col.need{border-color:#e6c9c9}
+  .col.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,61,61,.14)}
+  .col .head{display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer}
+  .col .nm{font-weight:600;flex:1}
+  .col .nm em{font-style:normal;color:var(--accent);font-size:11px;margin-left:5px}
+  .col .st{font-size:12px;color:var(--soft)}
+  .col .st.no{color:var(--accent)}
+  .col .body{padding:0 11px 10px;border-top:1px solid #f0ece2;display:none}
+  .col.open .body{display:block}
+  .col .row{display:grid;grid-template-columns:64px 1fr;gap:6px;align-items:center;margin:8px 0 0}
+  .col label{color:var(--soft);font-size:12px}
   .boxrow{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
-  .hint{color:var(--soft);font-size:12px;margin:0 0 10px}
+  .acts{display:flex;gap:6px;margin-top:10px}
   .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:6px;padding:9px 11px;
         font-size:12.5px;margin-bottom:12px}
   .note b{color:var(--warn)}
-  .miss{color:var(--accent);font-weight:600}
-  .empty{color:var(--soft);font-size:13px;text-align:center;padding:26px 10px;line-height:1.9}
   #msg{flex:1;font-size:12px;color:var(--soft)}
   #msg.ok{color:var(--ok)}
   #msg.err{color:var(--accent)}
@@ -55,19 +63,21 @@
 </head>
 <body>
 <div id="stage"><div id="wrap"><img id="sheet" alt=""><canvas id="overlay"></canvas></div></div>
+<div id="banner"></div>
 <aside>
   <header>
     <h1 id="title">樣板編輯器</h1>
+    <div class="picks">
+      <select id="code"></select>
+      <select id="view"></select>
+    </div>
     <p id="subtitle"></p>
   </header>
   <div class="scroll">
-    <div style="margin-bottom:12px"><select id="code"></select></div>
-    <p class="hint">在左邊圖上<b>拖曳</b>畫出欄位範圍，右邊選它是哪一欄。</p>
-    <div id="missing"></div>
+    <div id="notes"></div>
     <div id="list"></div>
   </div>
   <footer>
-    <button id="add">空白欄位</button>
     <span id="msg"></span>
     <button class="primary" id="save">儲存</button>
   </footer>
@@ -77,23 +87,27 @@ const el = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let state = {code:null, scale:1, fields:[], sel:-1, columns:{}, kinds:{}};
-
-/* 選了輸出欄就自動配對應的型別。型別決定用哪一種驗證，
-   選錯不會報錯只會靜靜失效 —— 身分證不驗檢查碼、地址不套門牌正規化。
-   所以不讓使用者自己記，選欄位就幫他帶好，要改還是可以改。 */
+/* 選了輸出欄就配對應的型別。型別決定用哪一種驗證，選錯不會報錯，
+   只會靜靜地不驗 —— 身分證不驗檢查碼、地址不套門牌正規化。
+   所以不讓使用者自己記，由輸出欄決定，需要時還是能改。 */
 const KIND_OF = {district:'district', address:'address', doc_number:'doc_number',
                  id_number:'id_number', name:'chinese', section:'chinese',
                  land_number:'land_number'};
-const CRITICAL = ['address', 'id_number', 'doc_number'];
+
+let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[],
+             fields:{},          // column -> 欄位定義
+             open:null,          // 展開中的那一欄
+             aiming:null};       // 正在框選哪一欄
 
 function say(text, cls){ el('msg').textContent = text; el('msg').className = cls || ''; }
+const role = () => (state.views[state.view] || {}).role || 'front';
 
 async function loadCodes(){
   const codes = await (await fetch('api/codes')).json();
   el('code').innerHTML = codes.map(c =>
       `<option value="${esc(c.code)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
   if (codes.length) selectCode(codes[0].code);
+  else el('list').innerHTML = '<div class="note">還沒有任何表格。請先回程式按「新增表格」。</div>';
 }
 
 async function selectCode(code){
@@ -102,15 +116,31 @@ async function selectCode(code){
   state.scale = data.scale;
   state.columns = data.columns;
   state.kinds = data.kinds;
-  state.fields = data.fields;
-  state.sel = -1;
+  state.critical = data.critical;
+  state.views = data.views;
+  state.view = 0;
+  state.open = null;
+  state.aiming = null;
+
+  state.fields = {};
+  data.fields.forEach(f => { if (f.column) state.fields[f.column] = f; });
+
   el('title').textContent = data.name;
-  el('subtitle').textContent = `${data.width}×${data.height} px @300dpi`
-      + (data.has_base ? '' : '　（沒有底圖）');
+  el('view').innerHTML = data.views.map((v, i) =>
+      `<option value="${i}">${esc(v.label)}</option>`).join('')
+      || '<option>沒有可框選的頁面</option>';
+  showView(0);
+  render();
+}
+
+function showView(which){
+  state.view = which;
+  const data = state.views[which];
+  el('subtitle').textContent = data ? `${data.label}　—　拖曳框選時請對準這一頁的內容` : '';
   const img = el('sheet');
   img.onload = () => { sizeOverlay(); draw(); };
-  img.src = 'api/image?code=' + encodeURIComponent(code) + '&t=' + Date.now();
-  render();
+  img.src = 'api/image?code=' + encodeURIComponent(state.code)
+          + '&view=' + which + '&t=' + Date.now();
 }
 
 function sizeOverlay(){
@@ -126,13 +156,15 @@ function draw(){
   const cv = el('overlay'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   g.setLineDash([]);
-  state.fields.forEach((f, i) => {
+  // 只畫屬於目前這一面的框，不然正反面的框會疊在一起看不懂
+  Object.entries(state.fields).forEach(([column, f]) => {
+    if ((f.page || 'front') !== role()) return;
     const [x,y,w,h] = f.box;
-    const on = i === state.sel;
+    const on = column === state.open;
     g.lineWidth = on ? 3 : 2;
-    g.strokeStyle = on ? '#8a3d3d' : (f.column ? '#3b6ea5' : '#b06a1f');
+    g.strokeStyle = on ? '#8a3d3d' : '#3b6ea5';
     g.strokeRect(toView(x), toView(y), toView(w), toView(h));
-    const label = (i + 1) + (f.column ? '. ' + state.columns[f.column] : '. 未指定');
+    const label = state.columns[column];
     g.font = '12px sans-serif';
     const tw = g.measureText(label).width + 8;
     g.fillStyle = g.strokeStyle;
@@ -142,122 +174,106 @@ function draw(){
   });
 }
 
-/* 哪些輸出欄被指派了不只一次 */
-function duplicates(){
-  const seen = {}, bad = new Set();
-  state.fields.forEach(f => {
-    if (!f.column) return;
-    if (seen[f.column]) bad.add(f.column);
-    seen[f.column] = true;
-  });
-  return bad;
+function aim(column){
+  state.aiming = column;
+  el('overlay').classList.add('aiming');
+  el('banner').classList.add('on');
+  el('banner').textContent = `在左邊圖上拖曳框出「${state.columns[column]}」　（Esc 取消）`;
+}
+function stopAiming(){
+  state.aiming = null;
+  el('overlay').classList.remove('aiming');
+  el('banner').classList.remove('on');
 }
 
-function refreshNotes(){
-  const missing = Object.keys(state.columns).filter(
-      k => !state.fields.some(f => f.column === k));
-  const critical = missing.filter(k => CRITICAL.includes(k));
-  const dup = duplicates();
-  let html = '';
-  if (missing.length){
-    html += `<div class="note">尚未指派的輸出欄位：${missing.map(k =>
-        critical.includes(k) ? `<span class="miss">${esc(state.columns[k])}</span>`
-                             : esc(state.columns[k])).join('、')}`
-         + (critical.length ? '<br><b>紅字的三欄是必要欄位</b>，缺了辨識結果沒辦法用。' : '')
-         + '</div>';
-  }
-  if (dup.size){
-    html += `<div class="note"><b>有重複指派</b>：${[...dup].map(k =>
-        esc(state.columns[k])).join('、')}<br>`
-         + '同一個輸出欄只能有一個欄位，儲存會被擋下來。</div>';
-  }
-  el('missing').innerHTML = html;
-
-  const dupSet = duplicates();
-  el('list').querySelectorAll('.field').forEach(node => {
-    const f = state.fields[+node.dataset.i];
-    node.classList.toggle('dup', !!f.column && dupSet.has(f.column));
-  });
-}
-
-/* 只有「欄位數量或版面改變」才重建清單。
-   選取、改值都不重建 —— 原本每次 mousedown 都重建整份 innerHTML，
-   按下去的那個 <select>／按鈕當場被換掉，所以下拉打不開、刪除也按不動。 */
 function render(){
-  if (!state.fields.length){
-    el('list').innerHTML = '<div class="empty">還沒有欄位。<br>'
-        + '在左邊圖上拖曳畫一個框，<br>或按左下角的「空白欄位」。</div>';
-    refreshNotes();
-    return;
-  }
+  const groups = [
+    ['必要欄位（缺一不可）', state.critical],
+    ['其他欄位', Object.keys(state.columns).filter(k => !state.critical.includes(k))],
+  ];
 
-  el('list').innerHTML = state.fields.map((f, i) => `
-    <div class="field ${i===state.sel?'sel':''}" data-i="${i}">
-      <div class="top">
-        <span class="num">欄位 ${i + 1}</span>
-        <button class="del" data-act="del">刪除</button>
+  el('list').innerHTML = groups.map(([title, keys]) => `<h2>${title}</h2>` + keys.map(column => {
+    const f = state.fields[column];
+    const need = state.critical.includes(column) && !f;
+    const page = f ? (f.page || 'front') : null;
+    return `
+    <div class="col ${f?'set':''} ${need?'need':''} ${column===state.open?'open sel':''}"
+         data-c="${column}">
+      <div class="head">
+        <span class="nm">${esc(state.columns[column])}${need?'<em>必要</em>':''}</span>
+        <span class="st ${f?'':'no'}">${f
+            ? (page === 'front' ? '正面' : '背面') + '　已框選'
+            : '尚未框選'}</span>
       </div>
-      <div class="row"><label>輸出欄</label><select data-k="column" class="${f.column?'':'unset'}">
-        <option value="" ${f.column?'':'selected'}>— 請選擇 —</option>${
-        Object.entries(state.columns).map(([k,v]) =>
-          `<option value="${k}" ${f.column===k?'selected':''}>${esc(v)}</option>`).join('')}</select></div>
-      <div class="row"><label>名稱</label><input type="text" data-k="name" value="${esc(f.name)}"></div>
-      <div class="row"><label>型別</label><select data-k="kind">${
-        Object.entries(state.kinds).map(([k,v]) =>
-          `<option value="${k}" ${f.kind===k?'selected':''}>${esc(v)}</option>`).join('')}</select></div>
-      <div class="row"><label>定位</label><select data-k="mode">
-        <option value="fixed" ${f.mode==='fixed'?'selected':''}>固定框</option>
-        <option value="anchor" ${f.mode==='anchor'?'selected':''}>錨點相對</option></select></div>
-      ${f.mode==='anchor' ? `
-      <div class="row"><label>錨點文字</label><input type="text" data-k="anchor_text" value="${esc(f.anchor_text||'')}"></div>
-      <div class="row"><label>往下第幾個</label><input type="number" data-k="anchor_index" min="1" value="${f.anchor_index||1}"></div>` : ''}
-      <div class="row"><label>範圍</label><div class="boxrow">${
-        [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')}</div></div>
-    </div>`).join('');
+      <div class="body">
+        ${f ? `
+        <div class="row"><label>名稱</label>
+          <input type="text" data-k="name" value="${esc(f.name)}"></div>
+        <div class="row"><label>型別</label><select data-k="kind">${
+          Object.entries(state.kinds).map(([k,v]) =>
+            `<option value="${k}" ${f.kind===k?'selected':''}>${esc(v)}</option>`).join('')
+        }</select></div>
+        <div class="row"><label>定位</label><select data-k="mode">
+          <option value="fixed" ${f.mode==='fixed'?'selected':''}>固定框</option>
+          <option value="anchor" ${f.mode==='anchor'?'selected':''}>錨點相對</option></select></div>
+        ${f.mode==='anchor' ? `
+        <div class="row"><label>錨點文字</label>
+          <input type="text" data-k="anchor_text" value="${esc(f.anchor_text||'')}"></div>
+        <div class="row"><label>往下第幾個</label>
+          <input type="number" data-k="anchor_index" min="1" value="${f.anchor_index||1}"></div>` : ''}
+        <div class="row"><label>範圍</label><div class="boxrow">${
+          [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')
+        }</div></div>
+        <div class="acts">
+          <button class="small" data-act="aim">重新框選</button>
+          <button class="small" data-act="clear">清除這一欄</button>
+        </div>` : `
+        <div class="acts"><button class="small primary" data-act="aim">在圖上框選</button></div>
+        <p style="font-size:12px;color:var(--soft);margin:8px 0 0">
+          按下之後到左邊圖上拖曳，框住這一欄要抓的位置。<br>
+          背面的欄位就先把上面的頁面切到背面再框。</p>`}
+      </div>
+    </div>`;
+  }).join('')).join('');
 
-  el('list').querySelectorAll('.field').forEach(node => {
-    const i = +node.dataset.i;
+  el('list').querySelectorAll('.col').forEach(node => {
+    const column = node.dataset.c;
 
-    // 點卡片空白處＝選取。點到表單元件就不管它，讓瀏覽器自己處理，
-    // 不然下拉還沒展開就被我們攔走了。
-    node.addEventListener('click', event => {
-      if (event.target.closest('select, input, button')) return;
-      select(i);
+    node.querySelector('.head').addEventListener('click', () => {
+      state.open = state.open === column ? null : column;
+      stopAiming();
+      render(); draw();
     });
 
     node.querySelectorAll('[data-k]').forEach(input => {
-      input.addEventListener('focus', () => select(i));
       input.addEventListener('change', () => {
         const key = input.dataset.k;
-        const field = state.fields[i];
-        field[key] = input.type === 'number' ? +input.value : input.value;
-
-        if (key === 'column' && input.value){
-          // 型別跟著輸出欄走，名稱還是預設值的話也一起帶
-          field.kind = KIND_OF[input.value] || 'text';
-          if (!field.name || /^欄位\s*\d+$/.test(field.name)) field.name = state.columns[input.value];
-          render();                       // 型別與名稱都變了，這張卡要重畫
-          draw();
-          return;
-        }
-        if (key === 'mode'){ render(); draw(); return; }   // 錨點模式會多兩列
-        refreshNotes();
+        state.fields[column][key] = input.type === 'number' ? +input.value : input.value;
+        if (key === 'mode') render();       // 錨點模式會多兩列
         draw();
       });
     });
-
     node.querySelectorAll('[data-box]').forEach(input => {
-      input.addEventListener('focus', () => select(i));
       input.addEventListener('change', () => {
-        state.fields[i].box[+input.dataset.box] = +input.value;
+        state.fields[column].box[+input.dataset.box] = +input.value;
         draw();
       });
     });
 
-    node.querySelector('[data-act=del]').addEventListener('click', event => {
+    const aimBtn = node.querySelector('[data-act=aim]');
+    if (aimBtn) aimBtn.addEventListener('click', event => {
       event.stopPropagation();
-      state.fields.splice(i, 1);
-      if (state.sel === i) state.sel = -1; else if (state.sel > i) state.sel--;
+      state.open = column;
+      aim(column);
+      render(); draw();
+      aim(column);                          // render() 會重建，旗標要再設一次
+    });
+
+    const clear = node.querySelector('[data-act=clear]');
+    if (clear) clear.addEventListener('click', event => {
+      event.stopPropagation();
+      delete state.fields[column];
+      stopAiming();
       render(); draw();
     });
   });
@@ -265,27 +281,21 @@ function render(){
   refreshNotes();
 }
 
-/* 換選取只動 class 與畫布，不重建 DOM */
-function select(i){
-  if (state.sel === i) return;
-  state.sel = i;
-  el('list').querySelectorAll('.field').forEach(node =>
-      node.classList.toggle('sel', +node.dataset.i === i));
-  draw();
+function refreshNotes(){
+  const missing = state.critical.filter(k => !state.fields[k]);
+  el('notes').innerHTML = missing.length
+    ? `<div class="note"><b>還缺必要欄位：</b>${missing.map(k =>
+         esc(state.columns[k])).join('、')}<br>`
+      + '這三欄錯了或沒有，RPA 會拿著錯的資料去查別人的房子，'
+      + '而且從輸出的表格上看不出來。</div>'
+    : '';
 }
 
-function newField(box){
-  const used = new Set(state.fields.map(f => f.id));
-  let n = 1; while (used.has('f' + n)) n++;
-  // 輸出欄故意留空 —— 預設成某一欄的話，使用者忘了改就會靜靜地
-  // 把三個框都指到同一欄，而且畫面上看不出來。
-  return {id:'f'+n, name:'欄位' + n, column:'', kind:'text',
-          box:box, page:'front', mode:'fixed', anchor_text:'', anchor_index:1, required:false};
-}
-
-/* 在圖上拖曳畫出新欄位 */
+/* 在圖上拖曳框出範圍。只有按了「框選」才進入這個模式 ——
+   不然滑鼠隨便一劃就冒出一個欄位，很難用。 */
 let drag = null;
 el('overlay').addEventListener('mousedown', e => {
+  if (!state.aiming) return;
   const r = el('overlay').getBoundingClientRect();
   drag = {x:e.clientX - r.left, y:e.clientY - r.top};
 });
@@ -302,28 +312,47 @@ el('overlay').addEventListener('mousemove', e => {
 window.addEventListener('mouseup', () => {
   if (!drag || drag.x2 === undefined){ drag = null; return; }
   const w = Math.abs(drag.x2 - drag.x), h = Math.abs(drag.y2 - drag.y);
-  if (w > 8 && h > 8){
-    state.fields.push(newField([toReal(Math.min(drag.x,drag.x2)), toReal(Math.min(drag.y,drag.y2)),
-                                toReal(w), toReal(h)]));
-    state.sel = state.fields.length - 1;
+  const column = state.aiming;
+  if (w > 8 && h > 8 && column){
+    const box = [toReal(Math.min(drag.x,drag.x2)), toReal(Math.min(drag.y,drag.y2)),
+                 toReal(w), toReal(h)];
+    const old = state.fields[column];
+    state.fields[column] = {
+      id: old ? old.id : 'f_' + column,
+      name: old ? old.name : state.columns[column],
+      column: column,
+      kind: old ? old.kind : (KIND_OF[column] || 'text'),
+      box: box,
+      page: role(),
+      mode: old ? old.mode : 'fixed',
+      anchor_text: old ? old.anchor_text : '',
+      anchor_index: old ? old.anchor_index : 1,
+      required: state.critical.includes(column),
+    };
+    stopAiming();
+    say(`已框選「${state.columns[column]}」`, 'ok');
     render();
   }
   drag = null; draw();
 });
+window.addEventListener('keydown', e => { if (e.key === 'Escape') { stopAiming(); draw(); } });
 
-el('add').addEventListener('click', () => {
-  state.fields.push(newField([200, 200, 400, 90]));
-  state.sel = state.fields.length - 1; render(); draw();
-});
 el('code').addEventListener('change', e => selectCode(e.target.value));
+el('view').addEventListener('change', e => {
+  stopAiming();
+  showView(+e.target.value);
+  render();
+});
 el('save').addEventListener('click', async () => {
-  const blank = state.fields.filter(f => !f.column).length;
-  if (blank){ say(`還有 ${blank} 個欄位沒選輸出欄`, 'err'); return; }
-  if (duplicates().size){ say('有輸出欄被指派了兩次', 'err'); return; }
+  const missing = state.critical.filter(k => !state.fields[k]);
+  if (missing.length){
+    say('還缺必要欄位：' + missing.map(k => state.columns[k]).join('、'), 'err');
+    return;
+  }
   say('儲存中…');
   const res = await fetch('api/template?code=' + encodeURIComponent(state.code),
       {method:'POST', headers:{'Content-Type':'application/json'},
-       body: JSON.stringify({fields: state.fields})});
+       body: JSON.stringify({fields: Object.values(state.fields)})});
   const out = await res.json();
   if (out.ok) say('已儲存 ' + out.count + ' 個欄位', 'ok');
   else say(out.error, 'err');

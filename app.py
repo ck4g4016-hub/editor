@@ -246,6 +246,10 @@ def run_new_form():
     if answer["source"] == newform.BLANK:
         _, note = newform.base_from_blank(STORE, code, chosen, answer["front"])
         lines.append(note)
+        if answer["back"]:
+            # 背面也做一張，這樣背面的欄位一樣能把印刷版面減掉
+            _, note = newform.base_from_blank(STORE, code, chosen, answer["back"], "back")
+            lines.append(note)
     elif answer["source"] == newform.COMPOSE:
         try:
             _, note = newform.base_from_scans(STORE, code, samples)

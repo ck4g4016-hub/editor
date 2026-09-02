@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import fields as fieldmod, resources  # noqa: E402
 from pipeline import layout, render  # noqa: E402
+from pipeline.process import CRITICAL  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = resources.path("editor", "page.html")
@@ -42,15 +43,21 @@ VIEW_WIDTH = 1000
 
 
 class Workspace:
-    """把每一種表格要用的影像與候選框準備好，放在記憶體裡。
+    """把每一種表格可以拿來框欄位的頁面準備好。
 
-    影像是個資，不落地到暫存資料夾 —— 程式關掉就什麼都不剩。
+    影像是個資，只留在記憶體，不落地到暫存資料夾 —— 程式關掉就什麼都不剩。
+    所以不預先把每一頁都算出來（一張 300dpi A4 彩色就 26MB），
+    只記住「哪個檔第幾頁」，畫面要看哪一張才現算，並且留最後幾張快取。
     """
+
+    MAX_VIEWS = 12          # 每種表格最多列幾張可選頁面
+    CACHE = 3               # 現算過的影像留幾張
 
     def __init__(self, store, sample_paths):
         self.store = store
         self.templates = layout.TemplateSet.load(store)
-        self.sheets = {}
+        self.views = {}     # code -> [ {label, role, source, index, rotation} ]
+        self._cache = []    # [(code, view index, image)]
         self._prepare(sample_paths)
 
     def _prepare(self, sample_paths):
@@ -58,19 +65,51 @@ class Workspace:
             return
         print("正在分類樣本…")
         pages = layout.classify_pages(sample_paths, self.templates)
-        for page in pages:
-            if page.role != layout.FRONT or page.code in self.sheets:
+
+        # 切成一件一件，這樣才知道哪一張背面是配哪一張正面的 ——
+        # 使用者要框背面欄位時，看到的必須是同一件的背面。
+        counts = {}
+        for document in layout.split_documents(pages):
+            if not document.complete:
                 continue
-            print("  %s ← %s 第 %d 頁"
-                  % (page.code, os.path.basename(page.source), page.index + 1))
-            scan = render.rotate(
-                render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
-                page.rotation)
-            base_path = os.path.join(self.store, page.code, "base.png")
-            self.sheets[page.code] = {
-                "image": scan,
-                "has_base": os.path.isfile(base_path),
-            }
+            code = document.code
+            views = self.views.setdefault(code, [])
+            if len(views) >= self.MAX_VIEWS:
+                continue
+            counts[code] = counts.get(code, 0) + 1
+            number = counts[code]
+            for page in document.pages:
+                if page.role not in (layout.FRONT, layout.BACK):
+                    continue
+                if len(views) >= self.MAX_VIEWS:
+                    break
+                views.append({
+                    "label": "第 %d 份 %s" % (number,
+                                              "正面" if page.role == layout.FRONT else "背面"),
+                    "role": page.role,
+                    "source": page.source,
+                    "index": page.index,
+                    "rotation": page.rotation,
+                })
+
+        for code, views in self.views.items():
+            print("  %s：%d 張可框選的頁面" % (code, len(views)))
+
+    def image(self, code, which):
+        """第 which 張頁面的影像。現算，並留最後幾張快取。"""
+        views = self.views.get(code) or []
+        if not 0 <= which < len(views):
+            return None
+        for key_code, key_which, image in self._cache:
+            if key_code == code and key_which == which:
+                return image
+        view = views[which]
+        image = render.rotate(
+            render.render(view["source"], view["index"], dpi=render.FULL_DPI, gray=False),
+            view["rotation"])
+        self._cache.append((code, which, image))
+        del self._cache[:-self.CACHE]
+        return image
 
     def codes(self):
         seen = []
@@ -79,32 +118,35 @@ class Workspace:
                 seen.append({"code": template.code, "name": template.name})
         return seen
 
-    def png(self, code):
-        sheet = self.sheets.get(code)
-        if sheet is None:
-            return None
-        image = sheet["image"]
+    def png(self, code, which):
+        image = self.image(code, which)
+        if image is None:
+            return None, 1.0
         scale = VIEW_WIDTH / float(image.shape[1])
         small = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         ok, buffer = cv2.imencode(".png", small)
-        return buffer.tobytes() if ok else None
+        return (buffer.tobytes() if ok else None), scale
 
     def describe(self, code):
-        sheet = self.sheets.get(code)
+        views = self.views.get(code) or []
         name = next((t.name for t in self.templates.templates if t.code == code), code)
-        stored = fieldmod.load(self.store, code)
-        info = {
+        first = self.image(code, 0) if views else None
+        width = first.shape[1] if first is not None else 0
+        height = first.shape[0] if first is not None else 0
+        return {
             "code": code,
             "name": name,
             "columns": fieldmod.COLUMNS,
             "kinds": fieldmod.KINDS,
-            "fields": [f.to_dict() for f in stored],
-            "has_base": bool(sheet and sheet["has_base"]),
-            "width": sheet["image"].shape[1] if sheet else 0,
-            "height": sheet["image"].shape[0] if sheet else 0,
+            "critical": list(CRITICAL),
+            "fields": [f.to_dict() for f in fieldmod.load(self.store, code)],
+            "views": [{"label": v["label"], "role": v["role"]} for v in views],
+            "has_base": os.path.isfile(os.path.join(self.store, code, "base.png")),
+            "has_back_base": os.path.isfile(os.path.join(self.store, code, "base_back.png")),
+            "width": width,
+            "height": height,
+            "scale": VIEW_WIDTH / float(width) if width else 1.0,
         }
-        info["scale"] = VIEW_WIDTH / float(info["width"]) if info["width"] else 1.0
-        return info
 
 
 def make_handler(workspace):
@@ -133,7 +175,8 @@ def make_handler(workspace):
             elif route.path == "/api/template":
                 self._json(workspace.describe(query.get("code", [""])[0]))
             elif route.path == "/api/image":
-                body = workspace.png(query.get("code", [""])[0])
+                body, _ = workspace.png(query.get("code", [""])[0],
+                                        int(query.get("view", ["0"])[0]))
                 if body is None:
                     self._send(404, b"no sample for this form", "text/plain")
                 else:
