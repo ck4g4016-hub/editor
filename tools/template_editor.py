@@ -50,28 +50,49 @@ class Workspace:
         self.sheets = {}
         self._prepare(sample_paths)
 
+    # 同一種表格通常有好幾份樣本。挑哪一份來顯示有差 ——
+    # 空白原稿上沒有紅筆標記，挑到它就沒有候選框可以點，得自己拖。
+    # 所以多看幾份，挑紅筆標記最多的那一份。全部都沒標記也無所謂，
+    # 欄位框的位置在哪一份上都一樣。
+    MAX_TRIES = 5          # 每種表格最多試幾份，再多就只是變慢
+    ENOUGH_MARKS = 3       # 找到這麼多標記就夠了，不用再找
+
     def _prepare(self, sample_paths):
         if not sample_paths:
             return
         print("正在分類樣本…")
         pages = layout.classify_pages(sample_paths, self.templates)
+
+        fronts = {}
         for page in pages:
-            if page.role != layout.FRONT or page.code in self.sheets:
-                continue
-            print("  %s ← %s 第 %d 頁" % (page.code, os.path.basename(page.source), page.index + 1))
-            scan = render.rotate(
-                render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
-                page.rotation)
-            base_path = os.path.join(self.store, page.code, "base.png")
-            base = cv2.imread(base_path, cv2.IMREAD_COLOR) if os.path.isfile(base_path) else None
-            try:
-                marks = redmarks.find(scan, base)
-            except ValueError as exc:
-                print("    紅筆偵測失敗：%s" % exc)
-                marks = []
-            self.sheets[page.code] = {
+            if page.role == layout.FRONT:
+                fronts.setdefault(page.code, []).append(page)
+
+        for code, candidates in fronts.items():
+            best = None
+            for page in candidates[:self.MAX_TRIES]:
+                scan = render.rotate(
+                    render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
+                    page.rotation)
+                base_path = os.path.join(self.store, code, "base.png")
+                base = cv2.imread(base_path, cv2.IMREAD_COLOR) \
+                    if os.path.isfile(base_path) else None
+                try:
+                    marks = redmarks.find(scan, base)
+                except ValueError as exc:
+                    print("    %s 紅筆偵測失敗：%s" % (code, exc))
+                    marks = []
+                if best is None or len(marks) > len(best[2]):
+                    best = (page, scan, marks, base is not None)
+                if len(marks) >= self.ENOUGH_MARKS:
+                    break
+
+            page, scan, marks, has_base = best
+            print("  %s ← %s 第 %d 頁，紅筆候選框 %d 個"
+                  % (code, os.path.basename(page.source), page.index + 1, len(marks)))
+            self.sheets[code] = {
                 "image": scan,
-                "has_base": base is not None,
+                "has_base": has_base,
                 "candidates": [{"x": x, "y": y, "w": w, "h": h} for _, x, y, w, h in marks],
             }
 
@@ -169,14 +190,20 @@ def make_handler(workspace):
 
 
 def collect(targets):
+    """把資料夾裡的 PDF 都找出來，**含子資料夾**。
+
+    樣本是一種表格一個子資料夾（樣本\F、樣本\G…），
+    只看第一層的話選最上層那個資料夾會一個檔都找不到。
+    """
     paths = []
     for target in targets or []:
         if os.path.isdir(target):
-            paths.extend(sorted(
-                os.path.join(target, n) for n in os.listdir(target) if n.lower().endswith(".pdf")))
+            for folder, _dirs, names in os.walk(target):
+                paths.extend(sorted(os.path.join(folder, n) for n in names
+                                    if n.lower().endswith(".pdf")))
         else:
             paths.append(target)
-    return paths
+    return sorted(paths)
 
 
 def main():

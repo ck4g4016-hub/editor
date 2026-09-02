@@ -45,7 +45,11 @@ def ask_folder(title, initial=None):
     root = tkinter.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
-    folder = filedialog.askdirectory(title=title, initialdir=initial or WORKSPACE)
+    # 這個視窗只列資料夾不列檔案，使用者會以為資料夾是空的而不敢按。
+    # 標題上直接講明白。
+    folder = filedialog.askdirectory(
+        title=title + "（視窗裡看不到 PDF 是正常的，選資料夾本身就好）",
+        initialdir=initial or WORKSPACE, mustexist=True)
     root.destroy()
     return folder or None
 
@@ -75,15 +79,44 @@ def message(title, text):
     root.destroy()
 
 
-def serve(server, url, label):
+def serve(server, url, label, hint=""):
+    """把網頁介面跑起來，同時開一個小視窗讓使用者按完回主選單。
+
+    原本是直接 serve_forever()，在主控台裡按 Ctrl+C 結束 ——
+    但打包成執行檔之後根本沒有主控台可以按，程式就卡在那裡，
+    使用者只能整個關掉，做完一件事就得重開。
+    """
+    import tkinter
+
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+
     print()
     print("%s：%s" % (label, url))
-    print("只綁 127.0.0.1，不對外開放。做完關掉這個視窗即可。")
-    threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    print("只綁 127.0.0.1，不對外開放。")
+
+    root = tkinter.Tk()
+    root.title(label)
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+
+    frame = tkinter.Frame(root, padx=22, pady=18)
+    frame.pack()
+    tkinter.Label(frame, text=label, font=("", 13, "bold")).pack()
+    tkinter.Label(frame, text="已經在瀏覽器打開了。", fg="#666").pack(pady=(4, 0))
+    if hint:
+        tkinter.Label(frame, text=hint, fg="#666", justify="center").pack(pady=(6, 0))
+    tkinter.Label(frame, text=url, fg="#888", font=("", 8)).pack(pady=(6, 0))
+    tkinter.Label(frame,
+                  text="瀏覽器那邊做完之後，回來按這個按鈕。",
+                  fg="#8a3d3d").pack(pady=(12, 6))
+    tkinter.Button(frame, text="做完了，回主選單", width=24, height=2,
+                   command=root.destroy).pack()
+
+    root.mainloop()
+    server.shutdown()
+    server.server_close()
+    print("已回到主選單")
 
 
 def ask_new_form():
@@ -259,7 +292,8 @@ def run_editor():
                 "請先按「新增表格」，把每一種表格建立起來，再回來框欄位。")
         return
     server = ThreadingHTTPServer(("127.0.0.1", 0), template_editor.make_handler(workspace))
-    serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "樣板編輯器")
+    serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "樣板編輯器",
+          "每一種表格框完欄位都要按「儲存」，\n沒存的話關掉就沒了。")
 
 
 def run_convert():
@@ -304,32 +338,38 @@ def run_convert():
     state = {"records": records, "unresolved": unresolved, "out": OUTPUT,
              "journal": converter.journal}
     server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state))
-    serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "複核介面")
+    serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "複核介面",
+          "確認完要按「產生輸出檔」，\n檔案才會出現在「輸出」資料夾。")
 
 
 def menu():
+    """主選單。回傳選了什麼，直接關掉視窗回傳 None（代表要結束程式）。"""
     import tkinter
 
     choice = {"value": None}
     root = tkinter.Tk()
     root.title("紙本轉 Excel")
-    root.geometry("380x280")
+    root.geometry("400x330")
     root.resizable(False, False)
 
-    tkinter.Label(root, text="紙本轉 Excel", font=("", 15, "bold")).pack(pady=(22, 4))
+    tkinter.Label(root, text="紙本轉 Excel", font=("", 15, "bold")).pack(pady=(20, 2))
     tkinter.Label(root, text="全程在本機處理，不連任何網路",
-                  fg="#666").pack(pady=(0, 16))
+                  fg="#666").pack(pady=(0, 4))
+    tkinter.Label(root, text="工作資料夾：%s" % WORKSPACE,
+                  fg="#999", font=("", 8), wraplength=370).pack(pady=(0, 12))
 
     def pick(value):
         choice["value"] = value
         root.destroy()
 
-    tkinter.Button(root, text="轉　換", width=26, height=2,
+    tkinter.Button(root, text="轉　換", width=28, height=2,
                    command=lambda: pick("convert")).pack(pady=4)
-    tkinter.Button(root, text="設定樣板", width=26,
+    tkinter.Button(root, text="設定樣板", width=28,
                    command=lambda: pick("editor")).pack(pady=4)
-    tkinter.Button(root, text="新增表格", width=26,
+    tkinter.Button(root, text="新增表格", width=28,
                    command=lambda: pick("newform")).pack(pady=4)
+    tkinter.Label(root, text="做完會回到這個畫面。要結束就關掉這個視窗。",
+                  fg="#999", font=("", 8)).pack(pady=(12, 0))
 
     root.mainloop()
     return choice["value"]
@@ -369,24 +409,27 @@ def main():
     print("紙本轉 Excel")
     print("工作資料夾：%s" % WORKSPACE)
 
-    action = menu()
-    try:
-        if action == "convert":
-            run_convert()
-        elif action == "editor":
-            run_editor()
-        elif action == "newform":
-            run_new_form()
-    except Exception as error:                                      # noqa: BLE001
-        path = crash_report(error)
-        print("程式發生錯誤，已寫下紀錄：%s" % path)
-        message("程式發生錯誤",
-                "%s：%s\n\n"
-                "已經寫了一份當機紀錄：\n%s\n\n"
-                "那份檔案不含個資，可以直接傳給開發者。"
-                % (type(error).__name__, error, path))
-        return 1
-    return 0
+    actions = {"convert": run_convert, "editor": run_editor, "newform": run_new_form}
+
+    # 一直回到主選單，直到使用者把它關掉 —— 建樣板要做七次，
+    # 做完一件就整個結束的話等於要重開七次。
+    while True:
+        action = menu()
+        if action is None:
+            print("結束")
+            return 0
+        try:
+            actions[action]()
+        except Exception as error:                                  # noqa: BLE001
+            # 一件事失敗不該讓整個程式關掉，記下來然後回主選單再試
+            path = crash_report(error)
+            print("發生錯誤，已寫下紀錄：%s" % path)
+            message("發生錯誤",
+                    "%s：%s\n\n"
+                    "已經寫了一份紀錄：\n%s\n\n"
+                    "那份檔案不含個資，可以直接傳給開發者。\n"
+                    "按確定回到主選單，可以再試一次。"
+                    % (type(error).__name__, error, path))
 
 
 if __name__ == "__main__":

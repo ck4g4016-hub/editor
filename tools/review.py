@@ -127,14 +127,20 @@ def describe(state):
 
 
 def collect(targets):
+    """把資料夾裡的 PDF 都找出來，**含子資料夾**。
+
+    樣本是一種表格一個子資料夾（樣本\F、樣本\G…），
+    只看第一層的話選最上層那個資料夾會一個檔都找不到。
+    """
     paths = []
-    for target in targets:
+    for target in targets or []:
         if os.path.isdir(target):
-            paths.extend(sorted(os.path.join(target, name) for name in os.listdir(target)
-                                if name.lower().endswith(".pdf")))
+            for folder, _dirs, names in os.walk(target):
+                paths.extend(sorted(os.path.join(folder, n) for n in names
+                                    if n.lower().endswith(".pdf")))
         else:
             paths.append(target)
-    return paths
+    return sorted(paths)
 
 
 def main():
