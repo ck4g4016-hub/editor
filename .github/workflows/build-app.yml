@@ -21,6 +21,13 @@ on:
 permissions:
   contents: write
 
+# 一次只跑一個。連續推好幾次的時候，兩個建置會同時去動同一個 Release ——
+# 一個正在刪、另一個正在建，就出現 HTTP 403 建置失敗，而且中間那段時間
+# 下載連結是 404。舊的直接取消，反正只有最新那一版有意義。
+concurrency:
+  group: build-app
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
