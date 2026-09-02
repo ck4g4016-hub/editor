@@ -118,9 +118,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete app-latest --yes --cleanup-tag --repo $env:GITHUB_REPOSITORY 2>$null
-          gh release create app-latest release\paper2excel.zip `
-            --repo $env:GITHUB_REPOSITORY `
-            --target $env:GITHUB_SHA `
-            --title "紙本轉 Excel" `
-            --notes-file 說明.txt
+          # 原本是先 delete 再 create。那中間有一段時間 Release 不存在，
+          # 使用者剛好在那時候點下載連結就是 404 —— 看起來像「又沒有連結」。
+          # 改成就地覆蓋附件，連結任何時候都指得到東西。
+          $exists = gh release view app-latest --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create app-latest release\paper2excel.zip `
+                --repo $env:GITHUB_REPOSITORY `
+                --target $env:GITHUB_SHA `
+                --title "紙本轉 Excel" `
+                --notes-file 說明.txt
+          } else {
+              gh release upload app-latest release\paper2excel.zip --clobber `
+                --repo $env:GITHUB_REPOSITORY
+              gh release edit app-latest --repo $env:GITHUB_REPOSITORY `
+                --target $env:GITHUB_SHA `
+                --title "紙本轉 Excel" `
+                --notes-file 說明.txt
+          }
+
+          # 確認發布出去的真的是這一版，不是上一版留下來的
+          $head = gh release view app-latest --repo $env:GITHUB_REPOSITORY --json targetCommitish -q .targetCommitish
+          if ($head -ne $env:GITHUB_SHA) {
+              throw "Release 指向 $head，不是這次的 $env:GITHUB_SHA"
+          }
+          Write-Host "Release 已更新到 $head"
