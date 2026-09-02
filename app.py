@@ -188,6 +188,7 @@ def ask_new_form():
 
 
 def run_new_form():
+    """建立一種表格：樣板、底圖，然後檢查對位。"""
     from tools import newform
 
     answer = ask_new_form()
@@ -195,29 +196,45 @@ def run_new_form():
         return
 
     os.makedirs(STORE, exist_ok=True)
-    folder, notes = newform.create(STORE, answer["code"], answer["name"],
-                                   answer["pdf"], answer["front"], answer["back"])
-    lines = ["已建立樣板：%s" % answer["code"]] + notes
+    code, chosen = answer["code"], answer["pdf"]
+
+    # 同一個資料夾裡的 PDF 都算這種表格的樣本。
+    # 底圖檢查一定要拿「實際掃描件」去對 —— 拿空白原稿跟它自己比，
+    # 覆蓋率永遠是 1.000，看起來很漂亮但什麼都沒驗到。
+    folder = os.path.dirname(os.path.abspath(chosen))
+    samples = sorted(os.path.join(folder, n) for n in os.listdir(folder)
+                     if n.lower().endswith(".pdf"))
+    others = [p for p in samples if os.path.abspath(p) != os.path.abspath(chosen)]
+
+    target, notes = newform.create(STORE, code, answer["name"], chosen,
+                                   answer["front"], answer["back"])
+    lines = ["已建立樣板：%s（%s）" % (code, answer["name"])] + notes
 
     if answer["source"] == newform.BLANK:
-        _, note = newform.base_from_blank(STORE, answer["code"], answer["pdf"],
-                                          answer["front"])
+        _, note = newform.base_from_blank(STORE, code, chosen, answer["front"])
         lines.append(note)
     elif answer["source"] == newform.COMPOSE:
         try:
-            _, note = newform.base_from_scans(STORE, answer["code"], [answer["pdf"]])
+            _, note = newform.base_from_scans(STORE, code, samples)
             lines.append(note)
         except ValueError as error:
             lines.append("底圖沒做成：%s" % error)
 
     if answer["source"] != newform.NONE:
-        checks, worst = newform.check(STORE, answer["code"], [answer["pdf"]])
+        # 有別的檔就拿別的檔驗，只有一個檔才退而求其次拿它自己驗
+        checks, worst = newform.check(STORE, code, others or [chosen])
         lines.append("")
-        lines.append("對位品質（覆蓋率越高越準，0.75 以下要處理）：")
-        lines.extend("    " + line for line in checks[:8])
-        if worst < 0.75:
+        if others:
+            lines.append("拿同資料夾的 %d 個檔案檢查對位："
+                         % len(others))
+        else:
+            lines.append("資料夾裡只有這一個 PDF，只能拿它自己檢查，")
+            lines.append("這個數字不代表真實掃描件對得準不準。")
+            lines.append("把實際掃描件放進同一個資料夾再做一次會比較準。")
+        lines.extend("    " + line for line in checks[:10])
+        if worst < 0.75 and others:
             lines.append("")
-            lines.append("⚠ 對得不夠準，欄位框可能會偏掉抓到隔壁格。")
+            lines.append("⚠ 覆蓋率偏低，欄位框可能整個偏掉抓到隔壁格。")
             lines.append("   影印本請改用「多份合成」，並且多給幾份。")
 
     for line in lines:
