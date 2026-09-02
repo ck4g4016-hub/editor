@@ -80,6 +80,8 @@ class Converter:
         self._fields = {}
         # 每跑一次 run() 就換一本新的。診斷報告完全靠它。
         self.journal = diagnose.Journal()
+        # 認不出來的頁。它們會被併進前一件，如果不講出來就等於靜靜吃掉資料。
+        self.unknown = []
 
     def base_of(self, code, role="front"):
         """底圖。背面用 base_back.png，沒有就回 None（不減版面）。"""
@@ -117,6 +119,14 @@ class Converter:
                 "inliers": page.inliers,
                 "margin": page.margin,
             })
+
+        # 認不出來的頁會被 split_documents 併進前一件 —— 對「空白背面」來說
+        # 這是對的，對「首頁沒認出來的下一件」來說就是把一整件吃掉：
+        # 十五件掃進來變成十四筆，而且畫面上完全看不出來少了誰。
+        # 所以單獨列出來給人看。
+        self.unknown = [{"file": journal.file_id(p.source), "page": p.index + 1,
+                         "inliers": p.inliers, "margin": p.margin}
+                        for p in pages if p.role == layout.UNKNOWN]
 
         documents = layout.split_documents(pages)
         journal.documents = len(documents)
@@ -338,7 +348,7 @@ def _stack(crops):
     return np.vstack(padded)
 
 
-def summarise(records, unresolved):
+def summarise(records, unresolved, unknown=()):
     """給人看的統計。"""
     ok = sum(1 for r in records if r.status == OK)
     lines = [
@@ -346,6 +356,9 @@ def summarise(records, unresolved):
     ]
     if unresolved:
         lines.append("另有 %d 組頁面切不出完整的一件，需要人工分頁" % len(unresolved))
+    if unknown:
+        lines.append("有 %d 頁認不出是哪一種表格，已併進前一件 ——"
+                     " 如果那是新的一件，這一批就少了一筆" % len(unknown))
 
     counts = {}
     for record in records:

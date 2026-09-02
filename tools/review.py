@@ -150,7 +150,11 @@ def describe(state):
     unresolved = ["%s 第 %s 頁" % (os.path.basename(document.pages[0].source),
                                   "、".join(str(p.index + 1) for p in document.pages))
                   for document in state["unresolved"]]
-    return {"columns": columns, "records": records, "unresolved": unresolved}
+    unknown = ["%s 第 %d 頁（特徵點 %d、差距 %.1f）"
+               % (item["file"], item["page"], item["inliers"], item["margin"])
+               for item in state.get("unknown") or []]
+    return {"columns": columns, "records": records,
+            "unresolved": unresolved, "unknown": unknown}
 
 
 def collect(targets):
@@ -191,12 +195,12 @@ def main():
         paths, progress=lambda r: print("  %s" % r.describe()), keep_crops=True)
 
     print()
-    print(process.summarise(records, unresolved))
+    print(process.summarise(records, unresolved, converter.unknown))
     if not records:
         raise SystemExit("沒有任何可以複核的資料 —— 請先用樣板編輯器定義欄位")
 
     state = {"records": records, "unresolved": unresolved, "out": args.out,
-             "journal": converter.journal}
+             "journal": converter.journal, "unknown": converter.unknown}
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(state))
     url = "http://127.0.0.1:%d/" % server.server_address[1]
     print()

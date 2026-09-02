@@ -114,10 +114,21 @@ function render(){
   el('stat').textContent =
       `共 ${data.records.length} 件，${data.records.length - flagged} 件通過、${flagged} 件要看`;
 
-  el('unresolved').innerHTML = data.unresolved.length
-    ? `<div class="note"><b>有 ${data.unresolved.length} 組頁面切不出完整的一件</b>，
-       這些頁沒有被辨識，請確認掃描是否漏了首頁：<br>` +
-      data.unresolved.map(u => esc(u)).join('<br>') + `</div>` : '';
+  let notes = '';
+  if (data.unresolved.length){
+    notes += `<div class="note"><b>有 ${data.unresolved.length} 組頁面切不出完整的一件</b>，
+       這些頁沒有被辨識，請確認掃描是否漏了首頁：<br>`
+       + data.unresolved.map(u => esc(u)).join('<br>') + `</div>`;
+  }
+  if ((data.unknown || []).length){
+    // 認不出來的頁會被併進前一件。如果那其實是新的一件，這一批就少了一筆，
+    // 而且從件數上完全看不出來 —— 所以一定要講。
+    notes += `<div class="note"><b>有 ${data.unknown.length} 頁認不出是哪一種表格</b>，
+       已經併進前一件。<b>如果那是新的一件，這一批就少了一筆。</b><br>
+       請對照原始檔確認頁數對不對：<br>`
+       + data.unknown.map(u => esc(u)).join('<br>') + `</div>`;
+  }
+  el('unresolved').innerHTML = notes;
 
   el('list').innerHTML = data.records.map((r, i) => {
     const cells = data.columns.map(c => {

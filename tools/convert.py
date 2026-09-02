@@ -53,7 +53,7 @@ def main():
         paths, progress=lambda r: print("  %s" % r.describe()))
 
     print()
-    print(process.summarise(records, unresolved))
+    print(process.summarise(records, unresolved, converter.unknown))
 
     known = {template.code for template in converter.templates.templates}
     missing = sorted(code for code in known if not converter.fields_of(code))

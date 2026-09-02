@@ -324,7 +324,7 @@ def run_convert():
     records, unresolved = converter.run(
         paths, progress=lambda r: print("  %s" % r.describe()), keep_crops=True)
     print()
-    print(process.summarise(records, unresolved))
+    print(process.summarise(records, unresolved, converter.unknown))
 
     if not records:
         # 一件都認不出來，正是最需要診斷報告的時候 —— 沒有複核畫面可以按按鈕，
@@ -340,7 +340,7 @@ def run_convert():
         return
 
     state = {"records": records, "unresolved": unresolved, "out": OUTPUT,
-             "journal": converter.journal}
+             "journal": converter.journal, "unknown": converter.unknown}
     server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state))
     serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "複核介面",
           "確認完要按「產生輸出檔」，\n檔案才會出現在「輸出」資料夾。")
