@@ -137,6 +137,21 @@ def check():
         except Exception as error:                                  # noqa: BLE001
             problems.append("%s 出錯：%s: %s" % (label, type(error).__name__, error))
 
+    # 說明檔講的按鈕，程式裡要真的有 —— 紅筆偵測拿掉了，說明卻還在教
+    # 使用者去標紅筆，那種文件比沒有文件更糟。
+    manual = resources.path("說明.txt")
+    if os.path.isfile(manual):
+        with open(manual, encoding="utf-8") as handle:
+            text = handle.read()
+        for button in ("新增表格", "設定樣板", "轉　換", "產生診斷報告", "產生輸出檔"):
+            if button.replace("　", "") not in text.replace("　", ""):
+                problems.append("說明.txt 沒有提到按鈕「%s」" % button)
+        for gone in ("綠色虛線的候選框", "點綠色虛線"):
+            if gone in text:
+                problems.append("說明.txt 還在講已經移除的紅筆候選框：%s" % gone)
+    else:
+        problems.append("找不到 說明.txt")
+
     # 寬欄位不可以放大 —— 放大之後偵測框會重疊，同一個字讀兩次
     if recognise.scale_for(1600) * 1600 > recognise.MAX_WIDTH + 1:
         problems.append("寬欄位的縮放沒有壓到 MAX_WIDTH 以內")
