@@ -300,8 +300,98 @@ def check():
     return problems
 
 
+def end_to_end():
+    r"""從 PDF 一路跑到資料列，整條走一遍。
+
+    單元檢查抓不到「函式簽章改了但呼叫端沒改」這種事 —— sheet_of 多回傳
+    一個值的時候，每一個單元檢查都照樣通過，真正跑起來才會炸。
+    所以這裡自己造一份 A4 表格（含身分證的十個印刷格子與手寫內容）、
+    建樣板與底圖、存成 PDF，然後跑完整的 Converter.run()。
+
+    這是**整條路走得通**的檢查，不是辨識品質的檢查 —— 合成出來的字乾淨得
+    不像手寫，光靠整行讀就會對。它要擋下來的是分類、切件、減版面、裁欄位、
+    驗證、產報告這幾段之間接不起來。辨識品質的檢查在上面各自的單元裡。
+
+    回傳問題清單。
+    """
+    import json
+    import tempfile
+
+    import cv2
+    import fitz
+    import numpy as np
+
+    from pipeline import diagnose, fields as fieldmod, process, resources
+
+    problems = []
+    work = tempfile.mkdtemp()
+    store = os.path.join(work, "樣板")
+    os.makedirs(os.path.join(store, "F"))
+    width, height = 2480, 3508              # A4 @300dpi
+    wanted = "G220390817"                   # 通得過檢查碼
+
+    def draw(handwriting):
+        img = np.full((height, width, 3), 255, np.uint8)
+        cv2.rectangle(img, (200, 200), (2280, 3300), (0, 0, 0), 4)
+        cv2.putText(img, "APPLICATION FORM 2026", (300, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 0, 0), 6)
+        for index in range(11):             # 一字一格的印刷方格
+            x = 300 + index * 130
+            cv2.line(img, (x, 950), (x, 1130), (0, 0, 0), 4)
+        cv2.line(img, (300, 950), (300 + 10 * 130, 950), (0, 0, 0), 4)
+        cv2.line(img, (300, 1130), (300 + 10 * 130, 1130), (0, 0, 0), 4)
+        rng = np.random.RandomState(7)      # 給對位用的固定特徵點
+        for _ in range(400):
+            x, y = rng.randint(250, 2200), rng.randint(1400, 3200)
+            cv2.rectangle(img, (x, y), (x + 18, y + 18), (0, 0, 0), -1)
+        if handwriting:
+            for index, char in enumerate(wanted):
+                cv2.putText(img, char, (300 + index * 130 + 30, 1090),
+                            cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 5)
+        return img
+
+    blank, filled = draw(False), draw(True)
+    resources.imwrite(os.path.join(store, "F", "base.png"), blank)
+    resources.imwrite(os.path.join(store, "F", "front.png"), blank)
+    with open(os.path.join(store, "F", "index.json"), "w", encoding="utf-8") as handle:
+        json.dump({"code": "F", "name": "測試表", "pages": {"front": "front.png"}},
+                  handle, ensure_ascii=False)
+    fieldmod.save(store, "F", [fieldmod.Field(
+        id="a", name="身分證", column="id_number", kind="id_number",
+        box=(300, 950, 1300, 180))])
+
+    path = os.path.join(work, "scan.pdf")
+    document = fitz.open()
+    ok, buffer = cv2.imencode(".png", filled)
+    page = document.new_page(width=595, height=842)
+    page.insert_image(fitz.Rect(0, 0, 595, 842), stream=buffer.tobytes())
+    document.save(path)
+    document.close()
+
+    converter = process.Converter(store)
+    records, unresolved = converter.run([path], keep_crops=True)
+    if len(records) != 1:
+        problems.append("端對端：應該辨識出 1 件，實際 %d 件（切不完整 %d）"
+                        % (len(records), len(unresolved)))
+        return problems
+    got = records[0].values.get("id_number")
+    if got != wanted:
+        problems.append("端對端：身分證讀成 %r，應該是 %r" % (got, wanted))
+    if records[0].problems.get("id_number"):
+        problems.append("端對端：身分證被標記了 —— %s"
+                        % records[0].problems["id_number"])
+
+    # 報告要能產生，而且不可以夾帶個資
+    text = diagnose.build(converter.journal, notes={"overall": "自我檢查"},
+                          version=resources.version())
+    if wanted in text:
+        problems.append("端對端：診斷報告裡出現了未遮罩的身分證")
+    return problems
+
+
 def main():
     problems = check()
+    problems.extend(end_to_end())
     if problems:
         print("自我檢查沒過：")
         for problem in problems:
