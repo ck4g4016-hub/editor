@@ -370,6 +370,15 @@ class Converter:
 
         if keep_crops and crops:
             stacked = crops[0] if len(crops) == 1 else _stack(crops)
+            if grid_band is not None and len(crops) == 1:
+                # 有印刷格子的欄位，複核畫面上只顯示那排格子。
+                # 欄位框通常畫得比格子高，整框顯示的話字只佔一小條，
+                # 而這一欄正是最需要看清楚、要照著打的那一欄。
+                top, bottom = grid_band
+                slack = max(6, (bottom - top) // 4)
+                cut = stacked[max(0, top - slack):min(stacked.shape[0], bottom + slack), :]
+                if cut.size:
+                    stacked = cut
             ok, buffer = cv2.imencode(".png", stacked)
             if ok:
                 record.crops[definition.column] = buffer.tobytes()
