@@ -234,6 +234,31 @@ def check():
     if recognise.grid_cells(noisy, blank):
         problems.append("寬度不一致的直線被誤當成格線")
 
+    # 一欄有好幾格、只有其中一格有印刷格子的時候（門牌就是這樣：路名是
+    # 空白欄，「號」才有格子），沒格線的那幾格要沿用整行讀的結果。
+    # 只收有格線的那幾格會讓整欄變成單一個「15號」，路名整段消失。
+    import tempfile
+
+    from pipeline import fields as fieldmod
+
+    conv = process.Converter(tempfile.mkdtemp())
+    mixed_base = np.full((150, 1500, 3), 255, np.uint8)
+    for x in range(900, 1301, 100):
+        cv2.line(mixed_base, (x, 0), (x, 149), (0, 0, 0), 2)
+    mixed = np.full((150, 1500), 255, np.uint8)
+    cv2.putText(mixed, "AAA", (30, 108), cv2.FONT_HERSHEY_SIMPLEX, 2.2, 0, 6)
+    for index, ch in enumerate("158"):
+        cv2.putText(mixed, ch, (920 + index * 100, 108),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.2, 0, 6)
+    mixed_field = fieldmod.Field(id="a", name="門牌", column="address",
+                                 kind="address", box=(0, 0, 880, 150), suffix="路",
+                                 parts=[{"box": (900, 0, 500, 150), "suffix": "號"}])
+    mixed_record = process.Record("F", "x.pdf", 0)
+    conv._read_field(mixed_record, mixed, mixed_field, False, mixed_base)
+    if mixed_record.raw.get("address") != "AAA路158號":
+        problems.append("有格線與沒格線的格子混在一欄時讀成 %r，應該是 'AAA路158號'"
+                        % mixed_record.raw.get("address"))
+
     # 三種讀法都要能挑出通過檢查碼的那一個
     good = "A123456789"
     if validate.id_number(good)[1] is None:

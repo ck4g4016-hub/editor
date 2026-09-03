@@ -294,7 +294,7 @@ class Converter:
         十個字讀出九個（實測讀到 9 碼、5 碼都有），而那九個看起來像模像樣。
         """
         pieces, crops, scores = [], [], []
-        grid_pieces, grid_scores = [], []
+        grid_pieces, grid_scores, any_grid = [], [], False
         for box, suffix in definition.segments():
             crop = recognise.crop_field(sheet, box)
             text, confidence = recognise.read(crop)
@@ -313,11 +313,20 @@ class Converter:
             # 只剩手寫，所以要拿底圖去找線、拿減完的影像去切字。
             printed = recognise.crop_field(base, box) if base is not None else crop
             cells = recognise.grid_cells(printed, crop)
+            cell_text, cell_score = ("", confidence)
             if cells:
                 cell_text, cell_score = recognise.read_pieces(cells)
-                if cell_text:
-                    grid_pieces.append(cell_text + suffix)
-                    grid_scores.append(cell_score)
+                any_grid = any_grid or bool(cell_text)
+            # 沒有格線的那幾格要沿用整行讀的結果。
+            # 門牌是分成路／巷／弄／號好幾格的，只有「號」那格有印格子；
+            # 只收有格線的那幾格，grid_raw 就會變成單一個「15號」，
+            # 拿它當整欄的值等於把路名整段丟掉。
+            chosen = cell_text.strip() or text
+            if chosen:
+                grid_pieces.append(chosen + suffix)
+                grid_scores.append(cell_score if cell_text.strip() else confidence)
+            elif not suffix:
+                grid_scores.append(confidence)
 
         if keep_crops and crops:
             stacked = crops[0] if len(crops) == 1 else _stack(crops)
@@ -357,7 +366,7 @@ class Converter:
                 if candidate and value == validate.fix_id_positions(candidate):
                     raw, confidence = candidate, score
                     break
-        elif grid_raw and grid_raw != raw:
+        elif any_grid and grid_raw and grid_raw != raw:
             # 這一欄有印好的格子。格線切出來的結果比整行讀可靠 ——
             # 一格一個字，不會把兩個字併成一個，也不會漏掉最後那一豎
             # （實測「701」整行讀成「70」）。所以以格線的結果為準。
