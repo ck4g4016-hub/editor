@@ -521,6 +521,30 @@ def check():
         if value is not None or not problem:
             problems.append("逐格求解：只有 9 格竟然給了答案 %r" % value)
 
+    # 沒有印刷格子的身分證欄一定要走得通。
+    #
+    # A、B、E 那種電腦產製的表格，身分證是一行印刷字、沒有方格。逐格那條路
+    # 走不進去，底下卻讀得到只在那條路裡指派的變數 —— 整份文件在這裡丟
+    # UnboundLocalError 被跳過。使用者看到的是「新建的三個樣板通通沒反應，
+    # 只有舊的 F 讀得到」，八件裡有七件無聲消失，完全看不出是這一行。
+    import tempfile as _tf
+
+    plain = process.Converter(_tf.mkdtemp())
+    sheet = np.full((120, 700), 255, np.uint8)
+    cv2.putText(sheet, "A123456789", (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 1.6, 0, 4)
+    plain_field = fieldmod.Field(id="a", name="身分證", column="id_number",
+                                 kind="id_number", box=(0, 0, 700, 120))
+    plain_record = process.Record("A", "x.pdf", 0)
+    try:
+        plain.__class__._read_field(plain, plain_record, sheet, plain_field, False, None)
+    except Exception as error:                                      # noqa: BLE001
+        problems.append("沒有印刷格子的身分證欄出錯：%s: %s"
+                        % (type(error).__name__, error))
+    else:
+        if plain_record.values.get("id_number") != "A123456789":
+            problems.append("沒有印刷格子的身分證欄讀成 %r"
+                            % plain_record.values.get("id_number"))
+
     # 三種讀法都要能挑出通過檢查碼的那一個
     good = "A123456789"
     if validate.id_number(good)[1] is None:
