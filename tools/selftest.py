@@ -108,6 +108,42 @@ def check():
             if not problem:
                 problems.append("門牌「%s」應該被標記卻放行了" % label)
 
+    # 字典裡沒有的路名**絕對不可以**被換成另一條真的存在的路。
+    # 這是最危險的一類錯：驗證會放行，輸出表上看不出來，RPA 拿著別人家的
+    # 門牌去查調。實測出過一次：鶯歌區的「大湖路」被換成「東湖路」。
+    yingge = lexicon.for_district(lexicon.load(resources.base_dir()), "鶯歌區")
+    if yingge:
+        for got in ("大湖路", "大湖", "西湖路", "不存在路"):
+            name, score = lexicon.resolve_head(got, yingge)
+            if name is not None:
+                problems.append("路名「%s」不在字典裡，卻被換成 %r（%.2f）"
+                                % (got, name, score))
+        for got, want in (("東湖路", "東湖路"), ("中湖街", "中湖街"),
+                          ("東湖", "東湖路"), ("國華路", "國華路")):
+            name, _score = lexicon.resolve_head(got, yingge)
+            if name != want:
+                problems.append("路名比對 %s 得到 %r，應該是 %r" % (got, name, want))
+        value, problem = validate.address("大湖路732巷16弄15號2樓", roads=yingge)
+        if not problem:
+            problems.append("不在字典裡的門牌被放行了：%r" % value)
+
+    # 段名沒有格式規則，只能靠清單。清單裡沒有的絕對不可以自己代換。
+    for label, raw, known, want, flagged in (
+        ("清單裡有", "國際", ["國際段", "二甲段"], "國際", False),
+        ("尾字的段可有可無", "國際段", ["國際", "二甲"], "國際", False),
+        ("清單裡沒有要標起來", "圍際", ["國際段", "二甲段"], "圍際", True),
+        ("沒有清單就照讀的寫", "圍際", [], "圍際", False),
+    ):
+        got, problem = validate.check("section", raw, known=known)
+        if got != want:
+            problems.append("段名「%s」得到 %r，應該是 %r" % (label, got, want))
+        if flagged and problem is None and known:
+            problems.append("段名「%s」應該被標記卻放行了" % label)
+    for raw, known in (("圍際", ["國際段"]), ("", ["國際段"])):
+        _got, problem = validate.check("section", raw, known=known)
+        if not problem:
+            problems.append("段名 %r 應該被標記卻放行了" % raw)
+
     # 這些邊界情況以前每一個都會丟例外，而且都在最不能出事的地方 ——
     # 輸出檔產不出來等於整批複核白做，診斷報告產不出來等於出事時沒有線索。
     import numpy as np
@@ -137,13 +173,30 @@ def check():
         except Exception as error:                                  # noqa: BLE001
             problems.append("%s 出錯：%s: %s" % (label, type(error).__name__, error))
 
+    # 那個小視窗一關，網頁伺服器就跟著收掉，瀏覽器那一頁只會說
+    # 「Failed to fetch」，而且程式已經不在，連錯誤紀錄都寫不出來。
+    # 使用者遇到過一次，整批白跑還查不出原因。關之前一定要先問。
+    with open(resources.path("app.py"), encoding="utf-8") as handle:
+        source = handle.read()
+    for needed, why in (
+        ("WM_DELETE_WINDOW", "右上角的 X 沒有攔下來，關掉就把伺服器一起收掉"),
+        ("askyesno", "關視窗之前沒有先問一句"),
+        ('root.after(1500, lambda: root.attributes("-topmost", False))',
+         "小視窗還是一直置頂，會擋住瀏覽器讓人想把它關掉"),
+    ):
+        if needed not in source:
+            problems.append("serve() %s" % why)
+    if "diagnose.save(" not in source.split("def run_convert", 1)[-1].split("def menu", 1)[0]:
+        problems.append("轉換完沒有自動寫診斷報告 —— 複核畫面掛掉就什麼線索都沒有")
+
     # 說明檔講的按鈕，程式裡要真的有 —— 紅筆偵測拿掉了，說明卻還在教
     # 使用者去標紅筆，那種文件比沒有文件更糟。
     manual = resources.path("說明.txt")
     if os.path.isfile(manual):
         with open(manual, encoding="utf-8") as handle:
             text = handle.read()
-        for button in ("新增表格", "設定樣板", "轉　換", "產生診斷報告", "產生輸出檔"):
+        for button in ("新增表格", "設定樣板", "轉　換", "字典",
+                       "產生診斷報告", "產生輸出檔"):
             if button.replace("　", "") not in text.replace("　", ""):
                 problems.append("說明.txt 沒有提到按鈕「%s」" % button)
         for gone in ("綠色虛線的候選框", "點綠色虛線"):
@@ -157,6 +210,37 @@ def check():
         problems.append("寬欄位的縮放沒有壓到 MAX_WIDTH 以內")
     if recognise.scale_for(100) < 1.5:
         problems.append("窄欄位沒有放大")
+
+    # 照原稿印好的格線切格子。承辦人說得對：「原稿就有格子了」，
+    # 一字一格的欄位不該要人去框十個小方塊。
+    import cv2
+
+    printed = np.full((150, 1101, 3), 255, np.uint8)
+    for x in range(0, 1101, 100):
+        cv2.line(printed, (x, 0), (x, 149), (0, 0, 0), 2)
+    blank = np.full((150, 1101), 255, np.uint8)
+    cut = recognise.grid_cells(printed, blank)
+    if len(cut) != 11:
+        problems.append("印刷格線應該切出 11 格，實際切出 %d 格" % len(cut))
+    widths = {c.shape[1] for c in cut}
+    if len(widths) > 2:
+        problems.append("切出來的格子寬度不一致：%s" % sorted(widths))
+    if recognise.grid_cells(np.full((150, 1101, 3), 255, np.uint8), blank):
+        problems.append("沒有格線的欄位不該被切成格子")
+    # 說明文字的直筆畫寬度不一致，不可以被當成格線 —— 那樣會把字剖成兩半
+    noisy = np.full((150, 1101, 3), 255, np.uint8)
+    for x in (10, 40, 300, 900, 1000):
+        cv2.line(noisy, (x, 0), (x, 149), (0, 0, 0), 2)
+    if recognise.grid_cells(noisy, blank):
+        problems.append("寬度不一致的直線被誤當成格線")
+
+    # 三種讀法都要能挑出通過檢查碼的那一個
+    good = "A123456789"
+    if validate.id_number(good)[1] is None:
+        picked, problem = validate.best_id("A12345678", good, "")
+        if problem is not None or picked != good:
+            problems.append("身分證三種讀法沒有挑出通過檢查碼的那個：%r %s"
+                            % (picked, problem))
 
     for label, run, want in cases:
         try:

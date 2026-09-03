@@ -187,11 +187,113 @@ def cells(crop):
 
 def read_cells(crop):
     """逐格辨識，回傳 (接起來的文字, 最低信心)。格子讀不到就跳過。"""
-    pieces, scores = [], []
-    for cell in cells(crop):
+    return read_pieces(cells(crop))
+
+
+def read_pieces(pieces):
+    """把切好的格子一格一格讀，接起來。回傳 (文字, 最低信心)。"""
+    out, scores = [], []
+    for cell in pieces:
         text, confidence = read(cell)
         text = text.strip()
         if text:
-            pieces.append(text)
+            out.append(text)
             scores.append(confidence)
-    return "".join(pieces), (min(scores) if scores else 0.0)
+    return "".join(out), (min(scores) if scores else 0.0)
+
+
+# ---------------------------------------------------------------------------
+# 照原稿印好的方格切
+#
+# 承辦人講得很直接：「又要一格一個圈出來嗎？原稿就有格子了。」
+# 他是對的。身分證、稅籍編號這種欄位，表格上本來就印好了一格一個字的方格，
+# 那些格線就在底圖上，位置精確而且每一份都一樣 —— 拿它來切是最準的，
+# 也不必要求人去框十個小方塊。
+#
+# 靠墨跡空白切（上面的 cells）只在沒有格線時才需要：格線本身就是墨跡，
+# 「字—線—字」之間根本沒有空白可言，整條會被當成一格，等於沒切。
+# ---------------------------------------------------------------------------
+
+# 一條直格線在欄位裡要連續佔掉多少高度才算數
+LINE_RATIO = 0.55
+
+# 至少要切出這麼多格才當作「這是一個一字一格的欄位」
+MIN_CELLS = 4
+
+# 每一格往內縮幾個像素，避開格線本身留下的殘影
+INSET = 3
+
+
+def _longest_runs(mask):
+    """每一欄最長的連續 True 有多長。"""
+    height, width = mask.shape
+    best = np.zeros(width, dtype=np.int32)
+    current = np.zeros(width, dtype=np.int32)
+    for row in range(height):
+        current = np.where(mask[row], current + 1, 0)
+        best = np.maximum(best, current)
+    return best
+
+
+def separators(printed):
+    """從印刷版面上找出直格線的位置，回傳每條線的中心 x。
+
+    看的是「連續」的垂直筆畫，不是整欄墨跡的總量 —— 說明文字也會讓某一欄
+    墨跡很多，但那不是一條線。
+    """
+    if printed is None or printed.size == 0:
+        return []
+    gray = printed if printed.ndim == 2 else cv2.cvtColor(printed, cv2.COLOR_BGR2GRAY)
+    height = gray.shape[0]
+    if height < 8:
+        return []
+    runs = _longest_runs(gray < 160)
+    columns = np.flatnonzero(runs >= LINE_RATIO * height)
+    if columns.size == 0:
+        return []
+
+    lines, group = [], [int(columns[0])]
+    for value in columns[1:]:
+        value = int(value)
+        if value - group[-1] <= 2:
+            group.append(value)
+        else:
+            lines.append(sum(group) // len(group))
+            group = [value]
+    lines.append(sum(group) // len(group))
+    return lines
+
+
+def grid_cells(printed, crop):
+    """依印刷格線把欄位切成一格一格。切不出來就回空的。
+
+    printed  這個欄位在底圖（只有印刷版面）上的樣子
+    crop     這個欄位在減掉版面之後的樣子，兩張大小必須一樣
+
+    格子寬度要夠一致才算數。差太多代表抓到的不是格線，
+    可能是說明文字的直筆畫 —— 那樣切出來會把一個字剖成兩半，
+    比不切還糟。
+    """
+    if crop is None or crop.size == 0:
+        return []
+    marks = separators(printed)
+    if len(marks) < MIN_CELLS + 1:
+        return []
+
+    spans = [(a + INSET, b - INSET) for a, b in zip(marks, marks[1:])
+             if b - a > INSET * 2 + 2]
+    if len(spans) < MIN_CELLS:
+        return []
+
+    widths = sorted(b - a for a, b in spans)
+    middle = widths[len(widths) // 2]
+    if middle <= 0 or widths[0] < 0.6 * middle or widths[-1] > 1.7 * middle:
+        return []
+
+    limit = crop.shape[1]
+    out = []
+    for a, b in spans:
+        a, b = max(0, min(a, limit)), max(0, min(b, limit))
+        if b - a >= 3:
+            out.append(crop[:, a:b])
+    return out

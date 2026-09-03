@@ -79,14 +79,28 @@ def message(title, text):
     root.destroy()
 
 
-def serve(server, url, label, hint=""):
+def serve(server, url, label, hint="", finished=None, pending=""):
     """把網頁介面跑起來，同時開一個小視窗讓使用者按完回主選單。
 
     原本是直接 serve_forever()，在主控台裡按 Ctrl+C 結束 ——
     但打包成執行檔之後根本沒有主控台可以按，程式就卡在那裡，
     使用者只能整個關掉，做完一件事就得重開。
+
+    **這個視窗一關，瀏覽器那一頁就跟著失效。** 這件事害慘過一次：
+    視窗設成永遠置頂，一直壓在瀏覽器上面，使用者很自然地把它關掉，
+    伺服器跟著收掉 —— 但瀏覽器那一頁還好好地開著，看起來一切正常，
+    一按「產生診斷報告」只得到「連不上程式：Failed to fetch」，
+    而且程式早就不在了，連錯誤紀錄都寫不出來，輸出資料夾當然也是空的。
+    整套東西看起來就像無聲無息地壞掉。
+
+    所以現在三件事都改了：置頂只維持一下下（讓人看到它開了，但不擋路）、
+    關視窗會先問過、真的做完了就不再囉嗦。
+
+    finished  一個沒有參數的函式，回傳 True 代表瀏覽器那邊已經做完了。
+    pending   還沒做完時，要提醒使用者去按的那個按鈕叫什麼。
     """
     import tkinter
+    from tkinter import messagebox
 
     threading.Thread(target=server.serve_forever, daemon=True).start()
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
@@ -98,7 +112,10 @@ def serve(server, url, label, hint=""):
     root = tkinter.Tk()
     root.title(label)
     root.resizable(False, False)
+    # 置頂只維持一下下。要讓使用者看到它開了，但不能一直擋在瀏覽器前面 ——
+    # 擋著的話使用者只會想把它關掉，而關掉就等於把那一頁一起關了。
     root.attributes("-topmost", True)
+    root.after(1500, lambda: root.attributes("-topmost", False))
 
     frame = tkinter.Frame(root, padx=22, pady=18)
     frame.pack()
@@ -108,10 +125,30 @@ def serve(server, url, label, hint=""):
         tkinter.Label(frame, text=hint, fg="#666", justify="center").pack(pady=(6, 0))
     tkinter.Label(frame, text=url, fg="#888", font=("", 8)).pack(pady=(6, 0))
     tkinter.Label(frame,
-                  text="瀏覽器那邊做完之後，回來按這個按鈕。",
-                  fg="#8a3d3d").pack(pady=(12, 6))
+                  text="這個視窗一關，瀏覽器那一頁就失效了。\n"
+                       "瀏覽器那邊做完之後，回來按這個按鈕。",
+                  fg="#8a3d3d", justify="center").pack(pady=(12, 6))
+
+    def close():
+        """關掉之前先確認。真的做完了就不囉嗦。"""
+        try:
+            done = bool(finished()) if finished is not None else False
+        except Exception:                                           # noqa: BLE001
+            done = False
+        if not done:
+            note = ("瀏覽器那一頁還沒按過「%s」。" % pending) if pending else ""
+            if not messagebox.askyesno(
+                    "確定要關掉嗎？",
+                    "%s\n\n關掉之後那一頁就失效了，按什麼都只會顯示連不上，"
+                    "這一批要從頭再跑一次。\n\n確定要關嗎？" % note,
+                    parent=root, default="no"):
+                return
+        root.destroy()
+
     tkinter.Button(frame, text="做完了，回主選單", width=24, height=2,
-                   command=root.destroy).pack()
+                   command=close).pack()
+    # 右上角的 X 走同一條路，不然使用者一樣會不小心把伺服器關掉
+    root.protocol("WM_DELETE_WINDOW", close)
 
     root.mainloop()
     server.shutdown()
@@ -297,7 +334,8 @@ def run_editor():
         return
     server = ThreadingHTTPServer(("127.0.0.1", 0), template_editor.make_handler(workspace))
     serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "樣板編輯器",
-          "每一種表格框完欄位都要按「儲存」，\n沒存的話關掉就沒了。")
+          "每一種表格框完欄位都要按「儲存」，\n沒存的話關掉就沒了。",
+          finished=lambda: workspace.saved, pending="儲存")
 
 
 def run_convert():
@@ -339,11 +377,63 @@ def run_convert():
                 "那份檔案不含個資，可以直接傳給開發者看是哪一步出問題。" % path)
         return
 
+    # 診斷報告先寫一份出來，不要等使用者去按按鈕。
+    # 報告是出問題時唯一的線索，不能讓它取決於「複核畫面還活著沒有」——
+    # 實測就發生過：小視窗被關掉，伺服器跟著收掉，按鈕按下去只得到
+    # 「連不上程式」，資料夾裡一份報告也沒有，等於整批白跑還查不出原因。
+    # 按鈕還是留著：那一份會多帶承辦人自己寫的意見，比這一份有用。
+    from pipeline import diagnose
+
+    try:
+        early = diagnose.save(
+            diagnose.build(converter.journal, version=resources.version()), REPORTS)
+        print("已先寫一份診斷報告：%s" % early)
+    except Exception as error:                                      # noqa: BLE001
+        print("診斷報告寫不出來：%s: %s" % (type(error).__name__, error))
+        early = None
+
     state = {"records": records, "unresolved": unresolved, "out": OUTPUT,
              "journal": converter.journal, "unknown": converter.unknown}
     server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state))
     serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "複核介面",
-          "確認完要按「產生輸出檔」，\n檔案才會出現在「輸出」資料夾。")
+          "確認完要按「產生輸出檔」，\n檔案才會出現在「輸出」資料夾。"
+          + ("\n（診斷報告已經先寫了一份在「輸出\\診斷」）" if early else ""),
+          finished=lambda: state.get("exported"), pending="產生輸出檔")
+
+
+def run_dictionaries():
+    """把兩份字典開起來給人改。
+
+    路名字典缺一條路，那一件的門牌就會被標成「路街名不在字典裡」；
+    地段字典是空的，段名就完全沒有東西可以驗。兩份都是純文字檔，
+    改完存檔，下次轉換就生效 —— 不必重做樣板，也不必等我出新版。
+    """
+    import subprocess
+
+    from pipeline import lexicon
+
+    os.makedirs(STORE, exist_ok=True)
+    roads = lexicon.ensure_roads(STORE)
+    sections = lexicon.ensure_sections(STORE)
+    opened = []
+    for target in (roads, sections):
+        try:
+            os.startfile(target)                # noqa: S606  Windows 專用
+            opened.append(target)
+        except AttributeError:                  # 不是 Windows，開發機上會走到這裡
+            subprocess.Popen(["xdg-open", target])
+            opened.append(target)
+        except OSError as error:
+            print("開不起來 %s：%s" % (target, error))
+    message("字典",
+            "已經開了兩個檔案：\n\n"
+            "roads.txt      路街名，一行一個\n"
+            "sections.txt   地段名，一行一個\n\n"
+            "「## 區名」以下的名稱屬於該區。改完存檔就生效，\n"
+            "不必重做樣板，也不必等新版程式。\n\n"
+            "門牌被標成「路街名不在字典裡」的時候，\n"
+            "就是把那條路補進 roads.txt。\n\n"
+            "檔案放在：\n%s" % STORE)
 
 
 def menu():
@@ -353,7 +443,7 @@ def menu():
     choice = {"value": None}
     root = tkinter.Tk()
     root.title("紙本轉 Excel")
-    root.geometry("400x330")
+    root.geometry("400x375")
     root.resizable(False, False)
 
     tkinter.Label(root, text="紙本轉 Excel", font=("", 15, "bold")).pack(pady=(20, 2))
@@ -372,6 +462,8 @@ def menu():
                    command=lambda: pick("editor")).pack(pady=4)
     tkinter.Button(root, text="新增表格", width=28,
                    command=lambda: pick("newform")).pack(pady=4)
+    tkinter.Button(root, text="字　典", width=28,
+                   command=lambda: pick("roads")).pack(pady=4)
     tkinter.Label(root, text="做完會回到這個畫面。要結束就關掉這個視窗。",
                   fg="#999", font=("", 8)).pack(pady=(12, 0))
 
@@ -413,7 +505,8 @@ def main():
     print("紙本轉 Excel")
     print("工作資料夾：%s" % WORKSPACE)
 
-    actions = {"convert": run_convert, "editor": run_editor, "newform": run_new_form}
+    actions = {"convert": run_convert, "editor": run_editor, "newform": run_new_form,
+               "roads": run_dictionaries}
 
     # 一直回到主選單，直到使用者把它關掉 —— 建樣板要做七次，
     # 做完一件就整個結束的話等於要重開七次。

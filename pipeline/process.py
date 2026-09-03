@@ -76,6 +76,8 @@ class Converter:
         self.templates = layout.TemplateSet.load(store)
         self.districts = list(districts or ["三峽區", "鶯歌區"])
         self.roads = lexicon.load(store)
+        # 地段名字典。沒建就是空的 —— 空的代表不驗證，照讀出來的寫。
+        self.sections = lexicon.load_sections(store)
         self._bases = {}
         self._fields = {}
         # 每跑一次 run() 就換一本新的。診斷報告完全靠它。
@@ -215,19 +217,25 @@ class Converter:
     def sheet_of(self, code, page, role):
         """把一頁算成「減掉印刷版面之後」的影像。
 
+        回傳 (原圖, 減掉版面的影像, 底圖)。
+
         底圖對得上就相減，只留手寫的內容；對不上就退回灰階原圖 ——
         減不掉頂多辨識差一點，硬減會把整頁弄糊。
+
+        第三個回傳值是**對得上時**的底圖。欄位裡印好的方格線就在它上面，
+        辨識時要靠它來切格子。減不掉的時候回 None —— 那時候的影像還在
+        掃描件自己的座標系，底圖的格線位置對不上，拿來切只會切錯。
         """
         image = render.rotate(
             render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
             page.rotation)
         base = self.base_of(code, role)
         if base is None:
-            return image, baseimage.as_gray(image)
+            return image, baseimage.as_gray(image), None
         try:
-            return image, baseimage.subtract(base, image)
+            return image, baseimage.subtract(base, image), base
         except ValueError:
-            return image, baseimage.as_gray(image)
+            return image, baseimage.as_gray(image), None
 
     def read_document(self, document, keep_crops=False):
         """讀一件申請案，把欄位辨識出來。
@@ -261,19 +269,32 @@ class Converter:
                         definition.column, "這一件沒有掃到背面，讀不到這一欄")
                 continue
 
-            _, sheet = self.sheet_of(front.code, page, role)
+            _, sheet, base = self.sheet_of(front.code, page, role)
             ordered = sorted(wanted, key=lambda d: 0 if d.kind == "district" else 1)
             for definition in ordered:
-                self._read_field(record, sheet, definition, keep_crops)
+                self._read_field(record, sheet, definition, keep_crops, base)
 
         for column in CRITICAL:
             if not record.values.get(column):
                 record.problems.setdefault(column, "沒有讀到內容")
         return record
 
-    def _read_field(self, record, sheet, definition, keep_crops):
-        """讀一個欄位。有好幾個格子就逐格讀，照順序接起來。"""
+    def _read_field(self, record, sheet, definition, keep_crops, base=None):
+        """讀一個欄位。
+
+        同一個欄位最多讀三遍，因為沒有一種讀法對所有欄位都最好：
+
+        整行讀      一般欄位（門牌、姓名）唯一合理的讀法。
+        照格線讀    原稿上印好一字一格的欄位（身分證、地號）。格線就在底圖上，
+                    位置精確而且每一份都一樣。承辦人說得對：「原稿就有格子了」，
+                    不該要求人去框十個小方塊。
+        照空白讀    沒有格線、但字跟字之間有明顯空白時的退路。
+
+        整行讀在一字一格的欄位上很容易出事：偵測階段會把相鄰的字併成一塊，
+        十個字讀出九個（實測讀到 9 碼、5 碼都有），而那九個看起來像模像樣。
+        """
         pieces, crops, scores = [], [], []
+        grid_pieces, grid_scores = [], []
         for box, suffix in definition.segments():
             crop = recognise.crop_field(sheet, box)
             text, confidence = recognise.read(crop)
@@ -288,6 +309,16 @@ class Converter:
                 # 有後綴的空格子（例如沒有「段」）是正常的，整段跳過。
                 scores.append(confidence)
 
+            # 照原稿印好的格線再讀一次。格線在底圖上，減掉版面之後的影像
+            # 只剩手寫，所以要拿底圖去找線、拿減完的影像去切字。
+            printed = recognise.crop_field(base, box) if base is not None else crop
+            cells = recognise.grid_cells(printed, crop)
+            if cells:
+                cell_text, cell_score = recognise.read_pieces(cells)
+                if cell_text:
+                    grid_pieces.append(cell_text + suffix)
+                    grid_scores.append(cell_score)
+
         if keep_crops and crops:
             stacked = crops[0] if len(crops) == 1 else _stack(crops)
             ok, buffer = cv2.imencode(".png", stacked)
@@ -296,11 +327,22 @@ class Converter:
 
         raw = "".join(pieces)
         confidence = min(scores) if scores else 0.0
+        grid_raw = "".join(grid_pieces)
+        grid_confidence = min(grid_scores) if grid_scores else 0.0
+
+        extra = {}
+        if definition.kind == "district":
+            extra["known"] = self.districts
+        elif definition.kind == "section":
+            extra["known"] = lexicon.for_district(
+                self.sections, record.values.get("district"))
+        elif definition.kind == "address":
+            extra["roads"] = lexicon.for_district(
+                self.roads, record.values.get("district"))
 
         if definition.kind == "id_number":
             # 身分證有檢查碼，可以直接驗證哪一種讀法是對的 —— 別的欄位沒這個優勢。
-            # 一字一格的欄位整行讀常會漏字（實測讀到 9 碼、5 碼都有），
-            # 所以再逐格讀一次，兩種都套位置規則，誰通過檢查碼就用誰。
+            # 三種讀法各套一遍位置規則，誰通過檢查碼就用誰，不必猜。
             spaced_pieces, spaced_scores = [], []
             for box, _suffix in definition.segments():
                 text, score = recognise.read_cells(recognise.crop_field(sheet, box))
@@ -309,16 +351,26 @@ class Converter:
                     spaced_scores.append(score)
             spaced = "".join(spaced_pieces)
             spaced_confidence = min(spaced_scores) if spaced_scores else 0.0
-            value, problem = validate.best_id(raw, spaced)
-            if spaced and value == validate.fix_id_positions(spaced):
-                raw, confidence = spaced, spaced_confidence
+            value, problem = validate.best_id(raw, grid_raw, spaced)
+            for candidate, score in ((grid_raw, grid_confidence),
+                                     (spaced, spaced_confidence)):
+                if candidate and value == validate.fix_id_positions(candidate):
+                    raw, confidence = candidate, score
+                    break
+        elif grid_raw and grid_raw != raw:
+            # 這一欄有印好的格子。格線切出來的結果比整行讀可靠 ——
+            # 一格一個字，不會把兩個字併成一個，也不會漏掉最後那一豎
+            # （實測「701」整行讀成「70」）。所以以格線的結果為準。
+            #
+            # 但兩種讀法不一樣這件事本身就是警訊，一定要講出來：
+            # 換掉的是三個必要欄位之一的時候，人得自己看一眼原圖。
+            value, problem = validate.check(definition.kind, grid_raw, **extra)
+            line_value, _line_problem = validate.check(definition.kind, raw, **extra)
+            raw, confidence = grid_raw, grid_confidence
+            if line_value != value:
+                problem = problem or ("整行讀是「%s」，照格子讀是「%s」，兩種不一樣"
+                                      % (line_value, value))
         else:
-            extra = {}
-            if definition.kind == "district":
-                extra["known"] = self.districts
-            elif definition.kind == "address":
-                extra["roads"] = lexicon.for_district(
-                    self.roads, record.values.get("district"))
             value, problem = validate.check(definition.kind, raw, **extra)
 
         record.raw[definition.column] = raw

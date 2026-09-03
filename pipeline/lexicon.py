@@ -56,6 +56,62 @@ def path_for(store):
     return os.path.join(store, "roads.txt")
 
 
+def sections_path(store):
+    return os.path.join(store, "sections.txt")
+
+
+SECTIONS_HEADER = """\
+# 地段名字典。段名沒有任何格式規則 —— 讀成「圍際」還是「國際」，
+# 程式自己看不出來，只能靠這份清單。清單是空的時候段名一律照讀出來的寫，
+# 錯了不會被標記，所以請把轄區的地段名貼進來。
+#
+# 一行一個，「## 區名」以下的段名屬於該區。結尾的「段」可寫可不寫。
+# 資料來源：地籍圖資網路便民服務系統，或地價科現成的段別代碼表。
+
+## 三峽區
+
+## 鶯歌區
+"""
+
+
+def load_sections(store):
+    """載入地段名字典。沒有這個檔就回空的 —— 空的代表不驗證，照讀出來的寫。"""
+    target = sections_path(store)
+    if os.path.isfile(target):
+        return _read(target)
+    return {}
+
+
+def ensure_roads(store):
+    """路名字典不存在就把內建那份複製一份到樣板資料夾，讓人可以直接改。
+
+    內建那份只是從樣本抽出來的種子，一定不夠 —— 使用者實測就遇到
+    鶯歌區的「大湖路」不在裡面。字典缺一條路，那一件的門牌就會被標起來，
+    所以一定要讓人補得進去，而且要補在資料夾裡、重新解壓縮不會被蓋掉的地方。
+    """
+    target = path_for(store)
+    if not os.path.isfile(target):
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        try:
+            with open(BUILTIN, encoding="utf-8") as handle:
+                content = handle.read()
+        except OSError:
+            content = "# 路街名字典。一行一個，「## 區名」以下的路名屬於該區。\n"
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    return target
+
+
+def ensure_sections(store):
+    """地段字典不存在就先建一個空的（含說明），讓人有東西可以填。"""
+    target = sections_path(store)
+    if not os.path.isfile(target):
+        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(SECTIONS_HEADER)
+    return target
+
+
 ALL = "全部"
 
 
@@ -116,6 +172,26 @@ def _similarity(a, b):
     return common / max(len(a), len(b))
 
 
+def stem(name):
+    """路街名的主體：去掉結尾的路／街／道／大道。"""
+    return re.sub(r"(大道|[路街道])$", "", name or "")
+
+
+def _score(candidate, name):
+    """兩個路名有多像。比的是**主體**，結尾那個字完全不算分。
+
+    尾字不可信也不該加分。紙本上的「路」「街」是印刷的，民眾只是圈起來，
+    減掉版面之後剩下的是一個圈。讓尾字算分的話：
+
+        「大湖路」對「東湖路」 —— 共同的「湖」「路」佔三分之二 = 0.67
+
+    超過門檻，於是門牌被換成鶯歌區真的存在的另一條路「東湖路」，
+    驗證還會放行，輸出表上完全看不出來。這種錯比讀不出來危險得多。
+    只比主體的話是「大湖」對「東湖」= 0.5，擋得下來，交給人去看。
+    """
+    return _similarity(stem(candidate), stem(name))
+
+
 def match(text, names, threshold=0.6):
     """把一段文字吸附到最接近的路街名。
 
@@ -131,13 +207,75 @@ def match(text, names, threshold=0.6):
     return (best, score) if score >= threshold else (None, score)
 
 
-def resolve_head(head, names, threshold=0.6):
+# 整串拿去比的門檻
+THRESHOLD = 0.6
+
+# 砍掉開頭幾個字之後才對上的，門檻高得多 —— 砍掉的字有可能是路名本身。
+TRIM_THRESHOLD = 0.85
+
+# 第一名要贏第二名這麼多才算數。兩條路一樣像的時候猜一個，
+# 等於有一半的機率把門牌靜靜寫成別人家的。寧可標起來讓人看。
+MARGIN = 0.08
+
+# 黏在路名前面的行政區
+_LEAD = re.compile(r"^.{1,4}?[縣市區鄉鎮村里]")
+
+
+def _rank(candidate, names):
+    """跟字典比一輪，回傳 (最像的, 分數, 第二像的分數)。"""
+    best, score, second = None, 0.0, 0.0
+    for name in names:
+        value = _score(candidate, name)
+        if value > score:
+            best, score, second = name, value, score
+        elif value > second and name != best:
+            second = value
+    return best, score, second
+
+
+def _leads(core):
+    """候選：整串，以及把前面黏著的行政區一層層剝掉之後的樣子。"""
+    out = [core]
+    current = core
+    for _ in range(3):
+        found = _LEAD.match(current)
+        if not found or len(current) - found.end() < 2:
+            break
+        current = current[found.end():]
+        out.append(current)
+    return out
+
+
+def choose(text, names, threshold=THRESHOLD, margin=MARGIN):
+    """從清單裡挑一個最像的。分不出來就回 None —— **不猜**。
+
+    跟 resolve_head 同一套規矩：第一名要贏第二名 margin 以上才算數。
+    兩個一樣像的時候猜一個，等於有一半的機率靜靜寫錯，而且從輸出表上看不出來。
+    """
+    if not text or not names:
+        return None, 0.0
+    best, score, second = None, 0.0, 0.0
+    for name in names:
+        value = _similarity(text, name)
+        if value > score:
+            best, score, second = name, value, score
+        elif value > second and name != best:
+            second = value
+    if best is not None and score >= threshold and score - second >= margin:
+        return best, score
+    return None, score
+
+
+def resolve_head(head, names, threshold=THRESHOLD):
     """從地址開頭那段文字裡認出路街名。
 
     這裡不要求「路」「街」那個字有被讀出來 —— 紙本表格上那個字是印刷的，
     民眾只是圈起來或劃掉，減掉版面之後根本不會留下字，
-    留下的是個圈（辨識成 Q、C、〇 之類）。所以拿去比對的是路名的**前半**，
+    留下的是個圈（辨識成 Q、C、〇 之類）。所以拿去比對的是路名的**主體**，
     對到字典裡唯一的那條路，「路」還是「街」也就跟著確定了。
+
+    對不上就回傳 None，讓上層把這一欄標起來 —— **絕對不猜**。
+    這一欄猜錯的代價是 RPA 拿著別人家的門牌去查調，而且從輸出表上看不出來。
 
     回傳 (路街名, 相似度)。
     """
@@ -145,24 +283,15 @@ def resolve_head(head, names, threshold=0.6):
         return None, 0.0
     # 只留中文字去比對，把圈和雜訊丟掉
     core = "".join(ch for ch in head if "\u4e00" <= ch <= "\u9fff")
-    if not core:
+    if len(core) < 2:
         return None, 0.0
 
-    best, score = None, 0.0
-    # 從尾端往前取候選 —— 地址前面可能還黏著行政區
-    for start in range(len(core)):
-        candidate = core[start:]
-        if len(candidate) < 2:
-            break
-        # 候選也要去掉尾巴的路／街／道再比一次。
-        # 「路」還是「街」是印刷的，民眾只是圈起來，讀出來的那個字不可信 ——
-        # 拿「中華街」整串去比，會比到「中園街」（都以街結尾，尾字加分），
-        # 而那是另一條路。去掉尾字之後比的是「中華」，才對得到中華路。
-        trimmed = re.sub(r"[路街道]$", "", candidate)
-        for name in names:
-            stem = re.sub(r"[路街道]$", "", name)
-            value = max(_similarity(candidate, name), _similarity(candidate, stem),
-                        _similarity(trimmed, stem))
-            if value > score:
-                best, score = name, value
-    return (best, score) if score >= threshold else (None, score)
+    highest = 0.0
+    for index, candidate in enumerate(_leads(core)):
+        # 第一個候選是原文，後面的是砍掉行政區之後的，門檻要高很多
+        bar = threshold if index == 0 else max(threshold, TRIM_THRESHOLD)
+        best, score, second = _rank(candidate, names)
+        highest = max(highest, score)
+        if best is not None and score >= bar and score - second >= MARGIN:
+            return best, score
+    return None, highest

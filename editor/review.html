@@ -104,6 +104,14 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
 let data = null;
 const notes = {};   // 每一件的意見，鍵是件的序號
 
+/* 連不上通常只有一個原因：那個小視窗被關掉了，程式已經不在。
+   「Failed to fetch」對使用者毫無意義，直接把真正的原因寫出來。 */
+const DEAD = '複核程式已經不在了，所以這一頁失效了。\n\n'
+  + '最常見的原因是那個寫著「做完了，回主選單」的小視窗被關掉了 ——\n'
+  + '那個視窗一關，這一頁就跟著失效，畫面看起來卻一切正常。\n\n'
+  + '請回到主程式重新按「轉　換」跑一次。這一頁上改過的內容沒有保留。';
+
+
 async function load(){
   data = await (await fetch('api/records')).json();
   render();
@@ -114,21 +122,24 @@ function render(){
   el('stat').textContent =
       `共 ${data.records.length} 件，${data.records.length - flagged} 件通過、${flagged} 件要看`;
 
-  let notes = '';
+  // 這個變數以前也叫 notes，把外層存意見的那個 notes 整個遮掉了 ——
+  // 於是下面的 notes[i] = box.value 是在對一個字串設屬性，靜靜地什麼也沒發生，
+  // 使用者一件一件寫的意見全部被丟掉，診斷報告裡那一段永遠是空的。
+  let banner = '';
   if (data.unresolved.length){
-    notes += `<div class="note"><b>有 ${data.unresolved.length} 組頁面切不出完整的一件</b>，
+    banner += `<div class="note"><b>有 ${data.unresolved.length} 組頁面切不出完整的一件</b>，
        這些頁沒有被辨識，請確認掃描是否漏了首頁：<br>`
        + data.unresolved.map(u => esc(u)).join('<br>') + `</div>`;
   }
   if ((data.unknown || []).length){
     // 認不出來的頁會被併進前一件。如果那其實是新的一件，這一批就少了一筆，
     // 而且從件數上完全看不出來 —— 所以一定要講。
-    notes += `<div class="note"><b>有 ${data.unknown.length} 頁認不出是哪一種表格</b>，
+    banner += `<div class="note"><b>有 ${data.unknown.length} 頁認不出是哪一種表格</b>，
        已經併進前一件。<b>如果那是新的一件，這一批就少了一筆。</b><br>
        請對照原始檔確認頁數對不對：<br>`
        + data.unknown.map(u => esc(u)).join('<br>') + `</div>`;
   }
-  el('unresolved').innerHTML = notes;
+  el('unresolved').innerHTML = banner;
 
   el('list').innerHTML = data.records.map((r, i) => {
     const cells = data.columns.map(c => {
@@ -182,7 +193,7 @@ el('report').addEventListener('click', async () => {
     el('preview').showModal();
   } catch (error) {
     // 不接住的話畫面會永遠停在「整理中…」，什麼都看不到
-    showFailure({error: '連不上程式：' + error.message});
+    showFailure({error: '連不上程式（' + error.message + '）', detail: DEAD});
   }
 });
 
@@ -210,7 +221,7 @@ el('export').addEventListener('click', async () => {
       showFailure(out);
     }
   } catch (error) {
-    showFailure({error: '連不上程式：' + error.message});
+    showFailure({error: '連不上程式（' + error.message + '）', detail: DEAD});
   }
 });
 load();

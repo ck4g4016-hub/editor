@@ -114,6 +114,7 @@ def make_handler(state):
             written = output.write_all(rows, state["out"])
             for path in written:
                 print("已產出: %s" % path)
+            state["exported"] = True
             self._json({"ok": True, "files": [os.path.basename(p) for p in written]})
 
         def _diagnose(self, payload):
@@ -198,6 +199,14 @@ def main():
     print(process.summarise(records, unresolved, converter.unknown))
     if not records:
         raise SystemExit("沒有任何可以複核的資料 —— 請先用樣板編輯器定義欄位")
+
+    # 先寫一份診斷報告，理由同 app.py：報告不能取決於複核畫面還活著沒有。
+    try:
+        print("已先寫一份診斷報告：%s" % diagnose.save(
+            diagnose.build(converter.journal, version=resources.version()),
+            os.path.join(args.out, "診斷")))
+    except Exception as error:                                      # noqa: BLE001
+        print("診斷報告寫不出來：%s: %s" % (type(error).__name__, error))
 
     state = {"records": records, "unresolved": unresolved, "out": args.out,
              "journal": converter.journal, "unknown": converter.unknown}

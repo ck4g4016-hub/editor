@@ -55,6 +55,9 @@ class Workspace:
 
     def __init__(self, store, sample_paths):
         self.store = store
+        # 有沒有存過。主程式的小視窗要靠它決定關掉之前要不要多問一句 ——
+        # 框了半小時沒存就關掉，等於白做。
+        self.saved = False
         self.templates = layout.TemplateSet.load(store)
         self.views = {}     # code -> [ {label, role, source, index, rotation} ]
         self._cache = []    # [(code, view index, image)]
@@ -189,15 +192,29 @@ def make_handler(workspace):
             if route.path != "/api/template":
                 self._send(404, b"not found", "text/plain")
                 return
-            code = parse_qs(route.query).get("code", [""])[0]
-            length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            items = [fieldmod.Field.from_dict(item) for item in payload.get("fields", [])]
+            # 任何一個沒接住的例外都會把連線扯斷，瀏覽器只會說
+            # 「Failed to fetch」—— 那句話什麼線索都沒有。寧可回一份
+            # traceback 讓人直接看到是哪一行。
             try:
+                code = parse_qs(route.query).get("code", [""])[0]
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                items = [fieldmod.Field.from_dict(item)
+                         for item in payload.get("fields", [])]
                 target = fieldmod.save(workspace.store, code, items)
             except ValueError as exc:
                 self._json({"ok": False, "error": str(exc)}, 400)
                 return
+            except Exception as error:                              # noqa: BLE001
+                import traceback
+                detail = "".join(traceback.format_exception(
+                    type(error), error, error.__traceback__))
+                print(detail)
+                self._json({"ok": False,
+                            "error": "%s：%s" % (type(error).__name__, error),
+                            "detail": detail}, 500)
+                return
+            workspace.saved = True
             print("已儲存 %s：%d 個欄位 → %s" % (code, len(items), target))
             self._json({"ok": True, "count": len(items)})
 

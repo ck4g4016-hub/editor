@@ -270,6 +270,33 @@ def _overlap(a, b):
     return len(set(a) & set(b))
 
 
+def section(text, known=None):
+    """地段名。
+
+    段名沒有任何格式規則 —— 讀成「圍際」而不是「國際」，程式自己看不出來，
+    以前就這樣原封不動寫進輸出檔，一個字都不標記。唯一的辦法是比對清單。
+
+    清單是空的時候照讀出來的寫（不然一開始每一件都會被擋下來），
+    但那時候這一欄本來就會因為信心偏低被標起來。
+    """
+    value = to_halfwidth(text or "").strip().replace(" ", "")
+    value = re.sub(r"段$", "", value)
+    if not value:
+        return value, "段名是空的"
+    options = [re.sub(r"段$", "", name.strip()) for name in (known or ())
+               if name and name.strip()]
+    if not options:
+        return value, None
+    if value in options:
+        return value, None
+
+    from . import lexicon
+    best, _score = lexicon.choose(value, options)
+    if best:
+        return best, None
+    return value, "段名不在清單裡（讀到「%s」）" % value
+
+
 VALIDATORS = {
     "id_number": id_number,
     "doc_number": doc_number,
@@ -283,6 +310,8 @@ def check(kind, text, **kwargs):
         return address(text, roads=kwargs.get("roads"))
     if kind == "district":
         return district(text, known=kwargs.get("known"))
+    if kind == "section":
+        return section(text, known=kwargs.get("known"))
     if kind == "land_number":
         return land_number(text)
     validator = VALIDATORS.get(kind)
