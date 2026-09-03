@@ -195,7 +195,7 @@ def ask_new_form():
     rows = [("code", "代號", "英數，例如 F。會變成資料夾名稱"),
             ("name", "表格全名", "給人看的，例如 地價稅自用住宅申請書(舊)"),
             ("front", "正面在第幾頁", "從 1 起算"),
-            ("back", "背面在第幾頁", "單面表格留空")]
+            ("back", "背面在第幾頁", "一件固定兩頁，通常就是正面的下一頁")]
     for index, (key, label, hint) in enumerate(rows, start=2):
         tkinter.Label(frame, text=label).grid(row=index * 2, column=0, sticky="e", padx=(0, 8))
         entry = tkinter.Entry(frame, width=34)
@@ -204,6 +204,13 @@ def ask_new_form():
         tkinter.Label(frame, text=hint, fg="#888", font=("", 8)).grid(
             row=index * 2 + 1, column=1, sticky="w", pady=(0, 6))
     entries["front"].insert(0, "1")
+    entries["back"].insert(0, "2")
+    tkinter.Label(frame,
+                  text="一件申請書固定是正反兩頁（背面空白也要掃）。\n"
+                       "兩個頁碼都要填 —— 程式靠「每兩頁一件」來切分，\n"
+                       "所以背面樣板一定要有，不然背面的欄位框不到。",
+                  fg="#888", font=("", 8), justify="left").grid(
+        row=11, column=1, sticky="w", pady=(0, 8))
 
     tkinter.Label(frame, text="底圖來源").grid(row=12, column=0, sticky="ne", padx=(0, 8))
     source = tkinter.StringVar(value=newform.BLANK)
@@ -231,20 +238,28 @@ def ask_new_form():
             messagebox.showwarning("還沒填", "請填表格全名", parent=root)
             return
         numbers = {}
-        for key, required in (("front", True), ("back", False)):
+        for key, label in (("front", "正面"), ("back", "背面")):
             text = entries[key].get().strip()
             if not text:
-                if required:
-                    messagebox.showwarning("還沒填", "正面頁碼一定要填", parent=root)
-                    return
-                numbers[key] = None
-                continue
+                # 兩個都必填。以前背面可以留空，於是有人建成單面樣板，
+                # 而切分是照「每兩頁一件」走的 —— 背面樣板不存在的話，
+                # 背面那一頁分類不出來，背面的欄位也框不到。
+                messagebox.showwarning(
+                    "還沒填",
+                    "%s頁碼一定要填。\n\n"
+                    "一件申請書固定是正反兩頁，背面空白也算一頁。" % label,
+                    parent=root)
+                return
             if not text.isdigit() or not 1 <= int(text) <= total:
                 messagebox.showwarning("頁碼不對",
                                        "「%s」不是 1 到 %d 之間的頁碼" % (text, total),
                                        parent=root)
                 return
             numbers[key] = int(text)
+        if numbers["front"] == numbers["back"]:
+            messagebox.showwarning("頁碼重複",
+                                   "正面和背面不能是同一頁。", parent=root)
+            return
         result.update(pdf=pdf, code=code, name=name, source=source.get(), **numbers)
         root.destroy()
 

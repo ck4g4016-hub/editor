@@ -129,16 +129,22 @@ class Converter:
                 "margin": page.margin,
             })
 
-        # 認不出來的頁會被 split_documents 併進前一件 —— 對「空白背面」來說
-        # 這是對的，對「首頁沒認出來的下一件」來說就是把一整件吃掉：
-        # 十五件掃進來變成十四筆，而且畫面上完全看不出來少了誰。
-        # 所以單獨列出來給人看。
-        self.unknown = [{"file": journal.file_id(p.source), "page": p.index + 1,
-                         "inliers": p.inliers, "margin": p.margin}
-                        for p in pages if p.role == layout.UNKNOWN]
-
         documents = layout.split_documents(pages)
         journal.documents = len(documents)
+
+        # 切分改成照頁數配對之後，「認不出來」不再會吃掉一整件 ——
+        # 它只影響「這是哪一種表格」。所以這裡只列真正會出事的：
+        # 正面認不出來、但背面認得出來的那些件。那種件的欄位是照背面認出的
+        # 表格去裁的，正面可能掃歪了或蓋章蓋掉特徵，值得人看一眼。
+        self.unknown = []
+        for document in documents:
+            front, code = document.front, document.code
+            if front is None or code is None or front.code == code:
+                continue
+            self.unknown.append({"file": journal.file_id(front.source),
+                                 "page": front.index + 1,
+                                 "inliers": front.inliers,
+                                 "margin": front.margin})
 
         clock = time.time()
         records, unresolved = [], []
@@ -148,6 +154,7 @@ class Converter:
                 journal.unresolved.append({
                     "file": journal.file_id(document.pages[0].source),
                     "pages": "、".join(str(p.index + 1) for p in document.pages),
+                    "why": document.problem or "",
                 })
                 continue
             try:
@@ -226,7 +233,7 @@ class Converter:
             "fields": entries,
         }
 
-    def sheet_of(self, code, page, role):
+    def sheet_of(self, code, page, role, rotation=None):
         """把一頁算成「減掉印刷版面之後」的影像。
 
         回傳 (原圖, 減掉版面的影像, 底圖)。
@@ -238,9 +245,12 @@ class Converter:
         辨識時要靠它來切格子。減不掉的時候回 None —— 那時候的影像還在
         掃描件自己的座標系，底圖的格線位置對不上，拿來切只會切錯。
         """
+        # 空白或認不出來的那一面拿不到轉向（沒有特徵點可以對），
+        # 跟著正面走 —— 同一張紙的兩面，掃進來的方向一定一樣。
+        turn = page.rotation or (rotation or 0)
         image = render.rotate(
             render.render(page.source, page.index, dpi=render.FULL_DPI, gray=False),
-            page.rotation)
+            turn)
         base = self.base_of(code, role)
         if base is None:
             return image, baseimage.as_gray(image), None
@@ -269,20 +279,23 @@ class Converter:
         正面一定要讀。背面只有在樣板真的有定義背面欄位時才去算 ——
         多算一頁 300dpi 影像要一秒多，沒欄位的話白算。
         """
-        front = document.pages[0]
-        definitions = self.fields_of(front.code)
+        front = document.front
+        code = document.code
+        definitions = self.fields_of(code)
         if not definitions:
             return None
 
-        record = Record(front.code, front.source, front.index)
+        record = Record(code, front.source, front.index)
 
         # 每一面各自處理：算影像、裁欄位、辨識。
         # 行政區要先讀 —— 地址的路名字典是分區的，三峽有「仁愛街」、
         # 鶯歌有「仁愛路」，不知道哪一區就選不出來，所以正面先做。
+        # 正面就是第一頁、背面就是第二頁，照頁數認，不看分類結果。
+        # 空白背面本來就認不出來（墨跡太少，內點是 0），拿分類去找背面
+        # 等於把「背面是空白」跟「沒掃到背面」混成同一件事。
         pages = {"front": front}
         if any(d.page == "back" for d in definitions):
-            pages["back"] = next(
-                (p for p in document.pages[1:] if p.role == layout.BACK), None)
+            pages["back"] = document.back
 
         for role in ("front", "back"):
             wanted = [d for d in definitions if d.page == role]
@@ -295,7 +308,7 @@ class Converter:
                         definition.column, "這一件沒有掃到背面，讀不到這一欄")
                 continue
 
-            _, sheet, base = self.sheet_of(front.code, page, role)
+            _, sheet, base = self.sheet_of(code, page, role, front.rotation)
             ordered = sorted(wanted, key=lambda d: 0 if d.kind == "district" else 1)
             for definition in ordered:
                 self._read_field(record, sheet, definition, keep_crops, base)
@@ -562,10 +575,15 @@ def summarise(records, unresolved, unknown=()):
         "共 %d 件，%d 件通過、%d 件需要人工確認" % (len(records), ok, len(records) - ok),
     ]
     if unresolved:
-        lines.append("另有 %d 組頁面切不出完整的一件，需要人工分頁" % len(unresolved))
+        lines.append("另有 %d 件不完整（一件固定兩頁，最常見是有一面漏掃）"
+                     % len(unresolved))
+        for document in unresolved:
+            why = getattr(document, "problem", None)
+            if why:
+                lines.append("    %s" % why)
     if unknown:
-        lines.append("有 %d 頁認不出是哪一種表格，已併進前一件 ——"
-                     " 如果那是新的一件，這一批就少了一筆" % len(unknown))
+        lines.append("有 %d 件的正面認不出是哪一種表格，是靠背面判斷的 ——"
+                     " 件數沒少，但欄位有沒有對到請自己看一眼" % len(unknown))
 
     counts = {}
     for record in records:

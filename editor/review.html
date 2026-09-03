@@ -137,16 +137,18 @@ function render(){
   // 使用者一件一件寫的意見全部被丟掉，診斷報告裡那一段永遠是空的。
   let banner = '';
   if (data.unresolved.length){
-    banner += `<div class="note"><b>有 ${data.unresolved.length} 組頁面切不出完整的一件</b>，
-       這些頁沒有被辨識，請確認掃描是否漏了首頁：<br>`
+    banner += `<div class="note"><b>有 ${data.unresolved.length} 件不完整，沒有被辨識</b>。
+       一件申請書固定兩頁（正反面都要掃，背面空白也要掃），
+       所以最常見的原因是<b>有一面漏掃了</b>，整份的頁數變成奇數：<br>`
        + data.unresolved.map(u => esc(u)).join('<br>') + `</div>`;
   }
   if ((data.unknown || []).length){
-    // 認不出來的頁會被併進前一件。如果那其實是新的一件，這一批就少了一筆，
-    // 而且從件數上完全看不出來 —— 所以一定要講。
-    banner += `<div class="note"><b>有 ${data.unknown.length} 頁認不出是哪一種表格</b>，
-       已經併進前一件。<b>如果那是新的一件，這一批就少了一筆。</b><br>
-       請對照原始檔確認頁數對不對：<br>`
+    // 切分改成照頁數配對之後，認不出來不會再吃掉一整件。
+    // 剩下的風險是「正面認不出來、靠背面才知道是哪一種表格」——
+    // 那種件的欄位是照背面認出的表格去裁的，值得看一眼。
+    banner += `<div class="note"><b>有 ${data.unknown.length} 件的正面認不出是哪一種表格</b>，
+       是靠背面判斷出來的。件數沒有少，但那一面可能掃歪了或被章蓋掉特徵，
+       欄位有沒有對到請自己看一眼：<br>`
        + data.unknown.map(u => esc(u)).join('<br>') + `</div>`;
   }
   el('unresolved').innerHTML = banner;

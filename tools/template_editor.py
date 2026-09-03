@@ -81,18 +81,22 @@ class Workspace:
                 continue
             counts[code] = counts.get(code, 0) + 1
             number = counts[code]
-            for page in document.pages:
-                if page.role not in (layout.FRONT, layout.BACK):
-                    continue
+            # 正反面照**位置**認，不看分類結果 —— 一件固定兩頁，第一頁是正面。
+            # 空白背面本來就分類不出來，靠分類去挑的話那一面根本不會出現在
+            # 清單上，使用者就框不到背面的欄位。
+            for order, page in enumerate(document.pages):
                 if len(views) >= self.MAX_VIEWS:
                     break
+                role = layout.FRONT if order == 0 else layout.BACK
                 views.append({
                     "label": "第 %d 份 %s" % (number,
-                                              "正面" if page.role == layout.FRONT else "背面"),
-                    "role": page.role,
+                                              "正面" if role == layout.FRONT else "背面"),
+                    "role": role,
                     "source": page.source,
                     "index": page.index,
-                    "rotation": page.rotation,
+                    # 空白或認不出來的那一面拿不到轉向，跟著正面走 ——
+                    # 同一張紙的兩面，掃進來的方向一定一樣。
+                    "rotation": page.rotation or document.front.rotation,
                 })
 
         for code, views in self.views.items():

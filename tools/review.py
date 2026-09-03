@@ -148,8 +148,10 @@ def describe(state):
             "flags": record.flagged(),
             "crops": sorted(record.crops),
         })
-    unresolved = ["%s 第 %s 頁" % (os.path.basename(document.pages[0].source),
-                                  "、".join(str(p.index + 1) for p in document.pages))
+    unresolved = ["%s 第 %s 頁　%s"
+                  % (os.path.basename(document.pages[0].source),
+                     "、".join(str(p.index + 1) for p in document.pages),
+                     document.problem or "")
                   for document in state["unresolved"]]
     unknown = ["%s 第 %d 頁（特徵點 %d、差距 %.1f）"
                % (item["file"], item["page"], item["inliers"], item["margin"])

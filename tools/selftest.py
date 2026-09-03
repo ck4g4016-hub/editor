@@ -521,6 +521,43 @@ def check():
         if value is not None or not problem:
             problems.append("逐格求解：只有 9 格竟然給了答案 %r" % value)
 
+    # 一件固定兩頁，照頁數配對。這是承辦人的作業規則，也是最可靠的切分依據。
+    #
+    # 舊規則是「認出表格正面就開新的一件」，破口在於：正面認不出來的時候
+    # 那一頁會被併進**前一件**，兩件變一件，件數上完全看不出少了誰。
+    # 而空白背面認不出來是正常的 —— 兩種情形從分類結果上長得一模一樣。
+    from pipeline import layout as _layout
+
+    def fake_pages(source, roles):
+        return [_layout.Page(source, i, code, role, 0, 0 if code is None else 500, 0.0)
+                for i, (code, role) in enumerate(roles)]
+
+    F, B, U, K = _layout.FRONT, _layout.BACK, _layout.UNKNOWN, _layout.BLANK
+    pair_cases = (
+        ("正常三件", "a.pdf", [("F", F), (None, K), ("F", F), (None, K),
+                               ("F", F), (None, K)], 3, 3),
+        ("背面有印東西", "a.pdf", [("F", F), ("F", B), ("F", F), ("F", B)], 2, 2),
+        # 舊規則在這裡會把兩件併成一件
+        ("第二件正面認不出來", "a.pdf", [("F", F), (None, K), (None, U), ("F", B)], 2, 2),
+        ("兩面都認不出來", "a.pdf", [("F", F), (None, K), (None, U), (None, K)], 2, 1),
+        ("奇數頁：漏掃一面", "a.pdf", [("F", F), (None, K), ("F", F)], 2, 1),
+    )
+    for label, source, roles, want_docs, want_ok in pair_cases:
+        docs = _layout.split_documents(fake_pages(source, roles))
+        good = sum(1 for d in docs if d.complete)
+        if len(docs) != want_docs or good != want_ok:
+            problems.append("配對「%s」切出 %d 件（完整 %d），應該是 %d 件（完整 %d）"
+                            % (label, len(docs), good, want_docs, want_ok))
+    # 不跨檔案配對
+    mixed = fake_pages("a.pdf", [("F", F)]) + fake_pages("b.pdf", [("F", F), (None, K)])
+    docs = _layout.split_documents(mixed)
+    if len(docs) != 2 or [len(d.pages) for d in docs] != [1, 2]:
+        problems.append("配對跨到別的檔案去了：%s" % [len(d.pages) for d in docs])
+    # 正面認不出來但背面認得出來 → 表格種類要靠背面補回來
+    rescued = _layout.split_documents(fake_pages("a.pdf", [(None, U), ("G", B)]))[0]
+    if rescued.code != "G" or not rescued.complete:
+        problems.append("正面認不出來時沒有靠背面判斷表格種類：%r" % rescued.code)
+
     # 沒有印刷格子的身分證欄一定要走得通。
     #
     # A、B、E 那種電腦產製的表格，身分證是一行印刷字、沒有方格。逐格那條路
@@ -625,11 +662,14 @@ def end_to_end():
         id="a", name="身分證", column="id_number", kind="id_number",
         box=(300, 950, 1300, 180))])
 
+    # 一件固定兩頁：正面加一張空白背面。承辦人的作業規則就是這樣，
+    # 而且這裡順便驗到「空白背面不會讓整件被判成不完整」。
     path = os.path.join(work, "scan.pdf")
     document = fitz.open()
     ok, buffer = cv2.imencode(".png", filled)
     page = document.new_page(width=595, height=842)
     page.insert_image(fitz.Rect(0, 0, 595, 842), stream=buffer.tobytes())
+    document.new_page(width=595, height=842)        # 空白背面
     document.save(path)
     document.close()
 

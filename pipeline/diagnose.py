@@ -94,7 +94,7 @@ class Journal:
         self.pages = []             # {file, page, code, role, rotation, inliers, margin}
         self.records = []           # {index, code, file, page, fields:[...]}
         self.documents = 0
-        self.unresolved = []        # {file, pages}
+        self.unresolved = []        # {file, pages, why}
         self.errors = []            # {where, kind, message}
         self.timing = {}
         self._names = {}
@@ -236,7 +236,8 @@ def build(journal, notes=None, version=None):
     if journal.timing:
         out.append("耗時  " + "、".join("%s %.1f 秒" % (k, v) for k, v in journal.timing.items()))
     for item in journal.unresolved:
-        out.append("  切不完整：%s 第 %s 頁" % (item["file"], item["pages"]))
+        out.append("  切不完整：%s 第 %s 頁　%s"
+                   % (item["file"], item["pages"], item.get("why", "")))
 
     section("頁面分類")
     out.append("內點數是頁面跟樣板對上的特徵點數，差距是第一名比第二名的倍數。")

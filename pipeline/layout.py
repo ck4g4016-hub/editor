@@ -193,20 +193,53 @@ class Page:
         return "<Page %s p%d %s>" % (os.path.basename(self.source), self.index + 1, self.label)
 
 
+# 一件申請書固定幾頁。
+#
+# 承辦人的作業方式是「一份申請書一定掃正反兩面，背面空白也掃」。
+# 那是一條硬規則，比「認不認得出正面」可靠得多 —— 所以切分直接照頁數配對。
+PAGES_PER_DOCUMENT = 2
+
+
 class Document:
-    """一件申請案。第一頁是表格正面，後面接著它的續頁與空白背面。"""
+    """一件申請案。固定兩頁：第一頁是正面，第二頁是背面（可能空白）。"""
 
     def __init__(self, pages):
         self.pages = list(pages)
 
     @property
+    def front(self):
+        return self.pages[0] if self.pages else None
+
+    @property
+    def back(self):
+        return self.pages[1] if len(self.pages) > 1 else None
+
+    @property
     def code(self):
-        return self.pages[0].code if self.pages else None
+        """這一件是哪一種表格。
+
+        以正面為準，但正面認不出來時退而用背面 —— 背面認得出來就代表這一件
+        是那一種表格，總比整件丟掉好。反過來說，兩面都認不出來才是真的沒救。
+        """
+        for page in self.pages:
+            if page.code:
+                return page.code
+        return None
 
     @property
     def complete(self):
-        """有正面才算完整。沒有正面的多半是切分出了問題，或掃描漏了首頁。"""
-        return bool(self.pages) and self.pages[0].role == FRONT
+        """頁數對、而且至少有一面認得出是哪一種表格。"""
+        return len(self.pages) == PAGES_PER_DOCUMENT and self.code is not None
+
+    @property
+    def problem(self):
+        """不完整的原因，給人看的。完整就回 None。"""
+        if len(self.pages) != PAGES_PER_DOCUMENT:
+            return ("只有 %d 頁，一件應該是 %d 頁（正反面都要掃，背面空白也要掃）"
+                    % (len(self.pages), PAGES_PER_DOCUMENT))
+        if self.code is None:
+            return "兩面都認不出是哪一種表格"
+        return None
 
     def __repr__(self):
         return "<Document %s %d 頁>" % (self.code or "?", len(self.pages))
@@ -226,28 +259,33 @@ def classify_pages(paths, templates, dpi=render.CLASSIFY_DPI, progress=None):
     return pages
 
 
-def split_documents(pages):
-    """把頁面串切成一件一件。
+def split_documents(pages, per_document=PAGES_PER_DOCUMENT):
+    """把頁面串切成一件一件：**同一個檔案內每兩頁一件**。
 
-    規則很簡單：看到表格正面就開新的一件，其餘的頁附在目前這一件後面。
-    這樣連續兩件同款表格也能正確切開，因為第二件的第一頁一樣會被認成正面。
+    切分不跨 PDF —— 換一個檔案一定重新開始配對。
 
-    切分不跨 PDF —— 換一個檔案一定重新開始。
+    以前的規則是「看到表格正面就開新的一件」，那有一個很難發現的破口：
+    正面認不出來的時候（掃歪了、太淡、蓋章蓋掉特徵），那一頁會被當成續頁
+    併進**前一件**，於是兩件併成一件 —— 十五件掃進來變成十四筆，而且
+    件數上完全看不出少了誰。空白背面認不出來則是正常的，兩種情形從
+    分類結果上長得一模一樣，程式分不出來。
+
+    改成照頁數配對之後，這個破口就不存在了：頁數是硬事實。承辦人的作業
+    規則是「一份申請書一定掃正反兩面，背面空白也掃」，所以第 1、2 頁是
+    第一件、第 3、4 頁是第二件，以此類推。認不出來只影響「這是哪一種表格」，
+    不再影響「這是第幾件」。
+
+    檔案頁數是奇數的話，最後一件會只有一頁而被標成不完整 —— 那正是
+    「有一面忘了掃」的訊號，該讓人看到，不該默默補齊。
     """
     documents = []
-    current = None
-    current_source = None
-
-    for page in pages:
-        starts_new = page.role == FRONT or page.source != current_source
-        if starts_new or current is None:
-            if current:
-                documents.append(Document(current))
-            current = [page]
-            current_source = page.source
-        else:
-            current.append(page)
-
-    if current:
-        documents.append(Document(current))
+    start = 0
+    for index in range(1, len(pages) + 1):
+        crossed = index == len(pages) or pages[index].source != pages[start].source
+        if not crossed:
+            continue
+        group = pages[start:index]
+        for offset in range(0, len(group), per_document):
+            documents.append(Document(group[offset:offset + per_document]))
+        start = index
     return documents
