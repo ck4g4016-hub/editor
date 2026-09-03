@@ -276,15 +276,9 @@ def read_char(cell):
     tight = trim(cell)
     source = cell if tight is None else tight
     out = []
-    image = source if source.ndim == 3 else cv2.cvtColor(source, cv2.COLOR_GRAY2BGR)
-    try:
-        result, _ = engine()(image, use_det=False, use_cls=False, use_rec=True)
-    except Exception:                                               # noqa: BLE001
-        result = None
-    if result:
-        text = (result[0][0] or "").strip()
-        if text:
-            out.append(text)
+    text = read_only(source)
+    if text:
+        out.append(text)
     text, _score = read(source)
     if text:
         out.append(text.strip())
@@ -350,6 +344,54 @@ def _longest_runs(mask):
     return best
 
 
+def _run_bounds(mask):
+    """每一欄最長的連續 True 有多長、從第幾列開始。"""
+    height, width = mask.shape
+    best = np.zeros(width, dtype=np.int32)
+    best_start = np.zeros(width, dtype=np.int32)
+    current = np.zeros(width, dtype=np.int32)
+    start = np.zeros(width, dtype=np.int32)
+    for row in range(height):
+        line = mask[row]
+        start = np.where(line & (current == 0), row, start)
+        current = np.where(line, current + 1, 0)
+        longer = current > best
+        best_start = np.where(longer, start, best_start)
+        best = np.maximum(best, current)
+    return best, best_start
+
+
+def grid_band(printed):
+    """印刷格線在垂直方向佔哪一段，回傳 (上, 下)。找不到就回 None。
+
+    欄位框畫得比那排格子高是常態 —— 我自己在說明裡也叫人「框大一點，
+    寧可多框一點空白」。但**讀的時候**要把範圍收回到格子本身，
+    不然上下相鄰那一行的字會一起被讀進來，整排就毀了。
+
+    實測 F 表身分證欄：框高 240px（連下面那行地址一起框進去）十格
+    全部讀不出來；收回到格子本身的 110px，同一張影像十格全對。
+    """
+    if printed is None or printed.size == 0:
+        return None
+    gray = printed if printed.ndim == 2 else cv2.cvtColor(printed, cv2.COLOR_BGR2GRAY)
+    height = gray.shape[0]
+    if height < 8:
+        return None
+    runs, starts = _run_bounds(gray < 160)
+    tallest = int(runs.max()) if runs.size else 0
+    floor = max(8.0, MIN_LINE_RATIO * height)
+    if tallest < floor:
+        return None
+    columns = np.flatnonzero(runs >= max(LINE_RATIO * tallest, floor))
+    if columns.size == 0:
+        return None
+    top = int(np.median(starts[columns]))
+    bottom = int(np.median(starts[columns] + runs[columns]))
+    if bottom - top < 8:
+        return None
+    return top, bottom
+
+
 def separators(printed):
     """從印刷版面上找出直格線的位置，回傳每條線的中心 x。
 
@@ -383,8 +425,8 @@ def separators(printed):
     return lines
 
 
-def grid_cells(printed, crop):
-    """依印刷格線把欄位切成一格一格。切不出來就回空的。
+def grid_spans(printed, crop):
+    """依印刷格線算出每一格的 (左, 右)。切不出來就回空的。
 
     printed  這個欄位在底圖（只有印刷版面）上的樣子
     crop     這個欄位在減掉版面之後的樣子，兩張大小必須一樣
@@ -414,5 +456,77 @@ def grid_cells(printed, crop):
     for a, b in spans:
         a, b = max(0, min(a, limit)), max(0, min(b, limit))
         if b - a >= 3:
-            out.append(crop[:, a:b])
+            out.append((a, b))
     return out
+
+
+def grid_cells(printed, crop):
+    """依印刷格線把欄位切成一格一格。切不出來就回空的。"""
+    return [crop[:, a:b] for a, b in grid_spans(printed, crop)]
+
+
+# 一次讀幾格。三格是量出來的：同一排十個字，一格一字讀對 8 個，
+# 一次讀三格讀對 10 個。四格反而變差（視窗太寬，兩端的字被壓縮）。
+WINDOW = 3
+
+
+def read_grid(crop, spans, band=None, window=WINDOW):
+    """照格子讀，但**一次讀好幾格**，回傳每一格的候選字清單。
+
+    這是這個欄位最關鍵的一件事，而且跟直覺相反。
+
+    辨識模型是序列模型 —— 它像讀一個「詞」那樣一次讀一條文字，
+    靠左右鄰居的上下文互相支撐。一格一個字等於把上下文整個拿掉，
+    十個字散在十個寬格子裡，每個字孤零零待在一片白裡，它就讀不動。
+
+    所以改成滑動視窗：讀第 1~3 格、第 2~4 格、第 3~5 格……每一格會被
+    三個不同的視窗各讀到一次，三次的結果都收進候選。真實掃描件實測：
+
+        一格一字      藍筆那頁 8/10、黑筆那頁 3/10
+        一次讀三格    藍筆那頁 10/10、黑筆那頁 6/10
+
+    收「候選」而不是「投票取多數」—— 上層有檢查碼可以驗證哪一種組合
+    是對的，比多數決可靠：三個視窗都讀錯同一格的時候多數決會很有信心地
+    給出錯的答案，檢查碼則會說「湊不出來」。
+    """
+    total = len(spans)
+    if total == 0:
+        return []
+    if band is not None:
+        # 收回到格子本身的高度，把上下相鄰那一行的字排除掉。
+        # 留一點餘裕：字常常寫出格線外面（實測那個 A 的撇就伸到格子下面）。
+        top, bottom = band
+        slack = max(6, (bottom - top) // 5)
+        crop = crop[max(0, top - slack):min(crop.shape[0], bottom + slack), :]
+    picks = [[] for _ in range(total)]
+
+    def note(index, char):
+        if char and char not in picks[index]:
+            picks[index].append(char)
+
+    for size in (window, 1):
+        if size > total:
+            continue
+        for start in range(total - size + 1):
+            left, right = spans[start][0], spans[start + size - 1][1]
+            piece = crop[:, left:right]
+            tight = trim(piece)
+            text = read_only(tight if tight is not None else piece)
+            text = "".join(ch for ch in text if ch.isalnum())
+            if len(text) == size:
+                for offset, char in enumerate(text):
+                    note(start + offset, char)
+    return picks
+
+
+def read_only(image):
+    """跳過偵測直接辨識。單一個字或短短一段時它比走完整流程好。"""
+    if image is None or image.size == 0:
+        return ""
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    try:
+        result, _ = engine()(image, use_det=False, use_cls=False, use_rec=True)
+    except Exception:                                               # noqa: BLE001
+        return ""
+    return (result[0][0] or "").strip() if result else ""

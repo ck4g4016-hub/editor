@@ -384,6 +384,31 @@ def check():
         if len(cut) != 10:
             problems.append("框高 %d 時應該切出 10 格，實際 %d 格（格線只佔框高 %.0f%%）"
                             % (frame_height, len(cut), 180.0 / frame_height * 100))
+    # 欄位框通常畫得比那排格子高（說明裡就是這樣教的）。讀的時候要收回到
+    # 格子本身，不然上下相鄰那一行的字會一起被讀進來 —— 實測框高 240px
+    # 連下一行一起框進去時，同一張影像十格全部讀不出來。
+    for frame_height, top in ((240, 60), (300, 90), (140, 15)):
+        tall = np.full((frame_height, 1400, 3), 255, np.uint8)
+        for x in range(150, 1251, 110):
+            cv2.line(tall, (x, top), (x, top + 110), (0, 0, 0), 3)
+        band = recognise.grid_band(tall)
+        if band is None:
+            problems.append("框高 %d 時找不到格子的上下界" % frame_height)
+            continue
+        if abs(band[0] - top) > 6 or abs(band[1] - (top + 110)) > 6:
+            problems.append("框高 %d 時算出的上下界 %s，應該接近 (%d, %d)"
+                            % (frame_height, band, top, top + 110))
+    if recognise.grid_band(np.full((200, 800, 3), 255, np.uint8)) is not None:
+        problems.append("空白欄位不該算出格子的上下界")
+
+    # 滑動視窗：一次讀好幾格，每一格會被好幾個視窗讀到
+    spans = [(i * 100, i * 100 + 90) for i in range(10)]
+    picks = recognise.read_grid(np.full((120, 1000), 255, np.uint8), spans)
+    if len(picks) != 10:
+        problems.append("滑動視窗應該回傳 10 格的候選，實際 %d" % len(picks))
+    if any(picks):
+        problems.append("全白的欄位不該讀出任何候選字")
+
     # 只有印刷文字、沒有格線的欄位不可以被切
     words = np.full((300, 1400, 3), 255, np.uint8)
     cv2.putText(words, "ADDRESS", (30, 180), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 0, 0), 6)

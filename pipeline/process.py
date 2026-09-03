@@ -323,6 +323,9 @@ class Converter:
         grid_pieces, grid_scores, any_grid = [], [], False
         cell_count = 0
         all_cells = []
+        all_spans = []
+        grid_source = None
+        grid_band = None
         for box, suffix in definition.segments():
             crop = recognise.crop_field(sheet, box)
             text, confidence = recognise.read(crop)
@@ -340,7 +343,14 @@ class Converter:
             # 照原稿印好的格線再讀一次。格線在底圖上，減掉版面之後的影像
             # 只剩手寫，所以要拿底圖去找線、拿減完的影像去切字。
             printed = recognise.crop_field(base, box) if base is not None else crop
-            cells = recognise.grid_cells(printed, crop)
+            spans = recognise.grid_spans(printed, crop)
+            cells = [crop[:, a:b] for a, b in spans]
+            if spans and grid_source is None:
+                # 滑動視窗要在同一張影像上跨格取，所以記住是哪一張，
+                # 順便記住那排格子在垂直方向的位置 —— 欄位框通常畫得比
+                # 格子高，讀的時候要收回去，不然會把隔壁行的字讀進來。
+                grid_source, all_spans = crop, list(spans)
+                grid_band = recognise.grid_band(printed)
             cell_text, cell_score = ("", confidence)
             cell_count += len(cells)
             all_cells.extend(cells)
@@ -393,16 +403,37 @@ class Converter:
             # 逐一組合，看哪一種通過檢查碼。讀錯一格時正確答案不在候選裡，
             # 沒有組合會通過，於是標起來 —— 不會生出一個通過檢查碼但錯的號碼。
             solved = solved_problem = None
-            if len(all_cells) == 10:
-                per_cell = [recognise.read_char(cell) for cell in all_cells]
+            if len(all_spans) == 10:
+                # 一次讀三格，每一格被三個視窗各讀到一次。
+                # 一格一個字等於把模型需要的上下文拿掉，實測差很多。
+                per_cell = recognise.read_grid(grid_source, all_spans, grid_band)
                 record.cells[definition.column] = list(all_cells)
                 how["逐格"] = "|".join(c[0] if c else "?" for c in per_cell)
                 solved, solved_problem = validate.solve_id(per_cell)
+
+            direct = ("".join(c[0] for c in per_cell)
+                      if per_cell and all(per_cell) else "")
 
             if solved:
                 value, problem = solved, solved_problem
                 raw = how["逐格"].replace("|", "")
                 confidence = grid_confidence or confidence
+            elif direct:
+                # 十格都讀到字了，只是湊不出通過檢查碼的組合。
+                #
+                # 這時候**不可以**退回整行讀 —— 逐格的結果遠比整行可信。
+                # 真實掃描件實測：逐格讀出 A123454321（十格全對），整行讀是
+                # L423454312。以前這裡會退回去用整行那個，等於把讀對的答案
+                # 丟掉換成錯的。
+                #
+                # 湊不出來通常代表兩件事之一：真的讀錯了一碼，或者這個號碼
+                # 本身就不合法（測試用的假號碼多半是這樣）。兩種都要標起來
+                # 讓人看，但值要給讀到的那個。
+                raw = direct
+                confidence = grid_confidence or confidence
+                value, problem = validate.id_number(validate.fix_id_positions(direct))
+                if problem and solved_problem:
+                    problem = "%s（逐格：%s）" % (problem, solved_problem)
             else:
                 # 切不出十格，或十格湊不出唯一解。退回原本的三種讀法比一比。
                 spaced_pieces, spaced_scores = [], []
