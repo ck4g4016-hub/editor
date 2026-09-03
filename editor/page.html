@@ -98,9 +98,10 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
 /* 選了輸出欄就配對應的型別。型別決定用哪一種驗證，選錯不會報錯，
    只會靜靜地不驗 —— 身分證不驗檢查碼、地址不套門牌正規化。
    所以不讓使用者自己記，由輸出欄決定，需要時還是能改。 */
-const KIND_OF = {district:'district', address:'address', doc_number:'doc_number',
-                 id_number:'id_number', name:'chinese', section:'chinese',
-                 land_number:'land_number'};
+/* 選了輸出欄，型別預設就該是對的那一個。這份對應表以前抄在這裡一份，
+   結果 pipeline 那邊加了段名型別、這邊沒改，段名就一直沒被比對過。
+   現在跟 API 拿，只有一份。 */
+let KIND_OF = {};
 
 let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[], adding:false,
              fields:{},          // column -> 欄位定義
@@ -124,6 +125,7 @@ async function selectCode(code){
   state.scale = data.scale;
   state.columns = data.columns;
   state.kinds = data.kinds;
+  KIND_OF = data.default_kinds || {};
   state.critical = data.critical;
   state.views = data.views;
   state.view = 0;

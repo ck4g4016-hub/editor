@@ -38,14 +38,31 @@ COLUMNS = {
 # 欄位的資料型別，決定要用哪種辨識與驗證
 KINDS = {
     "text": "一般文字",
-    "chinese": "中文（姓名、段名）",
+    "chinese": "中文（姓名）",
     "digits": "數字",
     "id_number": "身分證字號（驗檢查碼）",
     "doc_number": "公文文號（10 碼、開頭民國年）",
     "address": "地址（套用門牌正規化）",
     "district": "行政區（比對區名清單）",
+    "section": "段名（比對地段清單）",
     "land_number": "地號（補零成 0000-0000）",
     "checkbox": "勾選框",
+}
+
+# 選了某個輸出欄，型別預設就該是對的那一個。
+#
+# 這份對應表以前有一份抄在樣板編輯器的 JavaScript 裡，兩邊各改各的：
+# 我後來加了 section 型別（比對地段清單），卻忘了改 JS 那份，於是段名
+# 一直用 chinese —— 那個型別根本沒有驗證器，「圍際」原封不動就寫出去了。
+# 使用者實測整批段名都沒被比對過。現在只留這一份，編輯器跟 API 拿。
+DEFAULT_KIND = {
+    "district": "district",
+    "address": "address",
+    "doc_number": "doc_number",
+    "id_number": "id_number",
+    "name": "chinese",
+    "section": "section",
+    "land_number": "land_number",
 }
 
 FIXED = "fixed"
@@ -144,14 +161,27 @@ def path_for(store, code):
     return os.path.join(store, code, "fields.json")
 
 
+# 早期版本沒有這些型別，樣板編輯器只好給一個最接近的通用型別。
+# 通用型別沒有驗證器，等於那一欄完全不檢查 —— 使用者不會知道，
+# 而且要他把已經框好的欄位重做一遍才修得掉，那不合理。
+# 所以載入時就地升級：只有在舊值是「當初的通用替代品」時才換。
+_UPGRADE = {("section", "chinese"): "section"}
+
+
 def load(store, code):
-    """載入某一種表格的欄位定義。沒有就回傳空清單。"""
+    """載入某一種表格的欄位定義。沒有就回傳空清單。
+
+    順便把舊樣板的型別升級 —— 見 _UPGRADE。
+    """
     target = path_for(store, code)
     if not os.path.isfile(target):
         return []
     with open(target, encoding="utf-8") as handle:
         data = json.load(handle)
-    return [Field.from_dict(item) for item in data.get("fields", [])]
+    fields = [Field.from_dict(item) for item in data.get("fields", [])]
+    for field in fields:
+        field.kind = _UPGRADE.get((field.column, field.kind), field.kind)
+    return fields
 
 
 def save(store, code, fields):

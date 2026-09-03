@@ -392,6 +392,16 @@ def run_convert():
         print("診斷報告寫不出來：%s: %s" % (type(error).__name__, error))
         early = None
 
+    # 切出來的每一格也存一份圖。診斷報告是遮罩過的形狀，看得出「讀成幾個字」，
+    # 看不出「那一格長什麼樣」—— 而那正是分辨「切歪了」與「認不出來」的關鍵。
+    # 這些圖含個資，所以放在另一個明講的資料夾，不進診斷。
+    try:
+        where, count = process.dump_cells(records, OUTPUT)
+        if count:
+            print("已存 %d 張辨識用的裁切圖：%s" % (count, where))
+    except Exception as error:                                      # noqa: BLE001
+        print("裁切圖存不出來：%s: %s" % (type(error).__name__, error))
+
     state = {"records": records, "unresolved": unresolved, "out": OUTPUT,
              "journal": converter.journal, "unknown": converter.unknown}
     server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state))

@@ -237,6 +237,63 @@ def read_cells(crop):
     return read_pieces(cells(crop))
 
 
+def trim(crop, pad_ratio=0.25):
+    """把一格裁到只剩有寫字的地方。
+
+    格子本身比字大得多（本來就該這樣，字才不會頂到格線）。整格丟給辨識模型，
+    模型會先把整張影像縮到固定高度，字佔的比例愈小就被縮得愈小 ——
+    等於自己把解析度丟掉。實測乾淨的十個字元：整格 9/10、緊裁之後 10/10。
+
+    留一圈相對於字本身大小的白邊，不是固定像素 —— 字大白邊就大。
+    """
+    if crop is None or crop.size == 0:
+        return None
+    gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    ink = gray < 128
+    if not ink.any():
+        return None
+    ys, xs = np.where(ink)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    pad = int(max(y1 - y0, x1 - x0) * pad_ratio) + 2
+    return crop[max(0, y0 - pad):min(crop.shape[0], y1 + pad),
+                max(0, x0 - pad):min(crop.shape[1], x1 + pad)]
+
+
+def read_char(cell):
+    """讀一格裡的單一個字，回傳所有可能的讀法（去重、去空）。
+
+    給兩種讀法，因為它們錯的地方不一樣：
+
+    偵測+辨識   一般路徑。單一個字有時候偵測階段整個不給框，就什麼都沒有。
+    只做辨識    跳過偵測直接認。單獨用比較差（實測 4/10），但它救得回
+                偵測失手的那幾格。
+
+    兩種都給出來，讓上層用檢查碼去挑 —— 身分證有檢查碼，不必猜哪一種對。
+    """
+    tight = trim(cell)
+    source = cell if tight is None else tight
+    out = []
+    text, _score = read(source)
+    if text:
+        out.append(text.strip())
+    image = source if source.ndim == 3 else cv2.cvtColor(source, cv2.COLOR_GRAY2BGR)
+    try:
+        result, _ = engine()(image, use_det=False, use_cls=False, use_rec=True)
+    except Exception:                                               # noqa: BLE001
+        result = None
+    if result:
+        text = (result[0][0] or "").strip()
+        if text:
+            out.append(text)
+    seen, unique = set(), []
+    for text in out:
+        if text not in seen:
+            seen.add(text)
+            unique.append(text)
+    return unique
+
+
 def read_pieces(pieces):
     """把切好的格子一格一格讀，接起來。回傳 (文字, 最低信心)。"""
     out, scores = [], []

@@ -48,6 +48,9 @@ class Record:
         # 每個欄位「是怎麼讀出來的」：三種讀法各自的結果、切出幾格。
         # 診斷報告靠它才看得出逐格辨識到底有沒有觸發。
         self.how = {}
+        # 切出來的每一格影像。**含個資**，只給承辦人自己在本機看，
+        # 不會進診斷報告。看圖才知道是「格子切歪了」還是「字真的認不出來」。
+        self.cells = {}
 
     @property
     def status(self):
@@ -211,7 +214,7 @@ class Converter:
                 "problem": diagnose.mask_problem(record.problems.get(column, "")),
                 "cells": how.get("格數", 0),
                 "readings": {name: diagnose.mask(how.get(name, ""))
-                             for name in ("整行", "照格子", "逐空白", "採用")
+                             for name in ("整行", "照格子", "逐格", "逐空白", "採用")
                              if name in how},
             })
         return {
@@ -304,6 +307,7 @@ class Converter:
         pieces, crops, scores = [], [], []
         grid_pieces, grid_scores, any_grid = [], [], False
         cell_count = 0
+        all_cells = []
         for box, suffix in definition.segments():
             crop = recognise.crop_field(sheet, box)
             text, confidence = recognise.read(crop)
@@ -324,6 +328,7 @@ class Converter:
             cells = recognise.grid_cells(printed, crop)
             cell_text, cell_score = ("", confidence)
             cell_count += len(cells)
+            all_cells.extend(cells)
             if cells:
                 cell_text, cell_score = recognise.read_pieces(cells)
                 any_grid = any_grid or bool(cell_text)
@@ -366,23 +371,42 @@ class Converter:
                 self.roads, record.values.get("district"))
 
         if definition.kind == "id_number":
-            # 身分證有檢查碼，可以直接驗證哪一種讀法是對的 —— 別的欄位沒這個優勢。
-            # 三種讀法各套一遍位置規則，誰通過檢查碼就用誰，不必猜。
-            spaced_pieces, spaced_scores = [], []
-            for box, _suffix in definition.segments():
-                text, score = recognise.read_cells(recognise.crop_field(sheet, box))
-                if text:
-                    spaced_pieces.append(text)
-                    spaced_scores.append(score)
-            spaced = "".join(spaced_pieces)
-            spaced_confidence = min(spaced_scores) if spaced_scores else 0.0
-            how["逐空白"] = spaced
-            value, problem = validate.best_id(raw, grid_raw, spaced)
-            for candidate, score in ((grid_raw, grid_confidence),
-                                     (spaced, spaced_confidence)):
-                if candidate and value == validate.fix_id_positions(candidate):
-                    raw, confidence = candidate, score
-                    break
+            # 身分證有檢查碼 —— 這讓我們可以**驗證**而不是猜，別的欄位沒這優勢。
+            #
+            # 原稿上剛好切出十格的時候，走最強的那條路：每一格給兩種讀法
+            # （偵測+辨識、只做辨識，它們失手的地方不一樣），再把十格的可能
+            # 逐一組合，看哪一種通過檢查碼。讀錯一格時正確答案不在候選裡，
+            # 沒有組合會通過，於是標起來 —— 不會生出一個通過檢查碼但錯的號碼。
+            solved = solved_problem = None
+            if len(all_cells) == 10:
+                per_cell = [recognise.read_char(cell) for cell in all_cells]
+                record.cells[definition.column] = list(all_cells)
+                how["逐格"] = "|".join(c[0] if c else "?" for c in per_cell)
+                solved, solved_problem = validate.solve_id(per_cell)
+
+            if solved:
+                value, problem = solved, solved_problem
+                raw = how["逐格"].replace("|", "")
+                confidence = grid_confidence or confidence
+            else:
+                # 切不出十格，或十格湊不出唯一解。退回原本的三種讀法比一比。
+                spaced_pieces, spaced_scores = [], []
+                for box, _suffix in definition.segments():
+                    text, score = recognise.read_cells(recognise.crop_field(sheet, box))
+                    if text:
+                        spaced_pieces.append(text)
+                        spaced_scores.append(score)
+                spaced = "".join(spaced_pieces)
+                spaced_confidence = min(spaced_scores) if spaced_scores else 0.0
+                how["逐空白"] = spaced
+                value, problem = validate.best_id(raw, grid_raw, spaced)
+                if solved_problem and problem:
+                    problem = "%s（逐格：%s）" % (problem, solved_problem)
+                for candidate, score in ((grid_raw, grid_confidence),
+                                         (spaced, spaced_confidence)):
+                    if candidate and value == validate.fix_id_positions(candidate):
+                        raw, confidence = candidate, score
+                        break
         elif any_grid and grid_raw and grid_raw != raw:
             # 這一欄有印好的格子。格線切出來的結果比整行讀可靠 ——
             # 一格一個字，不會把兩個字併成一個，也不會漏掉最後那一豎
@@ -405,6 +429,50 @@ class Converter:
         record.confidence[definition.column] = confidence
         if problem:
             record.problems[definition.column] = problem
+
+
+SENSITIVE = "裁切圖（含個資，勿外傳）"
+
+_SENSITIVE_README = """\
+這個資料夾裡是辨識時實際看到的影像，**含個資**（身分證號、門牌都在上面）。
+
+它跟「診斷」資料夾不一樣：診斷報告是遮罩過、可以外傳的；這裡不是。
+**不要把這個資料夾裡的東西傳給任何人，包括開發者。**
+
+用途是你自己看：辨識結果不對的時候，打開對應的圖，看是哪一種情形 ——
+
+  格子切歪了、一個字被切成兩半      → 樣板的框要重畫
+  格子是對的，但那一格根本是空白    → 掃描太淡，或那一格真的沒寫
+  格子是對的、字也清楚，卻讀錯      → 是辨識模型的問題，跟開發者說
+
+看完可以直接刪掉整個資料夾，下次轉換會重建。
+"""
+
+
+def dump_cells(records, folder):
+    """把切出來的每一格存成圖，讓承辦人自己看是切歪了還是認不出來。
+
+    **含個資**，所以不放進診斷資料夾 —— 那個資料夾的規矩是可以外傳。
+    """
+    import cv2 as _cv2
+
+    from . import fields as _fields, resources as _resources
+
+    target = os.path.join(folder, SENSITIVE)
+    os.makedirs(target, exist_ok=True)
+    with open(os.path.join(target, "讀我.txt"), "w", encoding="utf-8") as handle:
+        handle.write(_SENSITIVE_README)
+    written = 0
+    for index, record in enumerate(records, start=1):
+        for column, cells in (record.cells or {}).items():
+            label = _fields.COLUMNS.get(column, column)
+            for number, cell in enumerate(cells, start=1):
+                if cell is None or not getattr(cell, "size", 0):
+                    continue
+                name = "第%02d件-%s-第%02d格.png" % (index, label, number)
+                if _resources.imwrite(os.path.join(target, name), cell):
+                    written += 1
+    return target, written
 
 
 def _stack(crops):

@@ -87,6 +87,99 @@ def best_id(*texts):
     return tried[0][1], tried[0][2]
 
 
+# 一格一個字時，每一格的候選字。位置本身就是規則：
+# 第 1 碼一定是英文字母、第 2 碼一定是 1 或 2、其餘一定是數字。
+def _cell_options(texts, position):
+    """把一格的幾種讀法，換算成那個位置**可能**的字。"""
+    got = set()
+    for text in texts or ():
+        for char in to_halfwidth(text or ""):
+            if position == 0:
+                letter = _DIGIT_TO_LETTER.get(char, char).upper()
+                if letter in _ID_LETTERS:
+                    got.add(letter)
+            else:
+                digit = _LETTER_TO_DIGIT.get(char, _LETTER_TO_DIGIT.get(char.upper(), char))
+                if digit.isdigit():
+                    got.add(digit)
+    read = bool(got)
+    if position == 1:
+        # 第 2 碼只可能是 1（男）或 2（女）
+        got = (got & set("12")) or set("12")
+    if not got:
+        # 這一格什麼都沒讀到。攤開所有可能，交給檢查碼去挑。
+        got = set(_ID_LETTERS) if position == 0 else set("0123456789")
+    return sorted(got), read
+
+
+# 候選組合數的上限。超過就不算 —— 那代表讀到的東西太少，
+# 硬算出來的「唯一解」只是湊出一個通過檢查碼的號碼，不是讀出來的。
+MAX_ID_COMBOS = 300000
+
+# 最多容許幾格完全沒讀到。超過就不推 —— 補回來的成分比讀出來的還多，
+# 那已經不叫辨識了。
+MAX_ID_BLANKS = 2
+
+
+def solve_id(cells):
+    """從「每一格的幾種讀法」解出身分證字號。
+
+    cells 是十個清單，每個是那一格讀到的字串（可能是空的）。
+
+    做法是把每一格的可能字列出來，逐一組合，**看哪一種通過檢查碼**。
+    身分證有檢查碼這件事，讓我們可以直接驗證而不是猜 —— 別的欄位沒這個優勢。
+
+    只有**剛好一種**組合通過才採用。這一點是關鍵：
+
+      - 讀對了：那一種就是答案。
+      - 有一格讀不出來：檢查碼會把它唯一補回來。
+      - 有一格讀錯了（讀成別的字）：正確答案不在候選裡，沒有任何組合會通過，
+        於是回報失敗、標起來 —— 不會生出一個「通過檢查碼但錯的」號碼。
+      - 讀不出來的太多：好幾種都通過，一樣標起來。
+
+    也就是說它的失敗方式是「講出來」，不是「靜靜地寫錯」。
+
+    回傳 (身分證, 問題)。
+    """
+    if len(cells) != 10:
+        return None, "切出 %d 格，身分證應該是 10 格" % len(cells)
+
+    options, blanks = [], []
+    for index in range(10):
+        choices, was_read = _cell_options(cells[index], index)
+        options.append(choices)
+        if not was_read:
+            blanks.append(index + 1)
+    if len(blanks) > MAX_ID_BLANKS:
+        return None, "有 %d 格完全沒讀到，補回來的會比讀到的還多" % len(blanks)
+
+    total = 1
+    for choices in options:
+        total *= len(choices)
+    if total > MAX_ID_COMBOS:
+        return None, "十格裡讀得出來的太少，湊不出唯一解"
+
+    import itertools
+
+    found = []
+    for combo in itertools.product(*options):
+        candidate = "".join(combo)
+        if id_number(candidate)[1] is None:
+            found.append(candidate)
+            if len(found) > 1:
+                return None, "有好幾種讀法都通過檢查碼，分不出是哪一個"
+    if not found:
+        return None, "十格湊不出通過檢查碼的號碼"
+
+    if blanks:
+        # 有格子是「推」出來的，不是「讀」出來的。值照樣給 —— 有個號碼可以
+        # 對照比空白有用 —— 但一定要標起來，不可以當成讀到了。
+        # 推回來的前提是其餘幾格都對，那個前提沒有任何東西保證。
+        return found[0], ("第 %s 格沒讀到，是用檢查碼推回來的，請自己核對原圖"
+                          % "、".join(str(n) for n in blanks))
+    return found[0], None
+
+
 def id_number(text):
     """身分證字號：轉成標準寫法並驗檢查碼。
 

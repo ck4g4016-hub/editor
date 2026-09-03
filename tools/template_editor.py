@@ -141,6 +141,7 @@ class Workspace:
             "name": name,
             "columns": fieldmod.COLUMNS,
             "kinds": fieldmod.KINDS,
+            "default_kinds": fieldmod.DEFAULT_KIND,
             "critical": list(CRITICAL),
             "fields": [f.to_dict() for f in fieldmod.load(self.store, code)],
             "views": [{"label": v["label"], "role": v["role"]} for v in views],

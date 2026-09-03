@@ -281,6 +281,36 @@ def check():
         except Exception as error:                                  # noqa: BLE001
             problems.append("%s 出錯：%s: %s" % (label, type(error).__name__, error))
 
+    # 段名有自己的型別。這份對應表以前抄在編輯器的 JS 裡一份，兩邊各改各的，
+    # 結果段名一直用沒有驗證器的 chinese，整批段名從來沒被比對過。
+    from pipeline import fields as fieldmod
+    for column in fieldmod.COLUMNS:
+        if column not in fieldmod.DEFAULT_KIND:
+            problems.append("輸出欄「%s」沒有預設型別" % column)
+    for column, kind in fieldmod.DEFAULT_KIND.items():
+        if kind not in fieldmod.KINDS:
+            problems.append("預設型別 %r 不在 KINDS 裡" % kind)
+    if fieldmod.DEFAULT_KIND.get("section") != "section":
+        problems.append("段名的預設型別不是 section，地段清單不會生效")
+    with open(resources.path("editor", "page.html"), encoding="utf-8") as handle:
+        page = handle.read()
+    if "data.default_kinds" not in page:
+        problems.append("樣板編輯器沒有跟 API 拿預設型別，又會各改各的")
+
+    # 舊樣板要能就地升級，不必要求使用者把欄位重框一遍
+    import json as _json
+    import tempfile as _tempfile
+    old_store = _tempfile.mkdtemp()
+    os.makedirs(os.path.join(old_store, "F"))
+    with open(os.path.join(old_store, "F", "fields.json"), "w", encoding="utf-8") as handle:
+        _json.dump({"fields": [{"id": "a", "name": "段名", "column": "section",
+                                "kind": "chinese", "box": [1, 2, 3, 4],
+                                "page": "front", "mode": "fixed"}]},
+                   handle, ensure_ascii=False)
+    upgraded = fieldmod.load(old_store, "F")
+    if not upgraded or upgraded[0].kind != "section":
+        problems.append("舊樣板的段名型別沒有被升級")
+
     # 那個小視窗一關，網頁伺服器就跟著收掉，瀏覽器那一頁只會說
     # 「Failed to fetch」，而且程式已經不在，連錯誤紀錄都寫不出來。
     # 使用者遇到過一次，整批白跑還查不出原因。關之前一定要先問。
@@ -405,6 +435,44 @@ def check():
     if mixed_record.raw.get("address") != "AAA路158號":
         problems.append("有格線與沒格線的格子混在一欄時讀成 %r，應該是 'AAA路158號'"
                         % mixed_record.raw.get("address"))
+
+    # 逐格求解：用檢查碼從「每一格的候選字」解出身分證。
+    # 最重要的一條是**失敗要講出來**，不可以生出一個通過檢查碼但錯的號碼。
+    good_id = "G220390817"
+    if validate.id_number(good_id)[1] is None:
+        def cells_of(code):
+            return [[c] for c in code]
+
+        value, problem = validate.solve_id(cells_of(good_id))
+        if value != good_id or problem:
+            problems.append("逐格求解：全讀對卻得到 %r（%s）" % (value, problem))
+
+        # 檢查碼那一格沒讀到 → 推得回來，但一定要標起來
+        gap = cells_of(good_id); gap[9] = []
+        value, problem = validate.solve_id(gap)
+        if value != good_id:
+            problems.append("逐格求解：缺檢查碼那格應該推得回來，得到 %r" % value)
+        if not problem:
+            problems.append("逐格求解：用推的補回來卻沒有標記")
+
+        # 空太多格 → 補回來的比讀到的多，不可以硬解
+        many = cells_of(good_id)
+        for i in (2, 3, 4):
+            many[i] = []
+        value, problem = validate.solve_id(many)
+        if value is not None or not problem:
+            problems.append("逐格求解：缺三格竟然給了答案 %r" % value)
+
+        # 一格有兩種讀法，檢查碼要能挑出對的那個
+        two = cells_of(good_id); two[5] = ["3", "9"]
+        value, problem = validate.solve_id(two)
+        if value != good_id or problem:
+            problems.append("逐格求解：一格兩解沒挑對，得到 %r（%s）" % (value, problem))
+
+        # 格數不對就不要硬解
+        value, problem = validate.solve_id(cells_of(good_id)[:9])
+        if value is not None or not problem:
+            problems.append("逐格求解：只有 9 格竟然給了答案 %r" % value)
 
     # 三種讀法都要能挑出通過檢查碼的那一個
     good = "A123456789"

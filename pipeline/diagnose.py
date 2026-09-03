@@ -273,6 +273,8 @@ def build(journal, notes=None, version=None):
     out.append("同一欄最多讀三遍，因為沒有一種讀法對所有欄位都最好：")
     out.append("  整行    一般欄位（門牌、姓名）唯一合理的讀法")
     out.append("  照格子  原稿上印好一字一格的欄位。格線是從底圖上找出來的")
+    out.append("  逐格    身分證專用：一格兩種讀法，再用檢查碼挑出唯一解。")
+    out.append("          「?」代表那一格什麼都沒讀到，「|」是格子的分界。")
     out.append("  逐空白  沒有格線時，照墨跡之間的空白切（只有身分證會做）")
     out.append("")
     out.append("**格數是 0 就代表沒找到印刷格線**，那一欄只有整行讀的結果。")
@@ -289,10 +291,12 @@ def build(journal, notes=None, version=None):
                          field.get("cells", 0),
                          readings.get("整行") or "（空）",
                          readings.get("照格子") or "－",
+                         readings.get("逐格") or "－",
                          readings.get("逐空白") or "－",
                          readings.get("採用") or "（空）"])
     if rows:
-        out.extend(_table(["件", "欄位", "格數", "整行", "照格子", "逐空白", "採用"], rows))
+        out.extend(_table(["件", "欄位", "格數", "整行", "照格子", "逐格", "逐空白",
+                           "採用"], rows))
     else:
         out.append("沒有資料。")
 
