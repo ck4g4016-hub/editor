@@ -57,7 +57,8 @@ def check():
     # 網頁介面用到的檔案
     from pipeline import resources
     for parts in (("editor", "page.html"), ("editor", "review.html"),
-                  ("data", "roads-三峽-鶯歌.txt")):
+                  ("data", "roads-三峽-鶯歌.txt"),
+                  ("data", "sections-三峽-鶯歌.txt")):
         if not os.path.isfile(resources.path(*parts)):
             problems.append("少了資源檔 %s" % "/".join(parts))
 
@@ -127,6 +128,34 @@ def check():
         if not problem:
             problems.append("不在字典裡的門牌被放行了：%r" % value)
 
+    # 內建的地段清單是從地政局易找查的下拉選單直接複製的，那是權威資料。
+    # 這幾條是使用者實際遇到的：段名讀成「圍際」，而鶯歌真的有「國際段」。
+    sections = lexicon.builtin_sections()
+    if len(sections.get("三峽區") or ()) < 80 or len(sections.get("鶯歌區") or ()) < 40:
+        problems.append("內建地段清單筆數不對：%s"
+                        % {k: len(v) for k, v in sections.items()})
+    for district, raw, want, flagged in (
+        ("鶯歌區", "國際段", "國際段", False),
+        ("鶯歌區", "國際", "國際段", False),
+        ("鶯歌區", "圍際", "國際段", False),          # 差一個字，清單裡只有一個像的
+        ("鶯歌區", "犬湖", "犬湖", True),             # 大中西東三湖都只差一個字 —— 不准猜
+        ("鶯歌區", "大湖段", "大湖段", False),        # 底下七個小段，只寫到段
+        ("鶯歌區", "阿南坑段茶山小段", "阿南坑段茶山小段", False),
+        ("鶯歌區", "不存在段", "不存在段", True),
+        ("三峽區", "白雞段", "白雞段", False),
+        ("三峽區", "白雞段白雞小段", "白雞段白雞小段", False),
+        ("三峽區", "大學段一小段", "大學段一小段", False),
+        ("三峽區", "焦溪段", "焦溪段", True),          # 礁溪段與安溪段都只差一個字
+    ):
+        names = lexicon.for_district(sections, district)
+        got, problem = validate.check("section", raw, known=names)
+        if got != want:
+            problems.append("地段（%s）「%s」得到 %r，應該是 %r"
+                            % (district, raw, got, want))
+        if bool(problem) != flagged:
+            problems.append("地段（%s）「%s」標記狀態不對：%r"
+                            % (district, raw, problem))
+
     # 地段清單是從地政局易找查的下拉選單複製過來的，貼進來長什麼樣都有可能。
     # 要求使用者先自己整理成乾淨清單，等於把工作推回去給他。
     for line, want in (
@@ -150,7 +179,7 @@ def check():
                                ("白雞", "白雞段", False),
                                ("國際", "國際段", False),
                                ("國際段", "國際段", False),
-                               ("圍際", "圍際", True)):
+                               ("田橋", "田橋", True)):
         got, problem = validate.check("section", raw, known=listing)
         if got != want:
             problems.append("地段「%s」得到 %r，應該是 %r" % (raw, got, want))
@@ -162,7 +191,10 @@ def check():
         # 輸出的是清單上登記的寫法，不是讀到的寫法
         ("清單裡有", "國際", ["國際段", "二甲段"], "國際段", False),
         ("尾字的段可有可無", "國際段", ["國際", "二甲"], "國際", False),
-        ("清單裡沒有要標起來", "圍際", ["國際段", "二甲段"], "圍際", True),
+        # 差一個字、而且清單裡只有一個像的，就修掉
+        ("錯一個字", "圍際", ["國際段", "二甲段"], "國際段", False),
+        # 完全不像的一定要標起來
+        ("清單裡沒有要標起來", "田橋", ["國際段", "二甲段"], "田橋", True),
         ("沒有清單就照讀的寫", "圍際", [], "圍際", False),
     ):
         got, problem = validate.check("section", raw, known=known)
@@ -170,7 +202,7 @@ def check():
             problems.append("段名「%s」得到 %r，應該是 %r" % (label, got, want))
         if flagged and problem is None and known:
             problems.append("段名「%s」應該被標記卻放行了" % label)
-    for raw, known in (("圍際", ["國際段"]), ("", ["國際段"])):
+    for raw, known in (("田橋", ["國際段"]), ("", ["國際段"])):
         _got, problem = validate.check("section", raw, known=known)
         if not problem:
             problems.append("段名 %r 應該被標記卻放行了" % raw)

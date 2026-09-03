@@ -89,7 +89,8 @@ jobs:
           $root = 'dist\紙本轉excel'
           foreach ($item in @('紙本轉excel.exe', '說明.txt', '_internal\version.txt',
                               '_internal\editor\page.html', '_internal\editor\review.html',
-                              '_internal\data\roads-三峽-鶯歌.txt')) {
+                              '_internal\data\roads-三峽-鶯歌.txt',
+                              '_internal\data\sections-三峽-鶯歌.txt')) {
               if (-not (Test-Path (Join-Path $root $item))) { throw "打包後少了 $item" }
           }
           # 指名要哪三個模型。只數 *.onnx 的話會把 onnxruntime 自帶的測試模型

@@ -21,8 +21,12 @@ from . import resources
 # 路街名的結尾字
 SUFFIXES = ("路", "街", "大道", "巷")
 
-# 內建字典的位置。內容見該檔開頭的說明 —— 它不是政府開放資料的權威清單。
+# 內建字典的位置。內容見各該檔開頭的說明。
+# 路名那份是從郵遞區號網站抄的，**不是**權威清單，一定有漏（實測就漏了
+# 鶯歌區的大湖路）。地段那份不一樣，是從地政局易找查的下拉選單直接複製的，
+# 那是地政局自己的資料。
 BUILTIN = resources.path("data", "roads-三峽-鶯歌.txt")
+BUILTIN_SECTIONS = resources.path("data", "sections-三峽-鶯歌.txt")
 
 
 def _read(path):
@@ -144,12 +148,22 @@ def section_aliases(names):
     return table
 
 
+def builtin_sections():
+    """內建的三峽、鶯歌地段名，依區分組。"""
+    try:
+        return _read(BUILTIN_SECTIONS)
+    except OSError:
+        return {}
+
+
 def load_sections(store):
-    """載入地段名字典。沒有這個檔就回空的 —— 空的代表不驗證，照讀出來的寫。"""
+    """載入地段名字典。樣板資料夾裡有自己的就用那份，否則用內建的。"""
     target = sections_path(store)
     if os.path.isfile(target):
-        return _read(target)
-    return {}
+        groups = _read(target)
+        if any(groups.values()):
+            return groups
+    return builtin_sections()
 
 
 def ensure_roads(store):
@@ -173,12 +187,17 @@ def ensure_roads(store):
 
 
 def ensure_sections(store):
-    """地段字典不存在就先建一個空的（含說明），讓人有東西可以填。"""
+    """地段字典不存在就把內建那份複製一份到樣板資料夾，讓人可以直接改。"""
     target = sections_path(store)
     if not os.path.isfile(target):
         os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+        try:
+            with open(BUILTIN_SECTIONS, encoding="utf-8") as handle:
+                content = handle.read()
+        except OSError:
+            content = SECTIONS_HEADER
         with open(target, "w", encoding="utf-8") as handle:
-            handle.write(SECTIONS_HEADER)
+            handle.write(content)
     return target
 
 

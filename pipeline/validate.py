@@ -270,6 +270,22 @@ def _overlap(a, b):
     return len(set(a) & set(b))
 
 
+def _one_off(value, options):
+    """長度一樣、只差一個字的候選。剛好一個就回它，不只一個就不猜。
+
+    段名多半只有兩三個字，錯一個字相似度就掉到 0.5，過不了一般的門檻 ——
+    「圍際」對「國際」就是這樣。但如果整份清單裡只有這一個長得這麼像，
+    它幾乎不會是別的東西。
+
+    不只一個就一定要標起來：鶯歌有大湖、東湖、中湖、西湖、三湖五個段，
+    讀到「犬湖」的時候五個都只差一個字，挑哪一個都是猜。
+    """
+    hits = [option for option in options
+            if len(option) == len(value)
+            and sum(1 for a, b in zip(value, option) if a != b) == 1]
+    return hits[0] if len(hits) == 1 else None
+
+
 def section(text, known=None):
     """地段名。
 
@@ -294,9 +310,14 @@ def section(text, known=None):
     if trimmed in table:
         return table[trimmed], None
 
-    best, _score = lexicon.choose(value, list(table))
+    options = list(table)
+    best, _score = lexicon.choose(value, options)
     if best:
         return table[best], None
+    for candidate in (value, trimmed):
+        best = _one_off(candidate, options)
+        if best:
+            return table[best], None
     return value, "段名不在清單裡（讀到「%s」）" % value
 
 
