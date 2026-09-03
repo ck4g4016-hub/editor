@@ -311,7 +311,7 @@ _LEAD = re.compile(r"^.{1,4}?[縣市區鄉鎮村里]")
 
 
 def _rank(candidate, names):
-    """跟字典比一輪，回傳 (最像的, 分數, 第二像的分數)。"""
+    """跟字典比一輪，回傳 (最像的, 分數, 第二像的分數, 同分的全部)。"""
     best, score, second = None, 0.0, 0.0
     for name in names:
         value = _score(candidate, name)
@@ -319,7 +319,8 @@ def _rank(candidate, names):
             best, score, second = name, value, score
         elif value > second and name != best:
             second = value
-    return best, score, second
+    tied = [name for name in names if _score(candidate, name) >= score] if best else []
+    return best, score, second, tied
 
 
 def _leads(core):
@@ -356,7 +357,13 @@ def choose(text, names, threshold=THRESHOLD, margin=MARGIN):
 
 
 def resolve_head(head, names, threshold=THRESHOLD):
-    """從地址開頭那段文字裡認出路街名。
+    """從地址開頭那段文字裡認出路街名。回傳 (路街名, 相似度)。"""
+    name, score, _note = resolve_head_full(head, names, threshold)
+    return name, score
+
+
+def resolve_head_full(head, names, threshold=THRESHOLD):
+    """同 resolve_head，但多回傳一句要給人看的說明（沒有就是 None）。
 
     這裡不要求「路」「街」那個字有被讀出來 —— 紙本表格上那個字是印刷的，
     民眾只是圈起來或劃掉，減掉版面之後根本不會留下字，
@@ -369,18 +376,35 @@ def resolve_head(head, names, threshold=THRESHOLD):
     回傳 (路街名, 相似度)。
     """
     if not head or not names:
-        return None, 0.0
+        return None, 0.0, None
     # 只留中文字去比對，把圈和雜訊丟掉
     core = "".join(ch for ch in head if "\u4e00" <= ch <= "\u9fff")
     if len(core) < 2:
-        return None, 0.0
+        return None, 0.0, None
 
-    highest = 0.0
+    # 表格上讀到的結尾字。平常不採信（那是印刷的，民眾只是圈起來），
+    # 但字典裡兩條路主體一模一樣時，它是唯一剩下的線索。
+    read_suffix = core[-1] if core[-1] in "路街道" else None
+
+    highest, blocked = 0.0, None
     for index, candidate in enumerate(_leads(core)):
         # 第一個候選是原文，後面的是砍掉行政區之後的，門檻要高很多
         bar = threshold if index == 0 else max(threshold, TRIM_THRESHOLD)
-        best, score, second = _rank(candidate, names)
+        best, score, second, tied = _rank(candidate, names)
         highest = max(highest, score)
-        if best is not None and score >= bar and score - second >= MARGIN:
-            return best, score
-    return None, highest
+        if best is None or score < bar:
+            continue
+        if score - second >= MARGIN:
+            return best, score, None
+        if len(tied) > 1:
+            # 主體一樣、只差路或街。這兩區裡只有鶯歌的「東湖街」與「東湖路」
+            # 是這種情形。讀到的那個字是唯一線索，用它 —— 但一定要講出來，
+            # 因為那個字本來就不可信。
+            picks = [name for name in tied if read_suffix and name.endswith(read_suffix)]
+            if len(picks) == 1:
+                return picks[0], score, (
+                    "字典裡「%s」都有，這裡是照表格上讀到的「%s」決定的，請確認"
+                    % ("」「".join(sorted(tied)), read_suffix))
+            blocked = blocked or (
+                "分不出是「%s」裡的哪一條" % "」「".join(sorted(tied)))
+    return None, highest, blocked

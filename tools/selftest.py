@@ -111,22 +111,67 @@ def check():
 
     # 字典裡沒有的路名**絕對不可以**被換成另一條真的存在的路。
     # 這是最危險的一類錯：驗證會放行，輸出表上看不出來，RPA 拿著別人家的
-    # 門牌去查調。實測出過一次：鶯歌區的「大湖路」被換成「東湖路」。
-    yingge = lexicon.for_district(lexicon.load(resources.base_dir()), "鶯歌區")
+    # 門牌去查調。實測出過一次：鶯歌區的「大湖路」被換成「東湖路」——
+    # 那次的根本原因是內建字典漏收，現在字典換成內政部門牌開放資料了。
+    roads_all = lexicon.load(resources.base_dir())
+    yingge = lexicon.for_district(roads_all, "鶯歌區")
+    sanxia = lexicon.for_district(roads_all, "三峽區")
+    if len(yingge) < 100 or len(sanxia) < 80:
+        problems.append("路名字典筆數不對：三峽 %d、鶯歌 %d"
+                        % (len(sanxia), len(yingge)))
     if yingge:
-        for got in ("大湖路", "大湖", "西湖路", "不存在路"):
+        for got in ("天龍路", "幸福路", "光華路", "忠義街"):
             name, score = lexicon.resolve_head(got, yingge)
             if name is not None:
                 problems.append("路名「%s」不在字典裡，卻被換成 %r（%.2f）"
                                 % (got, name, score))
-        for got, want in (("東湖路", "東湖路"), ("中湖街", "中湖街"),
-                          ("東湖", "東湖路"), ("國華路", "國華路")):
+        # 尾字由字典決定：官方清單裡只有西湖街、只有大湖路
+        for got, want in (("大湖路", "大湖路"), ("大湖", "大湖路"),
+                          ("大湖街", "大湖路"), ("西湖路", "西湖街"),
+                          ("中湖街", "中湖街"), ("國華路", "國華路"),
+                          ("館前路", "館前路"), ("高職南街", "高職南街")):
             name, _score = lexicon.resolve_head(got, yingge)
             if name != want:
                 problems.append("路名比對 %s 得到 %r，應該是 %r" % (got, name, want))
-        value, problem = validate.address("大湖路732巷16弄15號2樓", roads=yingge)
+
+        # 唯一一組主體相同、路街並存的：東湖街與東湖路。
+        # 只讀到「東湖」時分不出來，一定要標起來，不可以挑一個。
+        name, _score, note = lexicon.resolve_head_full("東湖", yingge)
+        if name is not None or not note:
+            problems.append("「東湖」路街並存卻沒有標起來：%r / %r" % (name, note))
+        # 讀到的尾字是唯一線索時可以用，但要講出來讓人確認
+        for got, want in (("東湖路", "東湖路"), ("東湖街", "東湖街")):
+            value, problem = validate.address(got + "12號", roads=yingge)
+            if value != want + "12號":
+                problems.append("「%s」得到 %r，應該是 %r" % (got, value, want + "12號"))
+            if not problem:
+                problems.append("「%s」靠讀到的尾字決定，卻沒有提醒要確認" % got)
+
+        # 表格上印的是「路／街」二選一的標籤，那不是路名的一部分
+        for raw, want in (("大湖路/街732巷16弄15號2樓", "大湖路732巷16弄15號二樓"),
+                          ("中湖路/街5巷3號", "中湖街5巷3號"),
+                          ("館前路/街9號", "館前路9號")):
+            value, problem = validate.address(raw, roads=yingge)
+            if value != want:
+                problems.append("「%s」得到 %r，應該是 %r" % (raw, value, want))
+            if problem:
+                problems.append("「%s」不該被標記：%s" % (raw, problem))
+
+        value, problem = validate.address("天龍路732巷16弄15號2樓", roads=yingge)
         if not problem:
             problems.append("不在字典裡的門牌被放行了：%r" % value)
+
+    # 公文文號：收文戳上還印著別的數字，不可以跟條碼號各切一半黏起來
+    for raw, want in (
+        ("115FF005424機關收文115/08/251155698710", "1155698710"),
+        ("CR酮收文1155698710115/08/25", "1155698710"),
+        ("1155699046115/08/28", "1155699046"),
+        ("機關收文115/08/251155699261", "1155699261"),
+    ):
+        got, problem = validate.doc_number(raw)
+        if got != want or problem:
+            problems.append("公文文號「%s」得到 %r（%s），應該是 %r"
+                            % (raw, got, problem, want))
 
     # 內建的地段清單是從地政局易找查的下拉選單直接複製的，那是權威資料。
     # 這幾條是使用者實際遇到的：段名讀成「圍際」，而鶯歌真的有「國際段」。
@@ -296,6 +341,24 @@ def check():
         cv2.line(noisy, (x, 0), (x, 149), (0, 0, 0), 2)
     if recognise.grid_cells(noisy, blank):
         problems.append("寬度不一致的直線被誤當成格線")
+
+    # 使用者框選時本來就該框寬鬆一點（字才不會被切掉），所以格線常常只佔
+    # 框高的一小部分。原本的門檻是「佔框高 55%」，在真實件上一次都沒觸發過，
+    # 而診斷報告看不出來這件事，害我照著錯誤的假設又猜了一輪。
+    for frame_height in (200, 300, 500, 800):
+        tall = np.full((frame_height, 1400, 3), 255, np.uint8)
+        top = (frame_height - 180) // 2
+        for x in range(150, 1251, 110):
+            cv2.line(tall, (x, top), (x, top + 180), (0, 0, 0), 3)
+        cut = recognise.grid_cells(tall, np.full((frame_height, 1400), 255, np.uint8))
+        if len(cut) != 10:
+            problems.append("框高 %d 時應該切出 10 格，實際 %d 格（格線只佔框高 %.0f%%）"
+                            % (frame_height, len(cut), 180.0 / frame_height * 100))
+    # 只有印刷文字、沒有格線的欄位不可以被切
+    words = np.full((300, 1400, 3), 255, np.uint8)
+    cv2.putText(words, "ADDRESS", (30, 180), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 0, 0), 6)
+    if recognise.grid_cells(words, np.full((300, 1400), 255, np.uint8)):
+        problems.append("只有印刷文字的欄位被誤切成格子")
 
     # 欄位框多框到相鄰的一行時，段落要由上而下、每行由左而右接起來。
     # 以前只照 x 排序，好幾行的字會橫著交錯（公文文號讀出「CR酮收文…115/08/25」

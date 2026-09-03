@@ -261,8 +261,17 @@ def read_pieces(pieces):
 # 「字—線—字」之間根本沒有空白可言，整條會被當成一格，等於沒切。
 # ---------------------------------------------------------------------------
 
-# 一條直格線在欄位裡要連續佔掉多少高度才算數
-LINE_RATIO = 0.55
+# 一條直格線要有多長才算數。
+#
+# 原本是「佔欄位高度的 55%」，那個門檻在真實件上完全沒有觸發過 ——
+# 使用者框選時通常框得比那排方格高（本來就該框寬鬆一點，字才不會被切掉），
+# 格線只佔框高的一小部分，於是一條都找不到，逐格辨識形同沒做。
+# 診斷報告上看不出來這件事，因為我當初沒把「切出幾格」記進去。
+#
+# 改成相對於「這個框裡最長的那一條垂直筆畫」：格線一定是框裡最長的，
+# 跟框開多大無關。同時保留一個絕對下限，免得整框都是雜訊時亂切。
+LINE_RATIO = 0.60          # 相對於最長的那條
+MIN_LINE_RATIO = 0.20      # 相對於欄位高度的絕對下限
 
 # 至少要切出這麼多格才當作「這是一個一字一格的欄位」
 MIN_CELLS = 4
@@ -295,7 +304,11 @@ def separators(printed):
     if height < 8:
         return []
     runs = _longest_runs(gray < 160)
-    columns = np.flatnonzero(runs >= LINE_RATIO * height)
+    tallest = int(runs.max()) if runs.size else 0
+    floor = max(8.0, MIN_LINE_RATIO * height)
+    if tallest < floor:
+        return []                       # 框裡根本沒有夠長的直線
+    columns = np.flatnonzero(runs >= max(LINE_RATIO * tallest, floor))
     if columns.size == 0:
         return []
 

@@ -45,6 +45,9 @@ class Record:
         # 每個欄位的原圖裁切（PNG bytes）。複核時要讓人對照著看，
         # 光給文字沒辦法判斷對錯。只放在記憶體，程式關掉就沒了。
         self.crops = {}
+        # 每個欄位「是怎麼讀出來的」：三種讀法各自的結果、切出幾格。
+        # 診斷報告靠它才看得出逐格辨識到底有沒有觸發。
+        self.how = {}
 
     @property
     def status(self):
@@ -198,6 +201,7 @@ class Converter:
         entries = []
         for column, value in record.values.items():
             definition = definitions.get(column)
+            how = record.how.get(column) or {}
             entries.append({
                 "column": column,
                 "kind": definition.kind if definition else "?",
@@ -205,6 +209,10 @@ class Converter:
                 "raw": diagnose.mask(record.raw.get(column, "")),
                 "value": diagnose.mask(value),
                 "problem": diagnose.mask_problem(record.problems.get(column, "")),
+                "cells": how.get("格數", 0),
+                "readings": {name: diagnose.mask(how.get(name, ""))
+                             for name in ("整行", "照格子", "逐空白", "採用")
+                             if name in how},
             })
         return {
             "index": index,
@@ -295,6 +303,7 @@ class Converter:
         """
         pieces, crops, scores = [], [], []
         grid_pieces, grid_scores, any_grid = [], [], False
+        cell_count = 0
         for box, suffix in definition.segments():
             crop = recognise.crop_field(sheet, box)
             text, confidence = recognise.read(crop)
@@ -314,6 +323,7 @@ class Converter:
             printed = recognise.crop_field(base, box) if base is not None else crop
             cells = recognise.grid_cells(printed, crop)
             cell_text, cell_score = ("", confidence)
+            cell_count += len(cells)
             if cells:
                 cell_text, cell_score = recognise.read_pieces(cells)
                 any_grid = any_grid or bool(cell_text)
@@ -339,6 +349,12 @@ class Converter:
         grid_raw = "".join(grid_pieces)
         grid_confidence = min(grid_scores) if grid_scores else 0.0
 
+        # 每一欄「是怎麼讀出來的」要留下來。上一版把照格線逐格辨識做進去之後，
+        # 診斷報告上完全看不出它有沒有觸發過 —— 結果一次都沒觸發，
+        # 而我看著報告看不出來，又照著錯誤的假設猜了一輪。
+        how = {"格數": cell_count, "整行": raw, "照格子": grid_raw if any_grid else ""}
+        record.how[definition.column] = how
+
         extra = {}
         if definition.kind == "district":
             extra["known"] = self.districts
@@ -360,6 +376,7 @@ class Converter:
                     spaced_scores.append(score)
             spaced = "".join(spaced_pieces)
             spaced_confidence = min(spaced_scores) if spaced_scores else 0.0
+            how["逐空白"] = spaced
             value, problem = validate.best_id(raw, grid_raw, spaced)
             for candidate, score in ((grid_raw, grid_confidence),
                                      (spaced, spaced_confidence)):
@@ -382,6 +399,7 @@ class Converter:
         else:
             value, problem = validate.check(definition.kind, raw, **extra)
 
+        how["採用"] = raw
         record.raw[definition.column] = raw
         record.values[definition.column] = value
         record.confidence[definition.column] = confidence

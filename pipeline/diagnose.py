@@ -114,7 +114,7 @@ class Journal:
 
 
 def _packages():
-    names = ["numpy", "cv2", "onnxruntime", "rapidocr_onnxruntime", "fitz", "openpyxl"]
+    names = ["numpy", "cv2", "onnxruntime", "rapidocr_onnxruntime", "pymupdf", "openpyxl"]
     out = []
     for name in names:
         try:
@@ -123,8 +123,8 @@ def _packages():
             if not isinstance(version, str):
                 # rapidocr 之類沒有 __version__，只好去問套件metadata
                 from importlib import metadata
-                version = metadata.version({"cv2": "opencv-python-headless",
-                                            "fitz": "pymupdf"}.get(name, name))
+                version = metadata.version(
+                    {"cv2": "opencv-python-headless"}.get(name, name))
         except Exception as error:                                  # noqa: BLE001
             version = "問不到版本（%s）" % type(error).__name__
         out.append("%s %s" % (name, version))
@@ -268,6 +268,33 @@ def build(journal, notes=None, version=None):
                            "正規化後(遮罩)", "結果"], rows))
     else:
         out.append("沒有任何欄位被辨識 —— 樣板可能還沒定義欄位。")
+
+    section("怎麼讀出來的")
+    out.append("同一欄最多讀三遍，因為沒有一種讀法對所有欄位都最好：")
+    out.append("  整行    一般欄位（門牌、姓名）唯一合理的讀法")
+    out.append("  照格子  原稿上印好一字一格的欄位。格線是從底圖上找出來的")
+    out.append("  逐空白  沒有格線時，照墨跡之間的空白切（只有身分證會做）")
+    out.append("")
+    out.append("**格數是 0 就代表沒找到印刷格線**，那一欄只有整行讀的結果。")
+    out.append("一字一格的欄位如果格數是 0，問題就出在找格線那一步，不是 OCR。")
+    out.append("")
+    rows = []
+    for record in journal.records:
+        for field in record["fields"]:
+            readings = field.get("readings") or {}
+            if not readings:
+                continue
+            rows.append([record["index"] + 1,
+                         fieldmod.COLUMNS.get(field["column"], field["column"]),
+                         field.get("cells", 0),
+                         readings.get("整行") or "（空）",
+                         readings.get("照格子") or "－",
+                         readings.get("逐空白") or "－",
+                         readings.get("採用") or "（空）"])
+    if rows:
+        out.extend(_table(["件", "欄位", "格數", "整行", "照格子", "逐空白", "採用"], rows))
+    else:
+        out.append("沒有資料。")
 
     section("欄位統計")
     stats = {}

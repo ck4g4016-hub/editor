@@ -124,15 +124,28 @@ def doc_number(text):
     收文日期是數字，會黏在文號後面變成 17 碼，所以要先照日期格式挑掉。
     """
     cleaned = _DOC_DATE.sub("", to_halfwidth(text or ""))
-    value = re.sub(r"\D", "", cleaned)
 
-    # 還是太長就從頭找第一段像民國年開頭的 10 碼
-    if len(value) > 10:
-        for start in range(len(value) - 9):
-            window = value[start:start + 10]
-            if 100 <= int(window[:3]) <= 199:
-                value = window
-                break
+    # 先看「連續數字」怎麼斷開。收文戳上除了條碼號還印著別的數字（公文編號
+    # 115FF005424 的前三碼就是），它們跟條碼號中間隔著文字，本來就是兩段。
+    #
+    # 以前直接把所有數字接成一整串再滑動視窗找，第一個以民國年開頭的十碼會
+    # 橫跨兩段：115 與 1155698710 接成 1151155698710，取出 1151155698 ——
+    # 十碼、115 開頭、驗證照樣通過，但那是兩個號碼各切一半黏起來的東西，
+    # 而且從輸出的表格上看不出來。實測使用者第 1 件就是這樣錯的。
+    runs = re.findall(r"\d+", cleaned)
+    exact = [run for run in runs if len(run) == 10 and 100 <= int(run[:3]) <= 199]
+    if len(exact) == 1:
+        value = exact[0]
+    else:
+        value = "".join(runs)
+        # 沒有剛好十碼的那一段，才退回原本的做法：
+        # 從頭找第一段像民國年開頭的 10 碼
+        if len(value) > 10:
+            for start in range(len(value) - 9):
+                window = value[start:start + 10]
+                if 100 <= int(window[:3]) <= 199:
+                    value = window
+                    break
 
     if len(value) != 10:
         return value, "長度是 %d 碼，應該是 10 碼" % len(value)
@@ -185,6 +198,10 @@ _LETTER_TO_DIGIT = {
 # 「之」常被寫成或認成各種符號
 _ZHI_SYMBOLS = "-–—~/\\_.,、"
 
+# 表格上「路／街」那個二選一的標籤。民眾圈一個，但整串常常一起被讀進來，
+# 承辦人也可能直接把欄位後綴填成「路/街」。它不是路名的一部分。
+_ROAD_LABEL = re.compile(r"[路街道]\s*[/／\\|、,，]?\s*[路街道]")
+
 
 def address(text, roads=None):
     """門牌正規化。
@@ -202,6 +219,10 @@ def address(text, roads=None):
     value = to_halfwidth(text or "").strip()
     value = _DROP.sub("", value, count=1)
     value = value.replace(" ", "")
+    # 表格上印的是「路／街」二選一的標籤，民眾圈一個。整串被讀進來
+    # （或承辦人把後綴填成「路/街」）的時候，那不是路名的一部分，是標籤。
+    # 留著會讓比對整個歪掉，而且「/」還會被當成「之」的寫法。
+    value = _ROAD_LABEL.sub("", value, count=1)
 
     # 「之」的各種寫法統一
     value = re.sub(r"(\d)\s*[%s]\s*(\d)" % re.escape(_ZHI_SYMBOLS), r"\1之\2", value)
@@ -209,6 +230,7 @@ def address(text, roads=None):
     # 先認路名，再處理英文字母 —— 順序不能反。
     # 紙本表格上的「路」「街」是印刷的，民眾圈起來，減掉版面後只剩一個圈，
     # 會被辨識成 Q、C、〇 之類。先換成數字的話，那個圈就變成 0 混進門牌號碼裡了。
+    warning = None
     head, tail = re.match(r"^([^\d]*)(.*)$", value).groups()
     if roads:
         from . import lexicon
@@ -220,12 +242,14 @@ def address(text, roads=None):
         else:
             stem, rest = head, ""
 
-        name, score = lexicon.resolve_head(stem, roads)
+        name, _score, note = lexicon.resolve_head_full(stem, roads)
         if name:
             # 地址一定以路街名開頭，前面黏著的行政區之類一律丟掉
             value = name + rest + tail
+            # 靠讀到的路／街決定的，一定要讓人看一眼 —— 那個字本來就不可信
+            warning = note
         elif head:
-            return value, "路街名不在字典裡（讀到「%s」）" % head
+            return value, note or ("路街名不在字典裡（讀到「%s」）" % head)
 
     # 英文字母換成形狀相近的數字。地址只會有中文字與阿拉伯數字。
     value = "".join(_LETTER_TO_DIGIT.get(ch, ch) for ch in value)
@@ -241,7 +265,7 @@ def address(text, roads=None):
         return value, "地址是空的"
     if "號" not in value:
         return value, "沒有「號」，可能沒讀完整"
-    return value, None
+    return value, warning
 
 
 def district(text, known=None):
