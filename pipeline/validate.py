@@ -279,21 +279,24 @@ def section(text, known=None):
     清單是空的時候照讀出來的寫（不然一開始每一件都會被擋下來），
     但那時候這一欄本來就會因為信心偏低被標起來。
     """
+    from . import lexicon
+
     value = to_halfwidth(text or "").strip().replace(" ", "")
-    value = re.sub(r"段$", "", value)
     if not value:
         return value, "段名是空的"
-    options = [re.sub(r"段$", "", name.strip()) for name in (known or ())
-               if name and name.strip()]
-    if not options:
+    table = lexicon.section_aliases(known)
+    if not table:
+        # 沒有清單就沒有東西可以驗。照讀出來的寫，不要假裝驗過了。
         return value, None
-    if value in options:
-        return value, None
+    if value in table:
+        return table[value], None
+    trimmed = value.rstrip("段")
+    if trimmed in table:
+        return table[trimmed], None
 
-    from . import lexicon
-    best, _score = lexicon.choose(value, options)
+    best, _score = lexicon.choose(value, list(table))
     if best:
-        return best, None
+        return table[best], None
     return value, "段名不在清單裡（讀到「%s」）" % value
 
 

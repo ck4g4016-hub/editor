@@ -65,13 +65,83 @@ SECTIONS_HEADER = """\
 # 程式自己看不出來，只能靠這份清單。清單是空的時候段名一律照讀出來的寫，
 # 錯了不會被標記，所以請把轄區的地段名貼進來。
 #
-# 一行一個，「## 區名」以下的段名屬於該區。結尾的「段」可寫可不寫。
-# 資料來源：地籍圖資網路便民服務系統，或地價科現成的段別代碼表。
+# 最省事的來源是新北市地政局「地政資訊易找查」的「段小段」下拉選單：
+#
+#     https://www2.land.ntpc.gov.tw/MASP/MASP15_NEW/MASP1501index.jsp
+#
+# 行政區選三峽區（或鶯歌區），把段小段那個選單裡的項目整個複製貼過來就好。
+# **不用先整理。** 下面這幾種寫法都收，混在一起也沒關係：
+#
+#     (0039) 白雞段白雞小段
+#     0039 白雞段白雞小段
+#     白雞段白雞小段
+#     白雞段
+#     <option value="0039">(0039) 白雞段白雞小段</option>
+#
+# 一行一個，「## 區名」以下的段名屬於該區。
 
 ## 三峽區
 
 ## 鶯歌區
 """
+
+
+# 貼進來的可能是網頁原始碼，先把標籤拿掉
+_TAGS = re.compile(r"<[^>]*>")
+# 開頭的段別代碼：(0039)、（0039）、0039
+_CODE = re.compile(r"^\s*[（(]?\s*(\d{3,5})\s*[)）]?[\s:：.、-]*")
+
+
+def parse_section(line):
+    """把一行地段名整理成 (代碼, 名稱)。名稱是空的就回 (None, "")。
+
+    使用者最方便的來源是地政局易找查的下拉選單，而複製下來長什麼樣都有可能：
+    選單文字是「(0039) 白雞段白雞小段」，網頁原始碼是
+    「<option value="0039">(0039) 白雞段白雞小段</option>」。兩種都收 ——
+    要求使用者先自己整理成乾淨清單，等於把工作推回去給他。
+    """
+    text = _TAGS.sub(" ", line or "").strip()
+    if not text or text.startswith("#"):
+        return None, ""
+    found = _CODE.match(text)
+    code = found.group(1) if found else None
+    name = text[found.end():].strip() if found else text
+    # 原始碼那一行會變成「0039 (0039) 白雞段白雞小段」，代碼要剝兩次
+    second = _CODE.match(name)
+    if second:
+        code = code or second.group(1)
+        name = name[second.end():].strip()
+    name = name.replace(" ", "").replace("\u3000", "")
+    return code, name
+
+
+def section_aliases(names):
+    """把地段清單展開成 {比對用的寫法: 要輸出的名稱}。
+
+    表格上寫的可能是整串「白雞段白雞小段」，也可能只寫「白雞段」或「白雞」。
+    三種都要對得到。只寫到段、而那個段底下有好幾個小段的時候，
+    輸出就停在段 —— 挑一個小段等於替使用者猜，那正是這個專案不做的事。
+    """
+    table = {}
+    stems = {}
+    for raw in names or ():
+        _code, name = parse_section(raw)
+        if not name:
+            continue
+        head = name.split("段")[0] + "段" if "段" in name else name
+        stems.setdefault(head, set()).add(name)
+        table[name] = name
+        if "小段" not in name:
+            # 有小段的名稱不要去尾。「白雞段白雞小段」去掉尾字是
+            # 「白雞段白雞小」，那不是任何人會寫的東西，只會讓模糊比對多一個
+            # 亂七八糟的對象。段名本身（白雞段）另外由下面的 stems 補上。
+            table[name.rstrip("段")] = name
+    for head, members in stems.items():
+        # 同一個段底下不只一個小段，就讓「白雞段」對到「白雞段」本身
+        value = next(iter(members)) if len(members) == 1 else head
+        table.setdefault(head, value)
+        table.setdefault(head.rstrip("段"), value)
+    return table
 
 
 def load_sections(store):

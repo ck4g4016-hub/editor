@@ -127,9 +127,40 @@ def check():
         if not problem:
             problems.append("不在字典裡的門牌被放行了：%r" % value)
 
+    # 地段清單是從地政局易找查的下拉選單複製過來的，貼進來長什麼樣都有可能。
+    # 要求使用者先自己整理成乾淨清單，等於把工作推回去給他。
+    for line, want in (
+        ('<option value="0039">(0039) 白雞段白雞小段</option>', ("0039", "白雞段白雞小段")),
+        ("(0040) 白雞段中坑小段", ("0040", "白雞段中坑小段")),
+        ("0041 國際段", ("0041", "國際段")),
+        ("　嘉添段　", (None, "嘉添段")),
+        ("# 這是註解", (None, "")),
+        ("", (None, "")),
+    ):
+        got = lexicon.parse_section(line)
+        if got != want:
+            problems.append("地段行 %r 解析成 %r，應該是 %r" % (line, got, want))
+
+    # 表格上可能只寫到段。那個段底下不只一個小段的時候，輸出要停在段 ——
+    # 替使用者挑一個小段就是猜，而猜錯從輸出表上看不出來。
+    listing = ['<option value="0039">(0039) 白雞段白雞小段</option>',
+               "(0040) 白雞段中坑小段", "0041 國際段"]
+    for raw, want, flagged in (("白雞段白雞小段", "白雞段白雞小段", False),
+                               ("白雞段", "白雞段", False),
+                               ("白雞", "白雞段", False),
+                               ("國際", "國際段", False),
+                               ("國際段", "國際段", False),
+                               ("圍際", "圍際", True)):
+        got, problem = validate.check("section", raw, known=listing)
+        if got != want:
+            problems.append("地段「%s」得到 %r，應該是 %r" % (raw, got, want))
+        if bool(problem) != flagged:
+            problems.append("地段「%s」標記狀態不對：%r" % (raw, problem))
+
     # 段名沒有格式規則，只能靠清單。清單裡沒有的絕對不可以自己代換。
     for label, raw, known, want, flagged in (
-        ("清單裡有", "國際", ["國際段", "二甲段"], "國際", False),
+        # 輸出的是清單上登記的寫法，不是讀到的寫法
+        ("清單裡有", "國際", ["國際段", "二甲段"], "國際段", False),
         ("尾字的段可有可無", "國際段", ["國際", "二甲"], "國際", False),
         ("清單裡沒有要標起來", "圍際", ["國際段", "二甲段"], "圍際", True),
         ("沒有清單就照讀的寫", "圍際", [], "圍際", False),
