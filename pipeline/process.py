@@ -12,6 +12,7 @@ import os
 import time
 
 import cv2
+import numpy as np
 
 from . import baseimage, diagnose, fields as fieldmod, layout, lexicon, recognise, render, resources, validate
 
@@ -244,9 +245,23 @@ class Converter:
         if base is None:
             return image, baseimage.as_gray(image), None
         try:
-            return image, baseimage.subtract(base, image), base
+            sheet = baseimage.subtract(base, image)
         except ValueError:
             return image, baseimage.as_gray(image), None
+
+        # 再靠顏色抽一次筆跡，兩條路取聯集（任一條認出的墨都留下）。
+        #
+        # 粉紅紙、紅色印刷、黑色格線的表格上，藍色原子筆用 B-R 一刀就切得乾淨，
+        # 而且不受對位誤差影響；減版面則會在手寫壓到格線的地方把筆畫削斷。
+        # 實測 F 表身分證欄：減版面「2」只剩一個小點，靠顏色十個字都完整。
+        # 黑筆寫的抽不出來（跟格線同色），那時候顏色這條路是空的，
+        # 聯集就等於只有減版面 —— 不會比現在差。
+        moved, _inliers = baseimage.to_base(base, image)
+        if moved is not None:
+            colour = baseimage.ink_by_colour(moved)
+            if colour is not None and colour.shape == sheet.shape:
+                sheet = np.minimum(sheet, colour)
+        return image, sheet, base
 
     def read_document(self, document, keep_crops=False):
         """讀一件申請案，把欄位辨識出來。

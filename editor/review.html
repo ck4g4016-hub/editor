@@ -36,6 +36,13 @@
   .fld .lab b{color:var(--accent);font-weight:600}
   .fld img{display:block;max-width:100%;margin:6px 0;border:1px solid var(--line);
            border-radius:4px;background:#fff}
+  /* 手寫的數字與門牌，機器讀不準，一定要人看著原圖打。圖就要夠大。 */
+  .fld.wide{grid-column:1/-1}
+  .fld.wide img{width:100%;image-rendering:auto}
+  .fld.wide input{font-size:20px;letter-spacing:2px;padding:10px 12px;font-family:
+                  ui-monospace,"Cascadia Mono",Consolas,monospace}
+  .chk{font-size:12.5px;margin-top:5px;font-weight:600}
+  .chk.good{color:var(--ok)} .chk.bad{color:var(--accent)} .chk.idle{color:var(--soft)}
   .fld input{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:5px;
              font:inherit;background:#fff}
   .fld.flag input{border-color:var(--accent)}
@@ -104,6 +111,9 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
 let data = null;
 const notes = {};   // 每一件的意見，鍵是件的序號
 
+/* 這幾欄整列放大顯示。手寫的字機器讀不準，人要看著原圖打。 */
+const WIDE = new Set(['id_number', 'address']);
+
 /* 連不上通常只有一個原因：那個小視窗被關掉了，程式已經不在。
    「Failed to fetch」對使用者毫無意義，直接把真正的原因寫出來。 */
 const DEAD = '複核程式已經不在了，所以這一頁失效了。\n\n'
@@ -148,11 +158,18 @@ function render(){
         ? `<img src="api/crop?record=${i}&column=${c.key}" alt="">` : '';
       const raw = (r.raw[c.key] && r.raw[c.key] !== r.values[c.key])
         ? `<div class="raw">辨識原文：${esc(r.raw[c.key])}</div>` : '';
-      return `<div class="fld ${flag ? 'flag' : ''}">
+      // 手寫的身分證與門牌放大整列。這兩欄機器讀不準（身分證實測最好的
+      // 一頁也只有十個字對八個），與其讓人瞇著眼睛校對一串錯的，
+      // 不如把原圖放大、讓人直接照著打 —— 打字比校對快，而且不會漏看。
+      const wide = WIDE.has(c.key);
+      const check = c.key === 'id_number'
+        ? `<div class="chk idle" data-check="${i}"></div>` : '';
+      return `<div class="fld ${flag ? 'flag' : ''} ${wide ? 'wide' : ''}">
         <div class="lab">${esc(c.name)}${flag ? `<b>${esc(flag)}</b>` : ''}</div>
         ${crop}
-        <input data-rec="${i}" data-col="${c.key}" value="${esc(r.values[c.key] || '')}">
-        ${raw}</div>`;
+        <input data-rec="${i}" data-col="${c.key}" value="${esc(r.values[c.key] || '')}"
+               ${c.key === 'id_number' ? 'maxlength="10" autocomplete="off"' : ''}>
+        ${check}${raw}</div>`;
     }).join('');
     const bad = Object.keys(r.flags).length;
     const say = `<div class="say">
@@ -173,10 +190,37 @@ function render(){
   });
 
   el('list').querySelectorAll('input').forEach(input => {
-    input.addEventListener('change', () => {
+    const save = () => {
       data.records[+input.dataset.rec].values[input.dataset.col] = input.value;
-    });
+    };
+    input.addEventListener('change', save);
+    if (input.dataset.col === 'id_number'){
+      // 邊打邊驗檢查碼。打完第 10 碼就知道對不對，不必等產生輸出檔 ——
+      // 打錯一碼會查到別人的房子，那個回饋一定要當場給。
+      const box = el('list').querySelector(`[data-check="${input.dataset.rec}"]`);
+      const tick = () => {
+        save();
+        const v = input.value.trim().toUpperCase();
+        if (!v){ box.className = 'chk idle'; box.textContent = '照著上面的原圖打，會即時驗檢查碼'; return; }
+        if (v.length !== 10){ box.className = 'chk idle'; box.textContent = `${v.length} 碼，還要 ${10 - v.length} 碼`; return; }
+        const ok = idOK(v);
+        box.className = 'chk ' + (ok ? 'good' : 'bad');
+        box.textContent = ok ? '✓ 檢查碼正確' : '✗ 檢查碼不符，有一碼打錯了';
+      };
+      input.addEventListener('input', tick);
+      tick();
+    }
   });
+}
+
+/* 中華民國身分證檢查碼。打字時當場驗，不用等後端。 */
+const ID_LETTERS = 'ABCDEFGHJKLMNPQRSTUVXYWZIO';
+function idOK(v){
+  if (!/^[A-Z][12]\d{8}$/.test(v)) return false;
+  const code = ID_LETTERS.indexOf(v[0]) + 10;
+  let total = Math.floor(code / 10) + (code % 10) * 9;
+  for (let i = 1; i <= 8; i++) total += (+v[i]) * (9 - i);
+  return (total + (+v[9])) % 10 === 0;
 }
 
 el('report').addEventListener('click', async () => {

@@ -51,6 +51,41 @@ def ink_mask(image):
         as_gray(image), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 41, 15)
 
 
+# 筆跡比印刷「藍」多少才算數。藍色原子筆 B-R 大約 +40 以上，
+# 粉紅紙 -50、紅色印刷 -120、黑色格線 0 左右。
+BLUE_MARGIN = 25
+
+
+def ink_by_colour(image, margin=BLUE_MARGIN):
+    """靠顏色把筆跡抽出來，回傳白底黑字。抽不到就回 None。
+
+    這兩種表格是粉紅紙、紅色印刷、黑色格線，民眾多半用藍色原子筆填。
+    藍色在 B-R 這個維度上跟紙、紅字、黑線都分得很開 —— 一刀切下去，
+    紙、印刷說明、格線全部不見，只剩手寫，**而且不需要底圖、不怕對位誤差**。
+
+    實測 F 表的身分證欄（真實掃描件）：
+
+        減掉版面   筆畫被削得支離破碎，「2」只剩一個小點
+        靠顏色     A123454321 十個字完整清楚
+
+    減版面之所以會削掉筆畫，是因為底圖本身不乾淨（見 compose 的說明），
+    而且手寫壓在印刷格線上的地方相減之後本來就會斷。顏色沒有這個問題。
+
+    黑色原子筆寫的就分不出來（跟黑色格線同色），那時候回 None，
+    由呼叫端退回減版面那條路。
+    """
+    if image is None or image.ndim != 3:
+        return None
+    blue = image[:, :, 0].astype(np.int16)
+    red = image[:, :, 2].astype(np.int16)
+    mask = (blue - red) > margin
+    if not mask.any():
+        return None
+    out = np.full(mask.shape, 255, np.uint8)
+    out[mask] = 0
+    return out
+
+
 def homography(source, target):
     """算出把 source 疊到 target 上的變換矩陣，回傳 (矩陣, 內點數)。"""
     kp_source, desc_source = _ORB.detectAndCompute(as_gray(source), None)
@@ -119,8 +154,9 @@ def compose(samples, reference=None):
     samples    同一種表格、同一個版本的灰階掃描件
     reference  以哪一份的座標系為準；省略就用第一份
 
-    取中位數而不是平均：平均會把手寫淡淡地留在底圖上，中位數則是
-    只要超過一半的樣本在該點沒有墨跡，該點就是白的。
+    逐像素取最亮的：只要有任何一份樣本在該點沒有墨跡，該點就是白的。
+    詳細理由見函式裡的註解 —— 簡單說，中位數對「大家都寫在同一格」
+    的欄位無效，而那正是身分證欄。
     """
     if len(samples) < MIN_SAMPLES:
         raise ValueError("合成底圖至少要 %d 份，只收到 %d 份" % (MIN_SAMPLES, len(samples)))
@@ -140,7 +176,18 @@ def compose(samples, reference=None):
     if len(stack) < MIN_SAMPLES:
         raise ValueError("能對齊的樣本只有 %d 份，不足以合成底圖" % len(stack))
 
-    base = np.median(np.stack(stack), axis=0).astype(np.uint8)
+    # 逐像素取**最亮**的，不是中位數。
+    #
+    # 中位數的想法是「手寫每份都不同會被濾掉」，但那要手寫很少重疊才成立。
+    # 一字一格的欄位剛好相反：每個人都寫在同樣那十格裡，三份樣本有兩份
+    # 在同一個像素有墨，中位數就是墨 —— 底圖上留下一團別人的字跡，
+    # 相減時把真正的筆畫一起削掉。實測 F 表的合成底圖上，身分證那十格
+    # 清清楚楚疊著三個人的號碼。
+    #
+    # 取最亮的則是「只要有任何一份在這裡是白的，就當成白的」：
+    # 印刷版面每一份都在同一個位置是黑的，會留下來；
+    # 手寫只要有一份沒寫到那個像素就會被抹掉。兩份樣本就有效果。
+    base = np.stack(stack).max(axis=0)
     return base, weak
 
 

@@ -265,18 +265,17 @@ def read_char(cell):
 
     給兩種讀法，因為它們錯的地方不一樣：
 
-    偵測+辨識   一般路徑。單一個字有時候偵測階段整個不給框，就什麼都沒有。
-    只做辨識    跳過偵測直接認。單獨用比較差（實測 4/10），但它救得回
-                偵測失手的那幾格。
+    只做辨識    跳過偵測直接認。**真實掃描件上明顯較好**：拿使用者的
+                手寫樣本量，同一排十個字，只做辨識 8/10、偵測+辨識 3/10。
+                （在乾淨的合成字上剛好相反，所以以前排在後面 ——
+                合成的字騙了我，真實件才算數。）
+    偵測+辨識   一般路徑，救得回只做辨識失手的那幾格。
 
     兩種都給出來，讓上層用檢查碼去挑 —— 身分證有檢查碼，不必猜哪一種對。
     """
     tight = trim(cell)
     source = cell if tight is None else tight
     out = []
-    text, _score = read(source)
-    if text:
-        out.append(text.strip())
     image = source if source.ndim == 3 else cv2.cvtColor(source, cv2.COLOR_GRAY2BGR)
     try:
         result, _ = engine()(image, use_det=False, use_cls=False, use_rec=True)
@@ -286,6 +285,9 @@ def read_char(cell):
         text = (result[0][0] or "").strip()
         if text:
             out.append(text)
+    text, _score = read(source)
+    if text:
+        out.append(text.strip())
     seen, unique = set(), []
     for text in out:
         if text not in seen:
