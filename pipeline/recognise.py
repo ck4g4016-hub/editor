@@ -323,25 +323,22 @@ def read_pieces(pieces):
 #
 # 改成相對於「這個框裡最長的那一條垂直筆畫」：格線一定是框裡最長的，
 # 跟框開多大無關。同時保留一個絕對下限，免得整框都是雜訊時亂切。
-LINE_RATIO = 0.60          # 相對於最長的那條
-MIN_LINE_RATIO = 0.20      # 相對於欄位高度的絕對下限
+# 一條直線至少要多長才可能是格線。單位是像素，**不跟欄位框的高度連動**。
+#
+# 這個門檻踩過兩次坑。先是寫成「欄位高度的 55%」，框畫大一點就永遠達不到；
+# 改成「相對於框裡最長的那條」之後，又留了一個「欄位高度的 20%」當下限，
+# 等於把同一個問題原封不動搬回來 —— 實測同一排格子，框高 110/160/240
+# 抓得到、300 抓不到、380 又抓得到。這種時好時壞的錯最難查。
+#
+# 現在只留絕對值，真正的判斷交給 grid_lines 的「一整排」條件。
+# 300dpi 下印刷格子至少 40px 高，抓 20px 當下限很安全。
+MIN_LINE_PIXELS = 20
 
 # 至少要切出這麼多格才當作「這是一個一字一格的欄位」
 MIN_CELLS = 4
 
 # 每一格往內縮幾個像素，避開格線本身留下的殘影
 INSET = 3
-
-
-def _longest_runs(mask):
-    """每一欄最長的連續 True 有多長。"""
-    height, width = mask.shape
-    best = np.zeros(width, dtype=np.int32)
-    current = np.zeros(width, dtype=np.int32)
-    for row in range(height):
-        current = np.where(mask[row], current + 1, 0)
-        best = np.maximum(best, current)
-    return best
 
 
 def _run_bounds(mask):
@@ -361,6 +358,62 @@ def _run_bounds(mask):
     return best, best_start
 
 
+# 判斷兩條線「高度一樣」時容許的誤差（像素）
+LINE_TOLERANCE = 10
+
+
+def grid_lines(printed):
+    """找出「一排格子」的那組直線，回傳 (每條線的中心 x, 上, 下)。
+
+    找不到就回 (None, None, None)。
+
+    重點在「一排」。單看「哪一欄有長長的垂直筆畫」不夠 —— 欄位框畫大一點
+    就會框到別的表格線、別行的直筆畫，它們可能比格線還長，於是拿「最長的
+    那條」當基準反而把真正的格線排除掉。實測同一排格子，框高 110/160 抓得到、
+    240/300 抓不到、380 又抓得到，這種時好時壞的錯最難查。
+
+    改成找「一群**長度相近、上下位置也相近**的直線」：那正是一排方格的定義。
+    別的內容湊不出這種一致性，格線則一定湊得出來，而且順便就知道這排格子
+    在垂直方向的範圍。
+    """
+    if printed is None or printed.size == 0:
+        return None, None, None
+    gray = printed if printed.ndim == 2 else cv2.cvtColor(printed, cv2.COLOR_BGR2GRAY)
+    if gray.shape[0] < 8:
+        return None, None, None
+    runs, starts = _run_bounds(gray < 160)
+    tall = np.flatnonzero(runs >= MIN_LINE_PIXELS)
+    if tall.size == 0:
+        return None, None, None
+
+    # 依「起點、終點」分群，容許 LINE_TOLERANCE 的誤差
+    groups = {}
+    for column in tall:
+        key = (int(starts[column]) // LINE_TOLERANCE,
+               int(starts[column] + runs[column]) // LINE_TOLERANCE)
+        groups.setdefault(key, []).append(int(column))
+
+    best = None
+    for columns in groups.values():
+        # 相鄰欄位要併成一條線，才算得出「有幾條」
+        lines = []
+        for value in sorted(columns):
+            if lines and value - lines[-1][-1] <= 2:
+                lines[-1].append(value)
+            else:
+                lines.append([value])
+        if len(lines) < MIN_CELLS + 1:
+            continue
+        if best is None or len(lines) > len(best[0]):
+            centres = [sum(g) // len(g) for g in lines]
+            top = int(np.median(starts[columns]))
+            bottom = int(np.median(starts[columns] + runs[columns]))
+            best = (centres, top, bottom)
+    if best is None:
+        return None, None, None
+    return best
+
+
 def grid_band(printed):
     """印刷格線在垂直方向佔哪一段，回傳 (上, 下)。找不到就回 None。
 
@@ -377,17 +430,8 @@ def grid_band(printed):
     height = gray.shape[0]
     if height < 8:
         return None
-    runs, starts = _run_bounds(gray < 160)
-    tallest = int(runs.max()) if runs.size else 0
-    floor = max(8.0, MIN_LINE_RATIO * height)
-    if tallest < floor:
-        return None
-    columns = np.flatnonzero(runs >= max(LINE_RATIO * tallest, floor))
-    if columns.size == 0:
-        return None
-    top = int(np.median(starts[columns]))
-    bottom = int(np.median(starts[columns] + runs[columns]))
-    if bottom - top < 8:
+    _lines, top, bottom = grid_lines(printed)
+    if top is None or bottom - top < 8:
         return None
     return top, bottom
 
@@ -404,25 +448,8 @@ def separators(printed):
     height = gray.shape[0]
     if height < 8:
         return []
-    runs = _longest_runs(gray < 160)
-    tallest = int(runs.max()) if runs.size else 0
-    floor = max(8.0, MIN_LINE_RATIO * height)
-    if tallest < floor:
-        return []                       # 框裡根本沒有夠長的直線
-    columns = np.flatnonzero(runs >= max(LINE_RATIO * tallest, floor))
-    if columns.size == 0:
-        return []
-
-    lines, group = [], [int(columns[0])]
-    for value in columns[1:]:
-        value = int(value)
-        if value - group[-1] <= 2:
-            group.append(value)
-        else:
-            lines.append(sum(group) // len(group))
-            group = [value]
-    lines.append(sum(group) // len(group))
-    return lines
+    lines, _top, _bottom = grid_lines(printed)
+    return lines or []
 
 
 def grid_spans(printed, crop):

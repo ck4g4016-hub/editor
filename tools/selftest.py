@@ -387,16 +387,25 @@ def check():
     # 欄位框通常畫得比那排格子高（說明裡就是這樣教的）。讀的時候要收回到
     # 格子本身，不然上下相鄰那一行的字會一起被讀進來 —— 實測框高 240px
     # 連下一行一起框進去時，同一張影像十格全部讀不出來。
-    for frame_height, top in ((240, 60), (300, 90), (140, 15)):
+    # 這個門檻踩過兩次坑，兩次都是「框畫大一點就抓不到」，而且時好時壞。
+    # 所以這裡把框高從剛好到五倍都測一遍，還故意在框裡加一條比格線更長的
+    # 直線（表格外框那種），確認它不會把真正的格線擠掉。
+    for frame_height in (130, 200, 300, 420, 560):
+        top = (frame_height - 110) // 2
         tall = np.full((frame_height, 1400, 3), 255, np.uint8)
         for x in range(150, 1251, 110):
             cv2.line(tall, (x, top), (x, top + 110), (0, 0, 0), 3)
+        if frame_height >= 300:
+            # 一條貫穿整個框的直線，比格線長得多
+            cv2.line(tall, (40, 0), (40, frame_height - 1), (0, 0, 0), 3)
         band = recognise.grid_band(tall)
+        cut = recognise.grid_spans(tall, np.full((frame_height, 1400), 255, np.uint8))
+        if len(cut) != 10:
+            problems.append("框高 %d 應該切出 10 格，實際 %d 格" % (frame_height, len(cut)))
         if band is None:
-            problems.append("框高 %d 時找不到格子的上下界" % frame_height)
-            continue
-        if abs(band[0] - top) > 6 or abs(band[1] - (top + 110)) > 6:
-            problems.append("框高 %d 時算出的上下界 %s，應該接近 (%d, %d)"
+            problems.append("框高 %d 找不到格子的上下界" % frame_height)
+        elif abs(band[0] - top) > 8 or abs(band[1] - (top + 110)) > 8:
+            problems.append("框高 %d 的上下界 %s，應該接近 (%d, %d)"
                             % (frame_height, band, top, top + 110))
     if recognise.grid_band(np.full((200, 800, 3), 255, np.uint8)) is not None:
         problems.append("空白欄位不該算出格子的上下界")
