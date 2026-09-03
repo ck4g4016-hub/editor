@@ -281,6 +281,19 @@ def check():
         except Exception as error:                                  # noqa: BLE001
             problems.append("%s 出錯：%s: %s" % (label, type(error).__name__, error))
 
+    # 提供一個什麼都不做的選項，比沒有這個選項還糟。
+    # 「錨點相對」在 fields 存得好好的，process 卻從來沒實作，
+    # 設了的欄位會被當成固定框而且畫面上看不出來 —— 要嘛實作、要嘛擋掉。
+    from pipeline import fields as _f
+    anchored = _f.Field(id="x", name="x", column="address", kind="address",
+                        box=[1, 2, 3, 4], mode=_f.ANCHOR, anchor_text="地址")
+    if not any("錨點" in issue for issue in anchored.problems()):
+        problems.append("錨點相對還沒實作，卻沒有被擋下來")
+    with open(resources.path("editor", "page.html"), encoding="utf-8") as handle:
+        page_source = handle.read()
+    if 'value="anchor"' in page_source:
+        problems.append("樣板編輯器還在提供「錨點相對」，但那個模式沒有實作")
+
     # 段名有自己的型別。這份對應表以前抄在編輯器的 JS 裡一份，兩邊各改各的，
     # 結果段名一直用沒有驗證器的 chinese，整批段名從來沒被比對過。
     from pipeline import fields as fieldmod

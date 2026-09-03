@@ -237,14 +237,9 @@ function render(){
           Object.entries(state.kinds).map(([k,v]) =>
             `<option value="${k}" ${f.kind===k?'selected':''}>${esc(v)}</option>`).join('')
         }</select></div>
-        <div class="row"><label>定位</label><select data-k="mode">
-          <option value="fixed" ${f.mode==='fixed'?'selected':''}>固定框</option>
-          <option value="anchor" ${f.mode==='anchor'?'selected':''}>錨點相對</option></select></div>
-        ${f.mode==='anchor' ? `
-        <div class="row"><label>錨點文字</label>
-          <input type="text" data-k="anchor_text" value="${esc(f.anchor_text||'')}"></div>
-        <div class="row"><label>往下第幾個</label>
-          <input type="number" data-k="anchor_index" min="1" value="${f.anchor_index||1}"></div>` : ''}
+        ${f.mode === 'anchor' ? `<div class="hint">
+          這一欄設定成「錨點相對」，但那個模式<b>還沒實作</b> —— 辨識時它會被
+          當成固定框處理。請改回固定框並確認框的位置對不對。</div>` : ''}
         <div class="row"><label>範圍</label><div class="boxrow">${
           [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')
         }</div></div>
@@ -290,7 +285,7 @@ function render(){
       input.addEventListener('change', () => {
         const key = input.dataset.k;
         state.fields[column][key] = input.type === 'number' ? +input.value : input.value;
-        if (key === 'mode') render();       // 錨點模式會多兩列
+        if (key === 'mode') render();
         draw();
       });
     });

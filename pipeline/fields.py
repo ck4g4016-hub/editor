@@ -152,8 +152,11 @@ class Field:
             x, y, w, h = box
             if w <= 0 or h <= 0:
                 issues.append("第 %d 個框的大小不對" % (index + 1))
-        if self.mode == ANCHOR and not (self.anchor_text or "").strip():
-            issues.append("錨點模式但沒有指定錨點文字")
+        if self.mode == ANCHOR:
+            # 這個模式在 fields 這裡存得好好的，process 卻從來沒有實作 ——
+            # 設成錨點相對的欄位會被當成固定框，而且畫面上看不出來。
+            # 提供一個什麼都不做的選項比沒有這個選項還糟，所以直接擋下來。
+            issues.append("「錨點相對」還沒實作，辨識時會被當成固定框，請改用固定框")
         return issues
 
 
