@@ -109,10 +109,55 @@ def _span(item):
     return float(xs.min()), float(xs.max())
 
 
+def _vspan(item):
+    ys = np.array(item[0])[:, 1]
+    return float(ys.min()), float(ys.max())
+
+
+# 兩段文字垂直重疊超過這個比例就算同一行
+ROW_OVERLAP = 0.5
+
+
+def rows(items):
+    """把偵測到的段落分行，回傳 [[同一行的段落…]]，由上而下、每行由左而右。
+
+    欄位框常常會多框到上下相鄰的一行 —— 公文文號那一格尤其明顯，
+    收文戳上有戳記、文號、收文日期、條碼號好幾行。以前只照 x 排序，
+    結果是把好幾行的字**橫著交錯接起來**，讀出「CR酮收文…115/08/25」
+    這種東西。更糟的是去重複那一步只看水平重疊，於是「正上方那一行」
+    會被當成重複整段丟掉 —— 實測兩行對齊的欄位，第一行整個消失。
+
+    去重複只能在同一行裡做。不同行的段落水平重疊是正常的，不是重複。
+    """
+    ordered = sorted(items, key=lambda item: _vspan(item)[0])
+    groups = []
+    for item in ordered:
+        top, bottom = _vspan(item)
+        height = max(bottom - top, 1.0)
+        placed = False
+        for group in groups:
+            g_top, g_bottom = group["top"], group["bottom"]
+            overlap = min(bottom, g_bottom) - max(top, g_top)
+            if overlap > 0 and overlap >= ROW_OVERLAP * min(height,
+                                                           max(g_bottom - g_top, 1.0)):
+                group["items"].append(item)
+                group["top"] = min(g_top, top)
+                group["bottom"] = max(g_bottom, bottom)
+                placed = True
+                break
+        if not placed:
+            groups.append({"top": top, "bottom": bottom, "items": [item]})
+
+    groups.sort(key=lambda g: g["top"])
+    return [_drop_overlaps(sorted(g["items"], key=lambda item: _span(item)[0]))
+            for g in groups]
+
+
 def read(crop):
     """辨識一個欄位，回傳 (文字, 信心)。
 
-    同一個欄位可能被切成好幾段（例如中間有空格），照左到右接起來。
+    同一個欄位可能被切成好幾段（中間有空格，或框到了相鄰的行）。
+    由上而下、每行由左而右接起來，順序才跟人看到的一樣。
     信心取最低的那一段 —— 一串裡只要有一個字沒把握，整串就不能算有把握。
     """
     image = prepare(crop)
@@ -123,7 +168,9 @@ def read(crop):
     if not result:
         return "", 0.0
 
-    ordered = _drop_overlaps(sorted(result, key=lambda item: _span(item)[0]))
+    ordered = [item for line in rows(result) for item in line]
+    if not ordered:
+        return "", 0.0
     text = "".join(item[1] for item in ordered).strip()
     confidence = min(float(item[2]) for item in ordered)
     return text, confidence
