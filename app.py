@@ -507,8 +507,9 @@ def run_dictionaries():
     os.makedirs(STORE, exist_ok=True)
     roads = lexicon.ensure_roads(STORE)
     sections = lexicon.ensure_sections(STORE)
+    simplified = resources.path("data", "簡繁對照.txt")
     opened = []
-    for target in (roads, sections):
+    for target in (roads, sections, simplified):
         try:
             os.startfile(target)                # noqa: S606  Windows 專用
             opened.append(target)
@@ -518,9 +519,10 @@ def run_dictionaries():
         except OSError as error:
             print("開不起來 %s：%s" % (target, error))
     message("字典",
-            "已經開了兩個檔案：\n\n"
+            "已經開了三個檔案：\n\n"
             "roads.txt      路街名，一行一個\n"
-            "sections.txt   地段名，一行一個\n\n"
+            "sections.txt   地段名，一行一個\n"
+            "簡繁對照.txt   辨識吐出簡體字時換成繁體\n\n"
             "「## 區名」以下的名稱屬於該區。改完存檔就生效，\n"
             "不必重做樣板，也不必等新版程式。\n\n"
             "門牌被標成「路街名不在字典裡」的時候，\n"

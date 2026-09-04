@@ -27,6 +27,44 @@ def to_halfwidth(text):
     return "".join(_FULLWIDTH.get(ch, ch) for ch in text or "")
 
 
+# 簡體轉繁體。辨識模型的字典同時收了簡繁兩種字形，所以偶爾會吐出簡體字 ——
+# 實測最常見的是「樓」讀成「楼」、「鄰」讀成「邻」。輸出的資料要全部是繁體。
+#
+# 對照表放在 data/簡繁對照.txt，使用者可以自己加。只收一對一、不會弄錯的字：
+# 一個簡體對到好幾個繁體的（发→發/髮、干→乾/幹、后→後/后）一律不收，
+# 換錯字比不換更糟，而且從輸出表上看不出來。
+_TRADITIONAL = None
+
+
+def _traditional_table():
+    global _TRADITIONAL
+    if _TRADITIONAL is None:
+        from . import resources
+
+        table = {}
+        try:
+            with open(resources.path("data", "簡繁對照.txt"), encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) == 2 and len(parts[0]) == 1 and len(parts[1]) == 1:
+                        table[parts[0]] = parts[1]
+        except OSError:
+            pass
+        _TRADITIONAL = table
+    return _TRADITIONAL
+
+
+def to_traditional(text):
+    """把辨識結果裡的簡體字換成繁體。查不到的字原樣保留。"""
+    table = _traditional_table()
+    if not table:
+        return text or ""
+    return "".join(table.get(ch, ch) for ch in text or "")
+
+
 def to_chinese_number(value):
     """把阿拉伯數字轉成中文數字。樓層用得到：17 → 十七。"""
     value = int(value)
@@ -288,12 +326,24 @@ _LETTER_TO_DIGIT = {
     "g": "9", "q": "9",
 }
 
+# 表格上「鄰」那一格就印在門牌的左邊，框大一點就會把鄰別的數字一起吃進來，
+# 而「鄰」字本身是印刷的、減掉底圖之後就沒了，只剩一個沒有頭銜的數字
+# （實測讀成「A鳳鳴路123號」，那個 A 是鄰別「4」）。門牌一定從路街名開始，
+# 前面那一小段英數字不可能是門牌的一部分。
+_LEADING_NEIGHBOUR = re.compile(r"^[A-Za-z0-9]{1,4}(?=[\u4e00-\u9fff])")
+
 # 「之」常被寫成或認成各種符號
 _ZHI_SYMBOLS = "-–—~/\\_.,、"
 
 # 表格上「路／街」那個二選一的標籤。民眾圈一個，但整串常常一起被讀進來，
 # 承辦人也可能直接把欄位後綴填成「路/街」。它不是路名的一部分。
 _ROAD_LABEL = re.compile(r"[路街道]\s*[/／\\|、,，]?\s*[路街道]")
+
+
+def _join_notes(*notes):
+    """把幾條提醒併成一條，空的跳過。"""
+    kept = [note for note in notes if note]
+    return "；".join(kept) if kept else None
 
 
 def address(text, roads=None):
@@ -309,13 +359,22 @@ def address(text, roads=None):
     給了 roads（路街名字典）就把路名那一段吸附到最接近的合法名稱 ——
     這同時解決「路還是街」，民眾圈選糊掉也沒關係，字典裡是哪個就是哪個。
     """
-    value = to_halfwidth(text or "").strip()
+    value = to_traditional(to_halfwidth(text or "")).strip()
     value = _DROP.sub("", value, count=1)
     value = value.replace(" ", "")
     # 表格上印的是「路／街」二選一的標籤，民眾圈一個。整串被讀進來
     # （或承辦人把後綴填成「路/街」）的時候，那不是路名的一部分，是標籤。
     # 留著會讓比對整個歪掉，而且「/」還會被當成「之」的寫法。
     value = _ROAD_LABEL.sub("", value, count=1)
+
+    # 門牌從路街名開始。開頭黏著的英數字是隔壁「鄰」那一格漏進來的，
+    # 拿掉，但要講出來 —— 萬一那真的是門牌的一部分，人才看得到。
+    dropped = None
+    if re.search(r"[路街道]", value):
+        match = _LEADING_NEIGHBOUR.match(value)
+        if match:
+            dropped = match.group(0)
+            value = value[match.end():]
 
     # 「之」的各種寫法統一
     value = re.sub(r"(\d)\s*[%s]\s*(\d)" % re.escape(_ZHI_SYMBOLS), r"\1之\2", value)
@@ -358,6 +417,15 @@ def address(text, roads=None):
         return value, "地址是空的"
     if "號" not in value:
         return value, "沒有「號」，可能沒讀完整"
+
+    # 「弄」一定掛在「巷」底下。有弄沒巷，多半是印刷的巷弄標籤或旁邊的
+    # 雜訊被讀成數字硬湊出來的（實測「秀川街4之1號」被讀成「秀川街17弄4之1號」）。
+    # 但新北市確實有少數路直接接弄，所以不刪，只標起來讓人對原圖。
+    if "弄" in value and "巷" not in value:
+        warning = _join_notes(warning, "有「弄」卻沒有「巷」，請對著原圖確認這個弄是不是真的")
+    if dropped:
+        warning = _join_notes(
+            warning, "開頭的「%s」看起來是隔壁的鄰別，已經拿掉，請確認" % dropped)
     return value, warning
 
 
@@ -367,7 +435,7 @@ def district(text, known=None):
     手寫的「三峽」常被辨識成「三山峡」之類，但行政區的選項就那幾個，
     用最接近的合法區名取代即可。
     """
-    value = to_halfwidth(text or "").strip().replace(" ", "")
+    value = to_traditional(to_halfwidth(text or "")).strip().replace(" ", "")
     if not value:
         return value, "行政區是空的"
     options = list(known or ())
@@ -414,7 +482,7 @@ def section(text, known=None):
     """
     from . import lexicon
 
-    value = to_halfwidth(text or "").strip().replace(" ", "")
+    value = to_traditional(to_halfwidth(text or "")).strip().replace(" ", "")
     if not value:
         return value, "段名是空的"
     table = lexicon.section_aliases(known)
@@ -458,4 +526,8 @@ def check(kind, text, **kwargs):
     validator = VALIDATORS.get(kind)
     if validator:
         return validator(text)
+    if kind == "chinese":
+        # 姓名沒有格式規則可以驗，但至少要保證是繁體 ——
+        # 輸出的資料一律繁體，這一條沒有例外。
+        return to_traditional((text or "").strip()), None
     return (text or "").strip(), None

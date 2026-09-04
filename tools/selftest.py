@@ -58,7 +58,8 @@ def check():
     from pipeline import resources
     for parts in (("editor", "page.html"), ("editor", "review.html"),
                   ("data", "roads-三峽-鶯歌.txt"),
-                  ("data", "sections-三峽-鶯歌.txt")):
+                  ("data", "sections-三峽-鶯歌.txt"),
+                  ("data", "簡繁對照.txt")):
         if not os.path.isfile(resources.path(*parts)):
             problems.append("少了資源檔 %s" % "/".join(parts))
 
@@ -120,11 +121,18 @@ def check():
         problems.append("路名字典筆數不對：三峽 %d、鶯歌 %d"
                         % (len(sanxia), len(yingge)))
     if yingge:
+        # 字典裡沒有的路名，要嘛不換，要嘛換了一定要標起來讓人看。
+        # 靜靜換掉是最危險的一類錯：驗證放行、輸出表上看不出來。
         for got in ("天龍路", "幸福路", "光華路", "忠義街"):
-            name, score = lexicon.resolve_head(got, yingge)
-            if name is not None:
-                problems.append("路名「%s」不在字典裡，卻被換成 %r（%.2f）"
+            name, score, note = lexicon.resolve_head_full(got, yingge)
+            if name is not None and not note:
+                problems.append("路名「%s」不在字典裡，卻被靜靜換成 %r（%.2f）"
                                 % (got, name, score))
+        # 連一字之差的鄰居都沒有的，就該老實說不認得（門牌那邊會標記）
+        for got in ("天龍路", "忠義街"):
+            name, _score, _note = lexicon.resolve_head_full(got, yingge)
+            if name is not None:
+                problems.append("「%s」字典裡毫無相近的路，卻回了 %r" % (got, name))
         # 尾字由字典決定：官方清單裡只有西湖街、只有大湖路
         for got, want in (("大湖路", "大湖路"), ("大湖", "大湖路"),
                           ("大湖街", "大湖路"), ("西湖路", "西湖街"),
@@ -520,6 +528,74 @@ def check():
         value, problem = validate.solve_id(cells_of(good_id)[:9])
         if value is not None or not problem:
             problems.append("逐格求解：只有 9 格竟然給了答案 %r" % value)
+
+    # 輸出一律繁體。辨識模型的字典同時收了簡繁兩種字形，會吐出簡體字 ——
+    # 實測「樓」讀成「楼」、「鄰」讀成「邻」。
+    for raw, want in (("尖山路27號六楼", "尖山路27號六樓"),
+                      ("中华路38巷", "中華路38巷"),
+                      ("莺歌区", "鶯歌區"),
+                      ("陈大华", "陳大華")):
+        got = validate.to_traditional(raw)
+        if got != want:
+            problems.append("簡轉繁「%s」得到 %r，應該是 %r" % (raw, got, want))
+    table = validate._traditional_table()
+    if len(table) < 200:
+        problems.append("簡繁對照表只有 %d 組，太少了" % len(table))
+    for simple, trad in table.items():
+        if simple == trad:
+            problems.append("簡繁對照表裡「%s」簡繁同形，留著只是雜訊" % simple)
+    # 一個簡體對到好幾個繁體的絕對不能收 —— 換錯字比不換更糟
+    for risky in "发干后里松面表制系历只":
+        if risky in table:
+            problems.append("簡繁對照表收了有歧義的「%s」" % risky)
+    # 中文欄位都要轉
+    for kind, raw, want in (("chinese", "陈大华", "陳大華"),
+                            ("district", "莺歌区", "鶯歌區")):
+        extra = {"known": ["三峽區", "鶯歌區"]} if kind == "district" else {}
+        got, _p = validate.check(kind, raw, **extra)
+        if got != want:
+            problems.append("%s 欄位沒轉成繁體：%r" % (kind, got))
+
+    # 路名只錯一個字時可以修，但**一定要標記**。
+    # 字典裡根本沒有那條路的時候，它照樣會找到一字之差的鄰居
+    # （實測「幸福路」→「鳳福路」、「秀山街」→「秀川街」），
+    # 那種替換沒有任何東西擋得住，只能靠標記讓人看。
+    if yingge:
+        for raw in ("鳯一路25號", "幸福路9號", "光華路9號"):
+            _v, problem = validate.address(raw, roads=yingge)
+            if not problem:
+                problems.append("路名一字之差被靜靜換掉了：%s → %r" % (raw, _v))
+        value, problem = validate.address("鳯一路25號", roads=yingge)
+        if value != "鳳一路25號":
+            problems.append("「鳯一路」應該修成「鳳一路」，得到 %r" % value)
+        # 讀對的不該被打擾
+        for raw in ("鳳一路25號", "中湖街5號"):
+            _v, problem = validate.address(raw, roads=yingge)
+            if problem:
+                problems.append("讀對的門牌被標記了：%s → %s" % (raw, problem))
+
+    # 「鄰」那一格印在門牌左邊，框大一點就會把鄰別的數字吃進來。
+    # 那個數字常被讀成字母（實測讀成 A）。門牌一定從路街名開始。
+    for raw, want in (("A鳳鳴路123號5楼", "鳳鳴路123號五樓"),
+                      ("4鳳鳴路123號五樓", "鳳鳴路123號五樓")):
+        value, problem = validate.address(raw, roads=yingge)
+        if value != want:
+            problems.append("門牌「%s」得到 %r，應該是 %r" % (raw, value, want))
+        if not problem or "鄰" not in problem:
+            problems.append("門牌「%s」把開頭拿掉了卻沒說：%s" % (raw, problem))
+
+    # 「弄」一定掛在「巷」底下。有弄沒巷多半是雜訊湊出來的，但不刪、只標
+    # （實測「秀川街4之1號」被讀成「秀川街17弄4之1號」）
+    sanxia_roads = lexicon.for_district(roads_all, "三峽區")
+    if sanxia_roads:
+        value, problem = validate.address("秀川路/街17弄4-1號", roads=sanxia_roads)
+        if value != "秀川街17弄4之1號":
+            problems.append("「秀川路/街17弄4-1號」得到 %r" % value)
+        if not problem or "弄" not in problem:
+            problems.append("有弄沒巷卻沒有標起來：%s" % problem)
+        value, problem = validate.address("秀川街4-1號", roads=sanxia_roads)
+        if value != "秀川街4之1號" or problem:
+            problems.append("正常門牌被打擾了：%r（%s）" % (value, problem))
 
     # 橫式表格要能認出來需要轉正。躺著的樣板分類照樣對得上，但欄位裁下來
     # 是一條直的細長條，辨識時字的順序會整個錯亂（實測 E 表地址欄讀成

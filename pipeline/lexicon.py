@@ -407,4 +407,43 @@ def resolve_head_full(head, names, threshold=THRESHOLD):
                     % ("」「".join(sorted(tied)), read_suffix))
             blocked = blocked or (
                 "分不出是「%s」裡的哪一條" % "」「".join(sorted(tied)))
+
+    if blocked is None:
+        # 只錯一個字、而且整份字典裡只有一個長得這麼像的，就修掉。
+        #
+        # 兩個字的路名主體錯一個字，相似度只有 0.5，過不了門檻。
+        # 承辦人指出「鳳」特別容易讀錯，而鶯歌的鳳一路、鳳三路、鳳五路、
+        # 鳳七路都以它開頭 —— 錯的是第一個字時，剩下的字已經把答案鎖死了。
+        # 實測「鳯一路」「凰七路」現在都對得回去。
+        #
+        # 不只一個候選就一定標起來，這一半才是重點：讀到的字剛好落在
+        # 「一三五七」那一位時，四條路都只差一個字，挑一個就是猜。
+        trimmed = stem(core)
+        hits = []
+        for name in names:
+            key = stem(name)
+            if len(key) != len(trimmed) or key == trimmed:
+                continue
+            if sum(1 for a, b in zip(trimmed, key) if a != b) == 1:
+                hits.append(name)
+        if len(hits) == 1:
+            # **一定要標記。** 一字之差是「猜得有根據」，不是「讀出來的」——
+            # 字典裡根本沒有那條路的時候，它照樣會找到一個一字之差的鄰居：
+            # 實測「幸福路」→「鳳福路」、「光華路」→「國華路」、
+            # 「秀山街」→「秀川街」，三個都是字典裡沒有的路被換成有的。
+            # 值照樣給（多半是對的，省得人重打），但絕不能靜靜地過。
+            return hits[0], highest, (
+                "路名有一個字跟「%s」對不上，這是猜的，請對著原圖確認"
+                % hits[0])
+        if len(hits) > 1 and read_suffix:
+            # 還是有好幾個，但讀到的結尾字只對得上其中一個。
+            # 例如「鳯一路」一字之差的有「鳳一路」與「甲一街」——
+            # 承辦人說得對：只有「鳳」會有一、三、五、七路，而甲一是「街」。
+            # 尾字平常不採信，但這時候它是唯一剩下的線索，用它、然後講出來。
+            picks = [name for name in hits if name.endswith(read_suffix)]
+            if len(picks) == 1:
+                return picks[0], highest, (
+                    "路名有一個字沒讀準，「%s」都只差一個字，"
+                    "這裡是照表格上讀到的「%s」決定的，請確認"
+                    % ("」「".join(sorted(hits)), read_suffix))
     return None, highest, blocked
