@@ -697,6 +697,41 @@ def check():
             problems.append("身分證三種讀法沒有挑出通過檢查碼的那個：%r %s"
                             % (picked, problem))
 
+    # 合成底圖：指定基準座標系的話，做出來的底圖一定落在那個座標系。
+    # 樣板上的欄位框是照底圖量的，座標系換了就要整個重框 —— 日後樣本
+    # 變多想把底圖重做得更乾淨，不可以連帶把框全部弄歪。
+    from pipeline import baseimage
+
+    form = np.full((900, 700, 3), 255, np.uint8)
+    for row in range(12):
+        cv2.putText(form, "LAND OFFICE FORM %02d" % row, (40, 70 + row * 65),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+    cv2.rectangle(form, (40, 780), (660, 850), (0, 0, 0), 2)
+
+    def _filled(shift, text):
+        moved = cv2.warpAffine(
+            form, np.float32([[1, 0, shift], [0, 1, -shift]]), (700, 900),
+            borderValue=(255, 255, 255))
+        cv2.putText(moved, text, (60 + shift, 835 - shift),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (120, 60, 40), 3)
+        return moved
+
+    scans = [_filled(shift, text) for shift, text in
+             ((7, "AAA"), (13, "BBB"), (19, "CCC"), (25, "DDD"))]
+    made, _weak = baseimage.compose(scans, reference=form)
+    if made.shape != form.shape:
+        problems.append("指定基準之後底圖尺寸變了：%s" % (made.shape,))
+    else:
+        landed = baseimage.coverage(form, made)
+        if landed < 0.90:
+            problems.append("合成底圖沒有落在指定的座標系上（覆蓋率 %.3f）" % landed)
+        # 手寫要被抹掉：那一格裡不該還留著別人的字
+        strip = baseimage.ink_mask(made)[780:850, 40:660]
+        edges = baseimage.ink_mask(form)[780:850, 40:660]
+        if int((strip > 0).sum()) > int((edges > 0).sum()) * 1.5:
+            problems.append("合成底圖上還留著手寫（%d 對 %d 像素）"
+                            % (int((strip > 0).sum()), int((edges > 0).sum())))
+
     for label, run, want in cases:
         try:
             got = run()

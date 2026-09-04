@@ -132,7 +132,16 @@ def base_from_blank(store, code, pdf, page=1, role="front", rotate=0):
 
 
 def base_from_scans(store, code, paths):
-    """多份影印件對齊後取中位數：手寫每份都不同會被濾掉，印刷每份相同會留下。"""
+    """多份掃描件對齊後逐像素取最亮的：手寫每份都不同會被抹掉，印刷每份相同會留下。
+
+    **已經有底圖的話，用舊底圖的座標系當基準。**
+    樣板上的欄位框是照底圖量的（見 fields.Field 的說明），底圖換了座標系，
+    每一個框就整個偏掉、要全部重框。以舊底圖為基準重做，框就還是對的 ——
+    日後樣本變多想把底圖做得更乾淨，不必連帶重框。
+
+    舊底圖只借座標系，不放進合成裡：舊的那張本身已經被磨掉一些印刷筆畫，
+    放進去只會把那份磨損一路累積下去。
+    """
     templates = layout.TemplateSet.load(store)
     pages = [p for p in layout.classify_pages(paths, templates)
              if p.code == code and p.role == layout.FRONT]
@@ -142,13 +151,17 @@ def base_from_scans(store, code, paths):
     samples = [render.rotate(
         render.render(p.source, p.index, dpi=render.FULL_DPI, gray=False), p.rotation)
         for p in pages]
-    image, weak = baseimage.compose(samples)
+
     target = os.path.join(store, code, "base.png")
+    previous = resources.imread(target, cv2.IMREAD_COLOR)
+    image, weak = baseimage.compose(samples, reference=previous)
     if not resources.imwrite(target, image):
         raise ValueError("寫不出底圖：%s" % target)
     note = "底圖來源：%d 份掃描件合成" % (len(samples) - len(weak))
     if weak:
         note += "（有 %d 份對不齊，沒有納入）" % len(weak)
+    if previous is not None:
+        note += "。沿用原本底圖的座標系，欄位框不用重框"
     return target, note
 
 
