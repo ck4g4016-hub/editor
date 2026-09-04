@@ -574,6 +574,57 @@ def check():
             if problem:
                 problems.append("讀對的門牌被標記了：%s → %s" % (raw, problem))
 
+    # 「鳳」是承辦人回報最常讀不出來的字。實測它最常見的失敗**不是被讀成
+    # 別的字，而是整個字沒被讀出來** —— 診斷報告裡「鳳吉一街」讀成兩個字、
+    # 「鳳X路」讀成一個字。所以一字之差要涵蓋「少讀一個字」。
+    if yingge:
+        for raw, want in (("鳴路9號", "鳳鳴路9號"),        # 少讀一個字
+                          ("吉一街9號", "鳳吉一街9號"),    # 少讀一個字
+                          ("風鳴路9號", "鳳鳴路9號"),      # 讀成字形接近的字
+                          ("凰鳴路9號", "鳳鳴路9號"),
+                          ("鳯一路9號", "鳳一路9號")):
+            value, problem = validate.address(raw, roads=yingge)
+            if value != want:
+                problems.append("門牌「%s」得到 %r，應該是 %r" % (raw, value, want))
+            if not problem:
+                problems.append("路名的字被改掉了卻沒有提醒：%s → %r" % (raw, value))
+        # 承辦人說「只有鳳會有一三五路」，但官方清單裡龍三路、龍五路也在。
+        # 分不出來的時候就是要回報分不出來，不可以照那句話挑一個。
+        for raw in ("三路9號", "五路9號"):
+            value, problem = validate.address(raw, roads=yingge)
+            if not problem:
+                problems.append("「%s」鳳與龍都可能，卻沒有標記：%r" % (raw, value))
+
+    # 易混字表只能幫忙對到字典，不可以把兩條真的路混成一條
+    for district_name in ("三峽區", "鶯歌區"):
+        seen = {}
+        for name in lexicon.for_district(roads_all, district_name):
+            seen.setdefault(lexicon.canonical(lexicon.stem(name)), []).append(name)
+        for key, group in seen.items():
+            # 東湖街與東湖路本來主體就一樣，靠尾字分，不是易混字表造成的
+            if len(group) > 1 and len({lexicon.stem(n) for n in group}) > 1:
+                problems.append("易混字表把 %s 的「%s」混成同一條"
+                                % (district_name, "」「".join(sorted(group))))
+
+    # 有些表格的地址欄是一整串「地址：鶯歌區鳳福里12鄰鳳福路34巷5號」。
+    # 門牌欄要的是路街名以後的部分，前面的標籤、區、里、鄰都要拿掉。
+    if yingge:
+        for raw, want in (
+                ("地址: 鶯歌區鳳福里12鄰鳳福路123巷45號", "鳳福路123巷45號"),
+                ("鶯歌區鳳福里12鄰鳳鳴路9號", "鳳鳴路9號"),
+                ("地址：鶯歌區中湖街5巷3號", "中湖街5巷3號"),
+                ("新北市鶯歌區鳳一路25號3樓", "鳳一路25號三樓")):
+            value, problem = validate.address(raw, roads=yingge)
+            if value != want:
+                problems.append("門牌「%s」得到 %r，應該是 %r" % (raw, value, want))
+            if problem:
+                problems.append("「%s」不該被標記：%s" % (raw, problem))
+    # 路名裡沒有「里」「鄰」，這一刀才切得下去
+    for name in lexicon.for_district(roads_all, "三峽區") + \
+            lexicon.for_district(roads_all, "鶯歌區"):
+        if "里" in name or "鄰" in name:
+            problems.append("路名「%s」帶了里或鄰，切地址那一刀會切到它" % name)
+
     # 「鄰」那一格印在門牌左邊，框大一點就會把鄰別的數字吃進來。
     # 那個數字常被讀成字母（實測讀成 A）。門牌一定從路街名開始。
     for raw, want in (("A鳳鳴路123號5楼", "鳳鳴路123號五樓"),

@@ -266,6 +266,69 @@ def stem(name):
     return re.sub(r"(大道|[路街道])$", "", name or "")
 
 
+# 字形容易混淆的字。表在 data/易混字.txt，承辦人可以自己加。
+#
+# **只在比對時用，不會用在輸出的值上面。** 比對時兩邊都換成代表字，
+# 所以「風鳴路」跟字典裡的「鳳鳴路」對得上；輸出的永遠是字典裡的
+# 正式名稱，而且只要讀到的字跟輸出的不一樣，一定會標記（見 resolve_head_full）。
+_CONFUSED = None
+
+
+def _confused_table():
+    global _CONFUSED
+    if _CONFUSED is None:
+        table = {}
+        try:
+            with open(resources.path("data", "易混字.txt"), encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if len(parts) != 2 or len(parts[0]) != 1:
+                        continue
+                    for char in parts[1]:
+                        table[char] = parts[0]
+        except OSError:
+            pass
+        _CONFUSED = table
+    return _CONFUSED
+
+
+def canonical(text):
+    """把字形容易混淆的字換成代表字。只用來比對，不要拿去輸出。"""
+    table = _confused_table()
+    if not table:
+        return text or ""
+    return "".join(table.get(ch, ch) for ch in text or "")
+
+
+def _one_edit(read, name):
+    """read 改**一個字**能不能變成 name：換掉一個、少讀一個、或多讀一個。
+
+    只有「換掉一個」不夠。實測承辦人的件裡，「鳳」最常見的失敗不是被讀成
+    別的字，而是**整個字沒被讀出來**：三個字的「鳳吉一街」讀成「吉一街」、
+    兩個字的「鳳鳴路」讀成「鳴路」。長度不一樣就跳過的話，這一種全部救不到。
+    """
+    read, name = canonical(read), canonical(name)
+    if read == name:
+        return False
+    if len(read) == len(name):
+        return sum(1 for a, b in zip(read, name) if a != b) == 1
+    if abs(len(read) - len(name)) != 1:
+        return False
+    short, long = (read, name) if len(read) < len(name) else (name, read)
+    index, skipped = 0, False
+    for char in long:
+        if index < len(short) and short[index] == char:
+            index += 1
+        elif skipped:
+            return False
+        else:
+            skipped = True
+    return index == len(short)
+
+
 def _score(candidate, name):
     """兩個路名有多像。比的是**主體**，結尾那個字完全不算分。
 
@@ -278,7 +341,7 @@ def _score(candidate, name):
     驗證還會放行，輸出表上完全看不出來。這種錯比讀不出來危險得多。
     只比主體的話是「大湖」對「東湖」= 0.5，擋得下來，交給人去看。
     """
-    return _similarity(stem(candidate), stem(name))
+    return _similarity(canonical(stem(candidate)), canonical(stem(name)))
 
 
 def match(text, names, threshold=0.6):
@@ -363,6 +426,28 @@ def resolve_head(head, names, threshold=THRESHOLD):
 
 
 def resolve_head_full(head, names, threshold=THRESHOLD):
+    """認出路街名，並且保證**改到的字一定有提醒**。
+
+    這一層只做一件事：比對出來的名稱如果跟讀到的字不一樣，而底下沒有給出
+    任何說明，就補上一句。比對那邊有好幾條路徑（分數、尾字、一字之差、
+    易混字表），每加一條就多一個「忘記標記」的機會，而忘記標記的後果是
+    民眾的門牌被靜靜換成別人家的 —— 從輸出的 Excel 上完全看不出來。
+    與其每條路徑各自小心，不如在出口統一擋一次。
+    """
+    name, score, note = _resolve_head(head, names, threshold)
+    if name is None or note:
+        return name, score, note
+    core = "".join(ch for ch in head or "" if "\u4e00" <= ch <= "\u9fff")
+    read, got = stem(core), stem(name)
+    # read 以 got 結尾＝只是把前面黏著的行政區剝掉了，一個字都沒改
+    if read and read != got and not read.endswith(got):
+        return name, score, (
+            "路名讀到的是「%s」，字典裡對上的是「%s」，請對著原圖確認"
+            % (read, got))
+    return name, score, note
+
+
+def _resolve_head(head, names, threshold=THRESHOLD):
     """同 resolve_head，但多回傳一句要給人看的說明（沒有就是 None）。
 
     這裡不要求「路」「街」那個字有被讀出來 —— 紙本表格上那個字是印刷的，
@@ -419,13 +504,7 @@ def resolve_head_full(head, names, threshold=THRESHOLD):
         # 不只一個候選就一定標起來，這一半才是重點：讀到的字剛好落在
         # 「一三五七」那一位時，四條路都只差一個字，挑一個就是猜。
         trimmed = stem(core)
-        hits = []
-        for name in names:
-            key = stem(name)
-            if len(key) != len(trimmed) or key == trimmed:
-                continue
-            if sum(1 for a, b in zip(trimmed, key) if a != b) == 1:
-                hits.append(name)
+        hits = [name for name in names if _one_edit(trimmed, stem(name))]
         if len(hits) == 1:
             # **一定要標記。** 一字之差是「猜得有根據」，不是「讀出來的」——
             # 字典裡根本沒有那條路的時候，它照樣會找到一個一字之差的鄰居：
