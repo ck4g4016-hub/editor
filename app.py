@@ -345,16 +345,27 @@ def run_new_form():
                      if n.lower().endswith(".pdf"))
     others = [p for p in samples if os.path.abspath(p) != os.path.abspath(chosen)]
 
+    # 橫式的系統報表掃進來是躺著的。樣板照躺著的樣子建，分類還是對的，
+    # 但欄位裁下來會是一條直的細長條，辨識時字的順序整個錯亂 ——
+    # 而且承辦人得在躺著的畫面上框欄位。所以建樣板時就先轉正。
+    print("判斷這種表格的方向…")
+    rotate = newform.upright_rotation(chosen, answer["front"])
+
     target, notes = newform.create(STORE, code, answer["name"], chosen,
-                                   answer["front"], answer["back"])
+                                   answer["front"], answer["back"], rotate=rotate)
     lines = ["已建立樣板：%s（%s）" % (code, answer["name"])] + notes
+    if rotate:
+        lines.append("這是橫式表格，樣板已經轉正 %d 度 —— 之後框欄位時"
+                     "看到的就是正的。" % rotate)
 
     if answer["source"] == newform.BLANK:
-        _, note = newform.base_from_blank(STORE, code, chosen, answer["front"])
+        _, note = newform.base_from_blank(STORE, code, chosen, answer["front"],
+                                          rotate=rotate)
         lines.append(note)
         if answer["back"]:
             # 背面也做一張，這樣背面的欄位一樣能把印刷版面減掉
-            _, note = newform.base_from_blank(STORE, code, chosen, answer["back"], "back")
+            _, note = newform.base_from_blank(STORE, code, chosen, answer["back"],
+                                              "back", rotate=rotate)
             lines.append(note)
     elif answer["source"] == newform.COMPOSE:
         try:

@@ -521,6 +521,37 @@ def check():
         if value is not None or not problem:
             problems.append("逐格求解：只有 9 格竟然給了答案 %r" % value)
 
+    # 橫式表格要能認出來需要轉正。躺著的樣板分類照樣對得上，但欄位裁下來
+    # 是一條直的細長條，辨識時字的順序會整個錯亂（實測 E 表地址欄讀成
+    # 「05粼尖山路27號六楼中一新北市歌區尖山里00」），所以建樣板時就要轉正。
+    import tempfile as _tmp
+
+    import pymupdf as _pdf
+
+    from pipeline import render as _render
+    from tools import newform as _newform
+
+    _rot_dir = _tmp.mkdtemp()
+    _upright = np.full((1100, 780, 3), 255, np.uint8)
+    for row, text in enumerate(("NEW TAIPEI CITY", "LAND OFFICE 2026",
+                                "ADDRESS 27 SEC 3", "TOTAL 1234567890")):
+        cv2.putText(_upright, text, (40, 150 + row * 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 3)
+    for degrees, want in ((0, 0), (90, 270), (270, 90)):
+        turned = _render.rotate(_upright, degrees)
+        path = os.path.join(_rot_dir, "r%d.pdf" % degrees)
+        doc = _pdf.open()
+        ok, buf = cv2.imencode(".png", turned)
+        pg = doc.new_page(width=turned.shape[1] / 4.0, height=turned.shape[0] / 4.0)
+        pg.insert_image(_pdf.Rect(0, 0, turned.shape[1] / 4.0, turned.shape[0] / 4.0),
+                        stream=buf.tobytes())
+        doc.save(path)
+        doc.close()
+        got = _newform.upright_rotation(path, 1)
+        if got != want:
+            problems.append("方向判斷：轉了 %d 度的頁面應該要轉回 %d 度，卻算出 %d 度"
+                            % (degrees, want, got))
+
     # 一件固定兩頁，照頁數配對。這是承辦人的作業規則，也是最可靠的切分依據。
     #
     # 舊規則是「認出表格正面就開新的一件」，破口在於：正面認不出來的時候

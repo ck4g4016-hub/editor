@@ -42,6 +42,54 @@ def valid_code(code):
     return code, None
 
 
+def upright_rotation(pdf, page, dpi=150):
+    """這一頁要順時針轉幾度，字才是正的。回傳 0、90、180 或 270。
+
+    橫式的系統報表掃進來是躺著的。以前完全沒處理，樣板就照躺著的樣子建 ——
+    分類是對的（躺著的樣板配躺著的掃描件，一樣對得上），問題出在**欄位裁切**：
+    躺著的頁面上，一行地址是一條**直的**細長條。實測 E 表的地址欄（125x1210）：
+
+        直接讀     「05粼尖山路27號六楼中一新北市歌區尖山里00」  順序整個錯亂
+        轉正再讀   「新北市歌區尖山里005粼尖山路27號六楼」        正確
+
+    順序錯亂是因為辨識時是照「由上而下、每行由左而右」接起來的，
+    那對躺著的文字剛好變成由右而左。
+
+    而且承辦人是在躺著的畫面上框欄位的，那本身就難用得要命。
+
+    判斷方式是四個方向各辨識一次，挑「橫向的文字最多」的那個 ——
+    字正的時候，一行文字的框一定是扁的。這件事一種表格只做一次。
+
+    **一定要關掉 use_cls。** 那個模型會自己把倒過來的文字轉正再辨識，
+    於是正立和倒立拿到的分數一樣高（實測 59.0 對 61.7），只分得出橫豎、
+    分不出正倒。關掉之後只有真正正立的方向有分數（59.0 對 0.0）。
+    """
+    import numpy as np
+
+    from pipeline import recognise
+
+    image = render.render(pdf, page - 1, dpi=dpi, gray=False)
+    best, best_score = 0, -1.0
+    for degrees in (0, 90, 180, 270):
+        turned = render.rotate(image, degrees)
+        try:
+            result, _ = recognise.engine()(turned, use_det=True, use_cls=False,
+                                           use_rec=True)
+        except Exception:                                           # noqa: BLE001
+            result = None
+        score = 0.0
+        for item in result or ():
+            box = np.array(item[0], dtype=float)
+            width = box[:, 0].max() - box[:, 0].min()
+            height = box[:, 1].max() - box[:, 1].min()
+            if width <= height:          # 直的框：這個方向的字是躺著的
+                continue
+            score += len(item[1] or "") * float(item[2])
+        if score > best_score:
+            best, best_score = degrees, score
+    return best
+
+
 def create(store, code, name, pdf, front, back=None, rotate=0):
     """寫出 index.json 與參考影像。front／back 是從 1 起算的頁碼。"""
     folder = os.path.join(store, code)
@@ -66,10 +114,15 @@ def create(store, code, name, pdf, front, back=None, rotate=0):
     return folder, notes
 
 
-def base_from_blank(store, code, pdf, page=1, role="front"):
+def base_from_blank(store, code, pdf, page=1, role="front", rotate=0):
     """空白原稿直接當底圖。存成彩色 —— 存成灰階的話紅色會變成灰色，
-    後續要靠色彩判斷的東西就全毀了。"""
-    image = render.render(pdf, page - 1, dpi=render.FULL_DPI, gray=False)
+    後續要靠色彩判斷的東西就全毀了。
+
+    rotate 要跟 create() 用同一個值，不然底圖跟分類用的參考影像會不同向，
+    欄位座標就整個對不起來。
+    """
+    image = render.rotate(
+        render.render(pdf, page - 1, dpi=render.FULL_DPI, gray=False), rotate)
     name = "base.png" if role == "front" else "base_back.png"
     target = os.path.join(store, code, name)
     if not resources.imwrite(target, image):
