@@ -68,6 +68,60 @@ def ask_file(title, initial=None):
     return path or None
 
 
+def ask_pdfs(title):
+    """選要處理的 PDF。回傳一串路徑（檔案或資料夾），取消就回 None。
+
+    預設是**選檔案**，不是選資料夾。實務上資料夾裡常常混著不該處理的東西
+    （樣本檔、上次跑過的、別人放的），整個撈進來會多出一堆不必要的件，
+    而且每一件都要人看過才知道不用理它 —— 那比自己挑檔案還費事。
+    整批處理還是留著，因為每天固定一批的時候它比較快。
+    """
+    import tkinter
+    from tkinter import filedialog
+
+    picked = {"value": None}
+    root = tkinter.Tk()
+    root.title(title)
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    root.after(1500, lambda: root.attributes("-topmost", False))
+
+    frame = tkinter.Frame(root, padx=24, pady=20)
+    frame.pack()
+    tkinter.Label(frame, text=title, font=("", 12, "bold")).pack()
+    tkinter.Label(frame, text="要處理哪些檔案？", fg="#666").pack(pady=(4, 14))
+
+    def take(paths):
+        if paths:
+            picked["value"] = list(paths)
+            root.destroy()
+
+    def choose_files():
+        take(filedialog.askopenfilenames(
+            title="選擇要轉換的 PDF（按住 Ctrl 可以複選）",
+            initialdir=WORKSPACE, filetypes=[("PDF", "*.pdf"), ("所有檔案", "*.*")],
+            parent=root))
+
+    def choose_folder():
+        folder = filedialog.askdirectory(
+            title="選擇資料夾（裡面的 PDF 全部處理，含子資料夾）",
+            initialdir=WORKSPACE, mustexist=True, parent=root)
+        take([folder] if folder else None)
+
+    tkinter.Button(frame, text="選擇 PDF 檔案（可複選）", width=30, height=2,
+                   command=choose_files).pack(pady=3)
+    tkinter.Label(frame, text="按住 Ctrl 點選，或 Shift 選一段", fg="#999",
+                  font=("", 8)).pack(pady=(0, 10))
+    tkinter.Button(frame, text="選擇整個資料夾", width=30,
+                   command=choose_folder).pack(pady=3)
+    tkinter.Label(frame, text="資料夾裡的 PDF 全部處理，含子資料夾", fg="#999",
+                  font=("", 8)).pack(pady=(0, 10))
+    tkinter.Button(frame, text="取消", width=30, command=root.destroy).pack()
+
+    root.mainloop()
+    return picked["value"]
+
+
 def message(title, text):
     import tkinter
     from tkinter import messagebox
@@ -363,16 +417,18 @@ def run_convert():
         message("還沒有樣板", "請先按「新增表格」建立表格，再按「設定樣板」框出欄位。")
         return
 
-    folder = ask_folder("選擇要轉換的掃描檔資料夾")
-    if not folder:
+    targets = ask_pdfs("轉換")
+    if not targets:
         return
 
-    paths = review.collect([folder])
+    paths = review.collect(targets)
     if not paths:
-        message("沒有檔案", "這個資料夾裡沒有 PDF。")
+        message("沒有檔案", "選到的地方沒有 PDF。")
         return
 
-    print("處理 %d 個檔案…" % len(paths))
+    print("處理 %d 個檔案：" % len(paths))
+    for path in paths:
+        print("    %s" % os.path.basename(path))
     converter = process.Converter(STORE)
     records, unresolved = converter.run(
         paths, progress=lambda r: print("  %s" % r.describe()), keep_crops=True)
