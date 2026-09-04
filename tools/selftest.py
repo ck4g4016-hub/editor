@@ -783,6 +783,90 @@ def check():
             problems.append("合成底圖上還留著手寫（%d 對 %d 像素）"
                             % (int((strip > 0).sum()), int((edges > 0).sum())))
 
+    # 公文文號：整頁上自己找，不靠框選。
+    # 組成是固定的（民國年＋機關代號＋流水號，共十碼），整頁上符合這個
+    # 格式的數字串幾乎只有它一個 —— 實測 A 表四件全中、沒有一件誤判。
+    from pipeline import stamp
+
+    if stamp.agency_codes():
+        for texts, want in (
+                # 實測 A 表第 1 頁抓到的所有十碼以上數字串
+                (["307500000D_1150817_092512_5391_OLFETWLL15",
+                  "1150817_006595_OLFLL15", "2026-08-1714:37:54",
+                  "2026-08-3123:59:59", "機關收文", "115/08/18",
+                  "1155698196"], "1155698196"),
+                # 日期跟文號黏在一起
+                (["機關收文115/08/251155698710"], "1155698710"),
+                (["CR酮收文1155698710115/08/25"], "1155698710"),
+                (["115FF005424機關收文115/08/251155698710"], "1155698710")):
+            got, problem = stamp.pick(texts)
+            if got != want or problem:
+                problems.append("整頁找公文文號得到 %r（%s），應該是 %r"
+                                % (got, problem, want))
+        # 電話號碼剛好也是十碼，中間三碼不對就不能收
+        got, _p = stamp.pick(["0910118290", "1150806221830", "1150807142810"])
+        if got is not None:
+            problems.append("整頁找公文文號把 %r 當成文號了" % got)
+        # 好幾個都符合就要說分不出來，不可以挑一個
+        got, problem = stamp.pick(["1155698196", "1155697295"])
+        if got is not None or not problem:
+            problems.append("兩個都符合機關代號卻挑了一個：%r" % got)
+
+    # 關鍵字模式：電腦產製的表格欄位會上下移動，靠印刷標籤去找才穩。
+    # 這裡畫一張有格線的表，同一張表把某一格撐高，兩次都要讀到一樣的值 ——
+    # 「撐高之後還讀得對」正是這個模式存在的理由。
+    from pipeline import pagetext
+
+    def _table(extra_rows):
+        rows = [("OWNER NAME", ["CHEN"]),
+                ("OWNER ID", ["A123456789"]),
+                ("LAND SITE", ["SEC FENGFU"] + extra_rows),
+                ("HOUSE SITE", ["NO 41 LANE 3", "00368000"]),
+                ("USE TYPE", ["SELF USE"])]
+        height = 60 + sum(60 * max(len(v), 1) + 20 for _k, v in rows)
+        sheet = np.full((height, 1000, 3), 255, np.uint8)
+        y = 40
+        cv2.line(sheet, (40, y), (960, y), (0, 0, 0), 2)
+        for key, values in rows:
+            tall = 60 * len(values) + 20
+            cv2.putText(sheet, key, (50, y + 45), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8, (0, 0, 0), 2)
+            for index, value in enumerate(values):
+                cv2.putText(sheet, value, (420, y + 45 + index * 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+            y += tall
+            cv2.line(sheet, (40, y), (960, y), (0, 0, 0), 2)
+        cv2.line(sheet, (40, 40), (40, y), (0, 0, 0), 2)
+        cv2.line(sheet, (400, 40), (400, y), (0, 0, 0), 2)
+        cv2.line(sheet, (960, 40), (960, y), (0, 0, 0), 2)
+        return sheet
+
+    for extra in ([], ["OTHER SITE A", "OTHER SITE B", "OTHER SITE C"]):
+        sheet = _table(extra)
+        lines = pagetext.read_image(sheet)
+        rules = pagetext.horizontal_rules(sheet)
+        if len(rules) < 6:
+            problems.append("關鍵字模式找不到表格橫線（找到 %d 條）" % len(rules))
+        for label, want in (("OWNER ID", "A123456789"),
+                            ("HOUSE SITE", "NO 41 LANE 3")):
+            got, _score, note = pagetext.value_for(
+                lines, label, drop_digits=(label == "HOUSE SITE"), rules=rules)
+            # 這裡要驗的是「挑到哪一格」，不是空白怎麼接 ——
+            # 中文沒有空白，拉丁字母的分段只是這張測試圖的產物
+            if got.replace(" ", "") != want.replace(" ", ""):
+                problems.append(
+                    "關鍵字「%s」（中間插 %d 列）讀到 %r，應該是 %r（%s）"
+                    % (label, len(extra), got, want, note))
+
+    # 門牌那一格底下的房屋建號（一整串數字）要丟掉
+    sheet = _table([])
+    lines = pagetext.read_image(sheet)
+    rules = pagetext.horizontal_rules(sheet)
+    kept, _s, _n = pagetext.value_for(lines, "HOUSE SITE", drop_digits=False,
+                                      rules=rules)
+    if "00368000" not in kept:
+        problems.append("不丟數字時應該連建號一起讀到，得到 %r" % kept)
+
     for label, run, want in cases:
         try:
             got = run()

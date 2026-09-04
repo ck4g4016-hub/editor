@@ -68,6 +68,13 @@ DEFAULT_KIND = {
 FIXED = "fixed"
 ANCHOR = "anchor"
 
+# 關鍵字模式：不框位置，改成在整頁上找一個印刷標籤，再拿它那一格的內容。
+#
+# 電腦產製的表格（稅務入口網的列印件）欄位會隨資料多寡上下移動 —— 多一筆
+# 「其他土地坐落」，底下每一列就整個往下推，固定框全部失準。但它的標籤是
+# 印刷的、每一份都一樣，辨識信心實測 0.9 以上。所以改成認標籤。
+LABEL = "label"
+
 
 class Field:
     """一個欄位。
@@ -90,7 +97,7 @@ class Field:
 
     def __init__(self, id, name, column, kind, box, page="front",
                  mode=FIXED, anchor_text=None, anchor_index=1, required=False,
-                 suffix="", parts=None):
+                 suffix="", parts=None, label=""):
         self.id = id
         self.name = name
         self.column = column
@@ -104,6 +111,7 @@ class Field:
         self.suffix = suffix or ""
         self.parts = [{"box": list(p["box"]), "suffix": p.get("suffix", "")}
                       for p in (parts or [])]
+        self.label = (label or "").strip()
 
     def segments(self):
         """所有的框，照讀取順序。回傳 [(box, suffix), ...]。"""
@@ -124,6 +132,8 @@ class Field:
             data["suffix"] = self.suffix
         if self.parts:
             data["parts"] = self.parts
+        if self.label:
+            data["label"] = self.label
         if self.mode == ANCHOR:
             data["anchor_text"] = self.anchor_text
             data["anchor_index"] = self.anchor_index
@@ -137,7 +147,8 @@ class Field:
             mode=data.get("mode", FIXED), anchor_text=data.get("anchor_text"),
             anchor_index=data.get("anchor_index", 1),
             required=data.get("required", False),
-            suffix=data.get("suffix", ""), parts=data.get("parts"))
+            suffix=data.get("suffix", ""), parts=data.get("parts"),
+            label=data.get("label", ""))
 
     def problems(self):
         """回傳這個欄位設定上的問題，沒有問題就回傳空清單。"""
@@ -148,10 +159,14 @@ class Field:
             issues.append("輸出欄位 %r 不認得" % self.column)
         if self.kind not in KINDS:
             issues.append("型別 %r 不認得" % self.kind)
-        for index, (box, _suffix) in enumerate(self.segments()):
-            x, y, w, h = box
-            if w <= 0 or h <= 0:
-                issues.append("第 %d 個框的大小不對" % (index + 1))
+        if self.mode == LABEL:
+            if not self.label:
+                issues.append("關鍵字模式要填一個表格上印著的標籤，例如「房屋坐落」")
+        else:
+            for index, (box, _suffix) in enumerate(self.segments()):
+                x, y, w, h = box
+                if w <= 0 or h <= 0:
+                    issues.append("第 %d 個框的大小不對" % (index + 1))
         if self.mode == ANCHOR:
             # 這個模式在 fields 這裡存得好好的，process 卻從來沒有實作 ——
             # 設成錨點相對的欄位會被當成固定框，而且畫面上看不出來。

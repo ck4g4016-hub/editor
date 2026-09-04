@@ -92,7 +92,8 @@ jobs:
                               '_internal\data\roads-三峽-鶯歌.txt',
                               '_internal\data\sections-三峽-鶯歌.txt',
                               '_internal\data\簡繁對照.txt',
-                              '_internal\data\易混字.txt')) {
+                              '_internal\data\易混字.txt',
+                              '_internal\data\公文文號.txt')) {
               if (-not (Test-Path (Join-Path $root $item))) { throw "打包後少了 $item" }
           }
           # 指名要哪三個模型。只數 *.onnx 的話會把 onnxruntime 自帶的測試模型

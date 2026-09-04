@@ -169,6 +169,7 @@ function draw(){
   // 只畫屬於目前這一面的框，不然正反面的框會疊在一起看不懂
   Object.entries(state.fields).forEach(([column, f]) => {
     if ((f.page || 'front') !== role()) return;
+    if (f.mode === 'label') return;          // 關鍵字欄位沒有框，畫不出東西
     const on = column === state.open;
     g.lineWidth = on ? 3 : 2;
     g.strokeStyle = on ? '#8a3d3d' : '#3b6ea5';
@@ -226,8 +227,9 @@ function render(){
       <div class="head">
         <span class="nm">${esc(state.columns[column])}${need?'<em>必要</em>':''}</span>
         <span class="st ${f?'':'no'}">${f
-            ? (page === 'front' ? '正面' : '背面') + '　已框選'
-            : '尚未框選'}</span>
+            ? (page === 'front' ? '正面' : '背面') + '　'
+              + (f.mode === 'label' ? '用關鍵字' : '已框選')
+            : '尚未設定'}</span>
       </div>
       <div class="body">
         ${f ? `
@@ -240,34 +242,55 @@ function render(){
         ${f.mode === 'anchor' ? `<div class="hint">
           這一欄設定成「錨點相對」，但那個模式<b>還沒實作</b> —— 辨識時它會被
           當成固定框處理。請改回固定框並確認框的位置對不對。</div>` : ''}
+        <div class="row"><label>怎麼找</label><select data-k="mode">
+          <option value="fixed" ${f.mode!=='label'?'selected':''}>固定框（手寫表格）</option>
+          <option value="label" ${f.mode==='label'?'selected':''}>關鍵字（電腦產製的表格）</option>
+        </select></div>
+        ${f.mode === 'label' ? `
+        <div class="row"><label>關鍵字</label>
+          <input type="text" data-k="label" value="${esc(f.label||'')}"
+                 placeholder="表格上印著的標籤，例如 房屋坐落"></div>
+        <p class="tip">整頁上找這個印刷標籤，再讀它右邊那一格。<b>欄位會隨資料
+          多寡上下移動的表格用這個</b>（例如稅務入口網的列印件，多一筆其他土地
+          坐落，底下每一列就整個往下推，固定框全部失準）。<br>
+          標籤要照表格上印的字打，一字不差最好；掉一兩個字還是找得到。</p>
+        ${f.column === 'address' ? `<div class="hint">
+          門牌那一格底下如果還印著房屋建號（一整串數字），會自動丟掉 ——
+          門牌不可能整行都是數字。</div>` : ''}` : `
         <div class="row"><label>範圍</label><div class="boxrow">${
           [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')
         }</div></div>
         <div class="row"><label>後綴</label>
           <input type="text" data-k="suffix" value="${esc(f.suffix||'')}"
-                 placeholder="這一格後面印的字，例如 段、巷、弄、號"></div>
+                 placeholder="這一格後面印的字，例如 段、巷、弄、號"></div>`}
         ${f.column === 'address' ? `<div class="hint">
           路名那一格的後綴請<b>留空</b>。表格上印的「路／街」是二選一的標籤，
           不是路名的一部分 —— 是路還是街由路名字典決定，
           填「路/街」或填錯都不會改變結果。</div>` : ''}
-        ${(f.parts||[]).map((p, j) => `
+        ${f.mode === 'label' ? '' : (f.parts||[]).map((p, j) => `
         <div class="part">
           <span class="co">${p.box.join(', ')}</span>
           <input type="text" data-part="${j}" value="${esc(p.suffix||'')}" placeholder="後綴">
           <button data-drop="${j}">移除</button>
         </div>`).join('')}
         <div class="acts">
+          ${f.mode === 'label' ? '' : `
           <button class="small" data-act="aim">重新框選第一格</button>
-          <button class="small" data-act="more">再加一格</button>
+          <button class="small" data-act="more">再加一格</button>`}
           <button class="small" data-act="clear">清除這一欄</button>
         </div>
+        ${f.mode === 'label' ? '' : `
         <p class="tip">格子分開的欄位（門牌的 段／巷／弄／號／樓）要一格一框，
           每格填它後面印的字。讀完會照順序接起來：民生<b>路</b>38<b>巷</b>14<b>號</b>。<br>
-          整排拉一個大框的話會變成「民生3814」，分不出哪個是巷哪個是號。</p>` : `
-        <div class="acts"><button class="small primary" data-act="aim">在圖上框選</button></div>
+          整排拉一個大框的話會變成「民生3814」，分不出哪個是巷哪個是號。</p>`}` : `
+        <div class="acts">
+          <button class="small primary" data-act="aim">在圖上框選</button>
+          <button class="small" data-act="bylabel">改用關鍵字</button>
+        </div>
         <p style="font-size:12px;color:var(--soft);margin:8px 0 0">
           按下之後到左邊圖上拖曳，框住這一欄要抓的位置。<br>
-          背面的欄位就先把上面的頁面切到背面再框。</p>`}
+          背面的欄位就先把上面的頁面切到背面再框。<br>
+          電腦產製、欄位會上下移動的表格，改用關鍵字比較穩。</p>`}
       </div>
     </div>`;
   }).join('')).join('');
@@ -294,6 +317,20 @@ function render(){
         state.fields[column].box[+input.dataset.box] = +input.value;
         draw();
       });
+    });
+
+    const labelBtn = node.querySelector('[data-act=bylabel]');
+    if (labelBtn) labelBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      state.fields[column] = {
+        id: 'f_' + column, name: state.columns[column], column: column,
+        kind: KIND_OF[column] || 'text', box: [0,0,0,0], page: role(),
+        mode: 'label', label: '', suffix: '', parts: [],
+        required: state.critical.includes(column),
+      };
+      state.open = column;
+      stopAiming();
+      render(); draw();
     });
 
     const aimBtn = node.querySelector('[data-act=aim]');
@@ -392,6 +429,7 @@ window.addEventListener('mouseup', () => {
       page: role(),
       mode: old ? old.mode : 'fixed',
       suffix: old ? (old.suffix || '') : '',
+      label: old ? (old.label || '') : '',
       parts: old ? (old.parts || []) : [],
       anchor_text: old ? old.anchor_text : '',
       anchor_index: old ? old.anchor_index : 1,

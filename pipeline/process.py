@@ -14,7 +14,8 @@ import time
 import cv2
 import numpy as np
 
-from . import baseimage, diagnose, fields as fieldmod, layout, lexicon, recognise, render, resources, validate
+from . import (baseimage, diagnose, fields as fieldmod, layout, lexicon,
+                pagetext, recognise, render, resources, stamp, validate)
 
 # 這三欄錯了，RPA 會拿著錯的資料去查別人的房子，而且從輸出的表格上看不出來。
 # 驗證不通過就一定要人工確認，不管信心值多高。
@@ -308,15 +309,105 @@ class Converter:
                         definition.column, "這一件沒有掃到背面，讀不到這一欄")
                 continue
 
-            _, sheet, base = self.sheet_of(code, page, role, front.rotation)
             ordered = sorted(wanted, key=lambda d: 0 if d.kind == "district" else 1)
-            for definition in ordered:
-                self._read_field(record, sheet, definition, keep_crops, base)
+            by_label = [d for d in ordered if d.mode == fieldmod.LABEL]
+            by_box = [d for d in ordered if d.mode != fieldmod.LABEL]
+
+            if by_label:
+                # 關鍵字欄位讀的是原始頁面，不是減掉版面之後的影像 ——
+                # 要找的就是印刷的標籤，減掉版面等於把要找的東西擦掉。
+                lines, rules = pagetext.read_page(
+                    page.source, page.index, front.rotation)
+                for definition in by_label:
+                    self._read_label_field(record, definition, lines, rules)
+
+            if by_box:
+                _, sheet, base = self.sheet_of(code, page, role, front.rotation)
+                for definition in by_box:
+                    self._read_field(record, sheet, definition, keep_crops, base)
+
+        if any(d.column == "doc_number" for d in definitions):
+            self._read_stamp(record, document)
 
         for column in CRITICAL:
             if not record.values.get(column):
                 record.problems.setdefault(column, "沒有讀到內容")
         return record
+
+    def _read_stamp(self, record, document):
+        """在整頁上找收文戳的公文文號，不靠框選。
+
+        承辦人的原話：「有時候貼標籤的人不會貼在固定的位置」。框選的欄位裡
+        什麼都沒有的時候，那一欄就整個廢掉 —— 實測就有一件是這樣。
+
+        整頁掃描找得到是因為文號的組成固定（民國年＋機關代號＋流水號，共十碼），
+        整頁上符合這個格式的數字串幾乎只有它一個。詳見 pipeline/stamp.py。
+
+        框選的結果不丟掉：兩邊都有而且不一樣的時候，兩個都講出來讓人選。
+        """
+        boxed = record.values.get("doc_number")
+        found, note = stamp.find([document.front, document.back], document.front.rotation)
+        how = record.how.setdefault("doc_number", {})
+        how["整頁找"] = found or ("找不到（%s）" % note)
+
+        if not found:
+            # 找不到就維持框選的結果，什麼都不動
+            if not boxed:
+                record.problems.setdefault("doc_number", note)
+            return
+
+        record.values["doc_number"] = found
+        record.confidence.setdefault("doc_number", 1.0)
+        how["採用"] = found
+        if boxed and boxed != found:
+            # 兩種讀法不一樣本身就是警訊。以整頁找到的為準（它通過了
+            # 「民國年＋機關代號＋十碼」的格式檢查，框選的沒有），但要講出來。
+            record.problems["doc_number"] = (
+                "框選讀到「%s」，整頁上找到的是「%s」，兩個不一樣，請確認"
+                % (boxed, found))
+        elif note:
+            record.problems["doc_number"] = note
+        else:
+            record.problems.pop("doc_number", None)
+
+    def _dictionaries(self, definition, record):
+        """這個欄位驗證時要用到的字典。行政區已經先讀好了，所以分得出區。"""
+        extra = {}
+        if definition.kind == "district":
+            extra["known"] = self.districts
+        elif definition.kind == "section":
+            extra["known"] = lexicon.for_district(
+                self.sections, record.values.get("district"))
+        elif definition.kind == "address":
+            extra["roads"] = lexicon.for_district(
+                self.roads, record.values.get("district"))
+        return extra
+
+    def _read_label_field(self, record, definition, lines, rules):
+        """靠印刷標籤讀一個欄位（電腦產製的表格用）。
+
+        門牌那一格底下常常還印著房屋建號 —— 一整串數字。承辦人說那個不要，
+        而門牌本來就不可能整行都是數字，所以整行是數字的就丟掉。
+        這條規則綁在「型別是門牌」上，不是另外開一個選項：多一個選項就多一個
+        設錯的機會，而這件事沒有第二種合理的答案。
+        """
+        drop_digits = definition.kind == "address"
+        raw, confidence, note = pagetext.value_for(
+            lines, definition.label, drop_digits=drop_digits, rules=rules)
+
+        how = record.how.setdefault(definition.column, {})
+        how["關鍵字"] = "「%s」→ %s" % (definition.label, raw or "（沒讀到）")
+        how["採用"] = raw
+
+        value, problem = validate.check(
+            definition.kind, raw, **self._dictionaries(definition, record))
+        record.raw[definition.column] = raw
+        record.values[definition.column] = value
+        record.confidence[definition.column] = confidence
+        if note:
+            record.problems[definition.column] = note
+        elif problem:
+            record.problems[definition.column] = problem
 
     def _read_field(self, record, sheet, definition, keep_crops, base=None):
         """讀一個欄位。
@@ -407,15 +498,7 @@ class Converter:
         how = {"格數": cell_count, "整行": raw, "照格子": grid_raw if any_grid else ""}
         record.how[definition.column] = how
 
-        extra = {}
-        if definition.kind == "district":
-            extra["known"] = self.districts
-        elif definition.kind == "section":
-            extra["known"] = lexicon.for_district(
-                self.sections, record.values.get("district"))
-        elif definition.kind == "address":
-            extra["roads"] = lexicon.for_district(
-                self.roads, record.values.get("district"))
+        extra = self._dictionaries(definition, record)
 
         if definition.kind == "id_number":
             # 身分證有檢查碼 —— 這讓我們可以**驗證**而不是猜，別的欄位沒這優勢。
