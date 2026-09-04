@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>複核</title>
+<style>
+  :root{--bg:#f4f2ee;--panel:#fff;--line:#ddd8cc;--ink:#26221c;--soft:#6f695d;
+        --accent:#8a3d3d;--ok:#4f7a4a;--warn:#b0741f;--flag:#fdf3f3;}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.6 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;
+       background:var(--bg);color:var(--ink)}
+  header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);
+         padding:12px 20px;display:flex;align-items:center;gap:14px}
+  header h1{margin:0;font-size:16px}
+  header .stat{color:var(--soft);font-size:13px}
+  header .grow{flex:1}
+  button{font:inherit;padding:8px 15px;border:1px solid var(--line);border-radius:6px;
+         background:#fff;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#a04a4a}
+  main{padding:18px 20px 60px;max-width:1180px;margin:0 auto}
+  .rec{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+       margin-bottom:16px;overflow:hidden}
+  .rec > .head{display:flex;align-items:center;gap:10px;padding:9px 14px;
+       border-bottom:1px solid var(--line);background:#faf8f4}
+  .rec > .head .who{font-weight:600}
+  .rec > .head .src{color:var(--soft);font-size:12.5px}
+  .badge{font-size:12px;padding:2px 9px;border-radius:11px;font-weight:600}
+  .badge.ok{background:#e8f0e6;color:var(--ok)}
+  .badge.review{background:#f6e6e6;color:var(--accent)}
+  .fields{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .fld{padding:11px 14px;border-bottom:1px solid #f0ece2;border-right:1px solid #f0ece2}
+  .fld.flag{background:var(--flag)}
+  .fld .lab{font-size:12px;color:var(--soft);display:flex;gap:7px;align-items:center}
+  .fld .lab b{color:var(--accent);font-weight:600}
+  /* 原圖只是「對照用」，不該把畫面吃掉。
+     以前 .wide 是 width:100%，遇到 E 表那種直條裁切（125x1210）會被放大到
+     整欄寬，高度變成好幾千像素，整個畫面只看得到一張圖。
+     現在一律不放大，並且限制高度；要看細節就點一下放大。 */
+  .fld img{display:block;max-width:100%;max-height:96px;width:auto;height:auto;
+           margin:6px 0;border:1px solid var(--line);border-radius:4px;
+           background:#fff;cursor:zoom-in}
+  .fld.wide{grid-column:1/-1}
+  .fld.wide img{max-height:150px}
+  .fld .zoomhint{font-size:11px;color:var(--soft);margin-top:-2px}
+  .fld.wide input{font-size:20px;letter-spacing:2px;padding:10px 12px;font-family:
+                  ui-monospace,"Cascadia Mono",Consolas,monospace}
+  .chk{font-size:12.5px;margin-top:5px;font-weight:600}
+  .chk.good{color:var(--ok)} .chk.bad{color:var(--accent)} .chk.idle{color:var(--soft)}
+  .fld input{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:5px;
+             font:inherit;background:#fff}
+  .fld.flag input{border-color:var(--accent)}
+  .fld .raw{font-size:12px;color:var(--soft);margin-top:4px}
+  .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:7px;padding:10px 13px;
+        margin-bottom:16px;font-size:13px}
+  #msg{font-size:13px;color:var(--soft)}
+  #msg.ok{color:var(--ok)} #msg.err{color:var(--accent)}
+  .say{grid-column:1/-1;padding:9px 14px;border-bottom:1px solid #f0ece2;background:#fcfbf8}
+  .say label{font-size:12px;color:var(--soft)}
+  textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:5px;
+           font:inherit;background:#fff;resize:vertical}
+  #overall{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+           padding:12px 14px;margin-bottom:16px}
+  #overall h2{margin:0 0 6px;font-size:14px}
+  #overall p{margin:0 0 8px;color:var(--soft);font-size:12.5px}
+  dialog{border:1px solid var(--line);border-radius:9px;padding:0;max-width:min(1000px,92vw);
+         width:100%;background:var(--panel);color:var(--ink)}
+  dialog::backdrop{background:rgba(0,0,0,.35)}
+  dialog .bar{display:flex;gap:10px;align-items:center;padding:11px 15px;
+              border-bottom:1px solid var(--line)}
+  dialog .bar b{flex:1;font-size:14px}
+  dialog pre{margin:0;padding:14px 16px;max-height:62vh;overflow:auto;font-size:12px;
+             line-height:1.5;white-space:pre;background:#fbfaf7}
+  dialog .foot{padding:10px 15px;border-top:1px solid var(--line);font-size:12.5px;
+               color:var(--soft)}
+</style>
+</head>
+<body>
+<header>
+  <h1>複核</h1>
+  <span class="stat" id="stat"></span>
+  <span class="grow"></span>
+  <span id="msg"></span>
+  <button id="report">產生診斷報告</button>
+  <button class="primary" id="export">產生輸出檔</button>
+</header>
+<main>
+  <div id="unresolved"></div>
+  <div id="overall">
+    <h2>這一批哪裡不對？</h2>
+    <p>寫下來會一起放進診斷報告。愈具體愈好 ——「第 3 件的門牌抓到隔壁那格」
+       比「辨識很差」有用得多。每一件下面也有各自的欄位可以寫。</p>
+    <textarea id="overall-note" rows="2"
+              placeholder="例如：G 表格今天有 5 件整件認不出來，昨天還好好的"></textarea>
+  </div>
+  <div id="list"></div>
+</main>
+<dialog id="shot">
+  <div class="bar"><b id="shot-title">原圖</b><button id="shot-close">關閉</button></div>
+  <div style="padding:14px 16px;overflow:auto;max-height:70vh;background:#fbfaf7">
+    <img id="shot-img" alt="" style="display:block;max-width:100%">
+  </div>
+  <div class="foot">點畫面上的小圖可以放大到這裡。再點「關閉」回去。</div>
+</dialog>
+<dialog id="preview">
+  <div class="bar">
+    <b>診斷報告</b>
+    <span id="preview-path" style="font-size:12px;color:var(--soft)"></span>
+    <button id="preview-close">關閉</button>
+  </div>
+  <pre id="preview-text"></pre>
+  <div class="foot">
+    報告已存到「輸出\診斷」資料夾。裡面的辨識結果全部經過遮罩
+    （中文字換成「字」、數字換成 9、英文字母換成 A），不含個資，
+    但還是請你捲一遍確認過再外傳。
+  </div>
+</dialog>
+<script>
+// 每次啟動產生的權杖，從網址帶進來。所有 API 都要帶著它 ——
+// 本機的其他行程雖然連得上這個埠，但不知道權杖就什麼都拿不到。
+const TOKEN = new URLSearchParams(location.search).get('k') || '';
+function api(path){
+  return path + (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN);
+}
+
+const el = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let data = null;
+const notes = {};   // 每一件的意見，鍵是件的序號
+
+/* 這幾欄整列放大顯示。手寫的字機器讀不準，人要看著原圖打。 */
+const WIDE = new Set(['id_number', 'address']);
+
+/* 連不上通常只有一個原因：那個小視窗被關掉了，程式已經不在。
+   「Failed to fetch」對使用者毫無意義，直接把真正的原因寫出來。 */
+const DEAD = '複核程式已經不在了，所以這一頁失效了。\n\n'
+  + '最常見的原因是那個寫著「做完了，回主選單」的小視窗被關掉了 ——\n'
+  + '那個視窗一關，這一頁就跟著失效，畫面看起來卻一切正常。\n\n'
+  + '請回到主程式重新按「轉　換」跑一次。這一頁上改過的內容沒有保留。';
+
+
+async function load(){
+  data = await (await fetch(api('api/records'))).json();
+  render();
+}
+
+function render(){
+  const flagged = data.records.filter(r => Object.keys(r.flags).length).length;
+  el('stat').textContent =
+      `共 ${data.records.length} 件，${data.records.length - flagged} 件通過、${flagged} 件要看`;
+
+  // 這個變數以前也叫 notes，把外層存意見的那個 notes 整個遮掉了 ——
+  // 於是下面的 notes[i] = box.value 是在對一個字串設屬性，靜靜地什麼也沒發生，
+  // 使用者一件一件寫的意見全部被丟掉，診斷報告裡那一段永遠是空的。
+  let banner = '';
+  if (data.unresolved.length){
+    banner += `<div class="note"><b>有 ${data.unresolved.length} 件不完整，沒有被辨識</b>。
+       一件申請書固定兩頁（正反面都要掃，背面空白也要掃），
+       所以最常見的原因是<b>有一面漏掃了</b>，整份的頁數變成奇數：<br>`
+       + data.unresolved.map(u => esc(u)).join('<br>') + `</div>`;
+  }
+  if ((data.unknown || []).length){
+    // 切分改成照頁數配對之後，認不出來不會再吃掉一整件。
+    // 剩下的風險是「正面認不出來、靠背面才知道是哪一種表格」——
+    // 那種件的欄位是照背面認出的表格去裁的，值得看一眼。
+    banner += `<div class="note"><b>有 ${data.unknown.length} 件的正面認不出是哪一種表格</b>，
+       是靠背面判斷出來的。件數沒有少，但那一面可能掃歪了或被章蓋掉特徵，
+       欄位有沒有對到請自己看一眼：<br>`
+       + data.unknown.map(u => esc(u)).join('<br>') + `</div>`;
+  }
+  el('unresolved').innerHTML = banner;
+
+  el('list').innerHTML = data.records.map((r, i) => {
+    const cells = data.columns.map(c => {
+      const flag = r.flags[c.key];
+      const crop = r.crops.includes(c.key)
+        ? `<img src="${api(`api/crop?record=${i}&column=${c.key}`)}" alt=""
+                data-zoom="${esc(c.name)}">
+           <div class="zoomhint">點圖片可放大</div>` : '';
+      const raw = (r.raw[c.key] && r.raw[c.key] !== r.values[c.key])
+        ? `<div class="raw">辨識原文：${esc(r.raw[c.key])}</div>` : '';
+      // 手寫的身分證與門牌放大整列。這兩欄機器讀不準（身分證實測最好的
+      // 一頁也只有十個字對八個），與其讓人瞇著眼睛校對一串錯的，
+      // 不如把原圖放大、讓人直接照著打 —— 打字比校對快，而且不會漏看。
+      const wide = WIDE.has(c.key);
+      const check = c.key === 'id_number'
+        ? `<div class="chk idle" data-check="${i}"></div>` : '';
+      return `<div class="fld ${flag ? 'flag' : ''} ${wide ? 'wide' : ''}">
+        <div class="lab">${esc(c.name)}${flag ? `<b>${esc(flag)}</b>` : ''}</div>
+        ${crop}
+        <input data-rec="${i}" data-col="${c.key}" value="${esc(r.values[c.key] || '')}"
+               ${c.key === 'id_number' ? 'maxlength="10" autocomplete="off"' : ''}>
+        ${check}${raw}</div>`;
+    }).join('');
+    const bad = Object.keys(r.flags).length;
+    const say = `<div class="say">
+      <label>這一件有什麼問題？（會寫進診斷報告，不影響輸出檔）</label>
+      <textarea data-note="${i}" rows="1"
+        placeholder="例如：門牌抓到上面那一格的內容">${esc(notes[i] || '')}</textarea></div>`;
+    return `<div class="rec">
+      <div class="head">
+        <span class="who">第 ${i + 1} 件</span>
+        <span class="badge ${bad ? 'review' : 'ok'}">${bad ? bad + ' 個欄位要看' : '通過'}</span>
+        <span class="src">${esc(r.source)}</span>
+      </div>
+      <div class="fields">${cells}${say}</div></div>`;
+  }).join('');
+
+  el('list').querySelectorAll('textarea[data-note]').forEach(box => {
+    box.addEventListener('input', () => { notes[+box.dataset.note] = box.value; });
+  });
+
+  el('list').querySelectorAll('input').forEach(input => {
+    const save = () => {
+      data.records[+input.dataset.rec].values[input.dataset.col] = input.value;
+    };
+    input.addEventListener('change', save);
+    if (input.dataset.col === 'id_number'){
+      // 邊打邊驗檢查碼。打完第 10 碼就知道對不對，不必等產生輸出檔 ——
+      // 打錯一碼會查到別人的房子，那個回饋一定要當場給。
+      const box = el('list').querySelector(`[data-check="${input.dataset.rec}"]`);
+      const tick = () => {
+        save();
+        const v = input.value.trim().toUpperCase();
+        if (!v){ box.className = 'chk idle'; box.textContent = '照著上面的原圖打，會即時驗檢查碼'; return; }
+        if (v.length !== 10){ box.className = 'chk idle'; box.textContent = `${v.length} 碼，還要 ${10 - v.length} 碼`; return; }
+        const ok = idOK(v);
+        box.className = 'chk ' + (ok ? 'good' : 'bad');
+        box.textContent = ok ? '✓ 檢查碼正確' : '✗ 檢查碼不符，有一碼打錯了';
+      };
+      input.addEventListener('input', tick);
+      tick();
+    }
+  });
+}
+
+/* 中華民國身分證檢查碼。打字時當場驗，不用等後端。 */
+const ID_LETTERS = 'ABCDEFGHJKLMNPQRSTUVXYWZIO';
+function idOK(v){
+  if (!/^[A-Z][12]\d{8}$/.test(v)) return false;
+  const code = ID_LETTERS.indexOf(v[0]) + 10;
+  let total = Math.floor(code / 10) + (code % 10) * 9;
+  for (let i = 1; i <= 8; i++) total += (+v[i]) * (9 - i);
+  return (total + (+v[9])) % 10 === 0;
+}
+
+el('report').addEventListener('click', async () => {
+  el('msg').textContent = '整理中…'; el('msg').className = '';
+  try {
+    const res = await fetch(api('api/diagnose'), {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({notes: {overall: el('overall-note').value, records: notes}})});
+    const out = await res.json();
+    if (!out.ok){ showFailure(out); return; }
+    el('msg').textContent = '診斷報告已產出'; el('msg').className = 'ok';
+    el('preview-path').textContent = out.path;
+    el('preview-text').textContent = out.text;
+    el('preview').showModal();
+  } catch (error) {
+    // 不接住的話畫面會永遠停在「整理中…」，什麼都看不到
+    showFailure({error: '連不上程式（' + error.message + '）', detail: DEAD});
+  }
+});
+
+/* 把失敗的內容直接攤在畫面上，不要只留一句話 */
+function showFailure(out){
+  el('msg').textContent = out.error || '失敗'; el('msg').className = 'err';
+  el('preview-path').textContent = out.path || '';
+  el('preview-text').textContent =
+      (out.error || '') + '\n\n' + (out.detail || '沒有更多資訊。');
+  el('preview').showModal();
+}
+el('preview-close').addEventListener('click', () => el('preview').close());
+
+/* 點小圖放大。原圖在畫面上只佔一小條，但要核對的時候得看得清楚。 */
+el('list').addEventListener('click', event => {
+  const img = event.target.closest('img[data-zoom]');
+  if (!img) return;
+  el('shot-title').textContent = img.dataset.zoom + '　原圖';
+  el('shot-img').src = img.currentSrc || img.src;
+  el('shot').showModal();
+});
+el('shot-close').addEventListener('click', () => el('shot').close());
+el('shot').addEventListener('click', event => {
+  if (event.target === el('shot')) el('shot').close();   // 點背景也關
+});
+
+el('export').addEventListener('click', async () => {
+  el('msg').textContent = '產生中…'; el('msg').className = '';
+  try {
+    const res = await fetch(api('api/export'), {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({records: data.records.map(r => r.values)})});
+    const out = await res.json();
+    if (out.ok){
+      el('msg').textContent = '已產出：' + out.files.join('、');
+      el('msg').className = 'ok';
+    } else {
+      showFailure(out);
+    }
+  } catch (error) {
+    showFailure({error: '連不上程式（' + error.message + '）', detail: DEAD});
+  }
+});
+load();
+</script>
+</body>
+</html>

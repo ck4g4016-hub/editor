@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>樣板編輯器</title>
+<style>
+  :root{
+    --bg:#f4f2ee; --panel:#fff; --line:#d9d4c9; --ink:#26221c; --soft:#6d675c;
+    --accent:#8a3d3d; --ok:#4f7a4a; --warn:#b06a1f;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;height:100vh;display:flex;font:14px/1.55 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;
+       background:var(--bg);color:var(--ink)}
+  #stage{flex:1;overflow:auto;padding:16px;position:relative}
+  #wrap{position:relative;display:inline-block}
+  #sheet{display:block;box-shadow:0 2px 12px rgba(0,0,0,.18);background:#fff}
+  #overlay{position:absolute;inset:0}
+  #overlay.aiming{cursor:crosshair}
+  #banner{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9;
+          background:var(--accent);color:#fff;padding:9px 20px;border-radius:20px;
+          font-size:13px;font-weight:600;box-shadow:0 3px 14px rgba(0,0,0,.25);display:none}
+  #banner.on{display:block}
+  aside{width:420px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);
+        display:flex;flex-direction:column}
+  header{padding:12px 16px;border-bottom:1px solid var(--line)}
+  header h1{margin:0 0 6px;font-size:15px}
+  header .picks{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  header p{margin:6px 0 0;color:var(--soft);font-size:12px}
+  .scroll{flex:1;overflow:auto;padding:12px 16px}
+  footer{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
+  select,input,button{font:inherit;color:inherit}
+  select,input[type=text],input[type=number]{width:100%;padding:5px 7px;border:1px solid var(--line);
+        border-radius:4px;background:#fff}
+  button{padding:6px 12px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#a04a4a}
+  button.small{padding:4px 10px;font-size:12px}
+  h2{font-size:12px;color:var(--soft);margin:14px 0 8px;font-weight:600;letter-spacing:.05em}
+  h2:first-child{margin-top:0}
+  .col{border:1px solid var(--line);border-radius:6px;margin-bottom:8px;background:#fdfcfa}
+  .col.set{background:#fff}
+  .col.need{border-color:#e6c9c9}
+  .col.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(138,61,61,.14)}
+  .col .head{display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer}
+  .col .nm{font-weight:600;flex:1}
+  .col .nm em{font-style:normal;color:var(--accent);font-size:11px;margin-left:5px}
+  .col .st{font-size:12px;color:var(--soft)}
+  .col .st.no{color:var(--accent)}
+  .col .body{padding:0 11px 10px;border-top:1px solid #f0ece2;display:none}
+  .col.open .body{display:block}
+  .col .row{display:grid;grid-template-columns:64px 1fr;gap:6px;align-items:center;margin:8px 0 0}
+  .col label{color:var(--soft);font-size:12px}
+  .boxrow{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+  .acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+  .hint{font-size:11.5px;color:var(--soft);background:#fbf4e6;border:1px solid #e6d5b0;
+        border-radius:5px;padding:6px 8px;margin:4px 0 2px;line-height:1.5}
+  .hint b{color:var(--accent)}
+  .part{display:grid;grid-template-columns:1fr 74px auto;gap:5px;align-items:center;
+        margin-top:6px;padding:6px 8px;background:#f6f3ec;border-radius:5px}
+  .part .co{font-size:12px;color:var(--soft);font-family:monospace}
+  .part button{padding:3px 8px;font-size:12px}
+  .tip{font-size:12px;color:var(--soft);margin:8px 0 0;line-height:1.7}
+  .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:6px;padding:9px 11px;
+        font-size:12.5px;margin-bottom:12px}
+  .note b{color:var(--warn)}
+  #msg{flex:1;font-size:12px;color:var(--soft)}
+  #msg.ok{color:var(--ok)}
+  #msg.err{color:var(--accent)}
+</style>
+</head>
+<body>
+<div id="stage"><div id="wrap"><img id="sheet" alt=""><canvas id="overlay"></canvas></div></div>
+<div id="banner"></div>
+<aside>
+  <header>
+    <h1 id="title">樣板編輯器</h1>
+    <div class="picks">
+      <select id="code"></select>
+      <select id="view"></select>
+    </div>
+    <p id="subtitle"></p>
+  </header>
+  <div class="scroll">
+    <div id="notes"></div>
+    <div id="list"></div>
+  </div>
+  <footer>
+    <span id="msg"></span>
+    <button class="primary" id="save">儲存</button>
+  </footer>
+</aside>
+<script>
+const el = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* 選了輸出欄就配對應的型別。型別決定用哪一種驗證，選錯不會報錯，
+   只會靜靜地不驗 —— 身分證不驗檢查碼、地址不套門牌正規化。
+   所以不讓使用者自己記，由輸出欄決定，需要時還是能改。 */
+/* 選了輸出欄，型別預設就該是對的那一個。這份對應表以前抄在這裡一份，
+   結果 pipeline 那邊加了段名型別、這邊沒改，段名就一直沒被比對過。
+   現在跟 API 拿，只有一份。 */
+let KIND_OF = {};
+
+// 每次啟動產生的權杖，從網址帶進來。所有 API 都要帶著它 ——
+// 本機的其他行程雖然連得上這個埠，但不知道權杖就什麼都拿不到。
+const TOKEN = new URLSearchParams(location.search).get('k') || '';
+function api(path){
+  return path + (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN);
+}
+
+let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[], adding:false,
+             fields:{},          // column -> 欄位定義
+             open:null,          // 展開中的那一欄
+             aiming:null};       // 正在框選哪一欄
+
+function say(text, cls){ el('msg').textContent = text; el('msg').className = cls || ''; }
+const role = () => (state.views[state.view] || {}).role || 'front';
+
+async function loadCodes(){
+  const codes = await (await fetch(api('api/codes'))).json();
+  el('code').innerHTML = codes.map(c =>
+      `<option value="${esc(c.code)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
+  if (codes.length) selectCode(codes[0].code);
+  else el('list').innerHTML = '<div class="note">還沒有任何表格。請先回程式按「新增表格」。</div>';
+}
+
+async function selectCode(code){
+  const data = await (await fetch(api('api/template?code=' + encodeURIComponent(code)))).json();
+  state.code = code;
+  state.scale = data.scale;
+  state.columns = data.columns;
+  state.kinds = data.kinds;
+  KIND_OF = data.default_kinds || {};
+  state.critical = data.critical;
+  state.views = data.views;
+  state.view = 0;
+  state.open = null;
+  state.aiming = null;
+
+  state.fields = {};
+  data.fields.forEach(f => { if (f.column) state.fields[f.column] = f; });
+
+  el('title').textContent = data.name;
+  el('view').innerHTML = data.views.map((v, i) =>
+      `<option value="${i}">${esc(v.label)}</option>`).join('')
+      || '<option>沒有可框選的頁面</option>';
+  showView(0);
+  render();
+}
+
+function showView(which){
+  state.view = which;
+  const data = state.views[which];
+  el('subtitle').textContent = data ? `${data.label}　—　拖曳框選時請對準這一頁的內容` : '';
+  const img = el('sheet');
+  img.onload = () => { sizeOverlay(); draw(); };
+  img.src = 'api/image?code=' + encodeURIComponent(state.code)
+          + '&view=' + which + '&t=' + Date.now();
+}
+
+function sizeOverlay(){
+  const img = el('sheet'), cv = el('overlay');
+  cv.width = img.clientWidth; cv.height = img.clientHeight;
+}
+
+/* 圖上的顯示座標 ←→ 300dpi 的實際座標 */
+const toReal = v => Math.round(v / state.scale);
+const toView = v => v * state.scale;
+
+function draw(){
+  const cv = el('overlay'), g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.setLineDash([]);
+  // 只畫屬於目前這一面的框，不然正反面的框會疊在一起看不懂
+  Object.entries(state.fields).forEach(([column, f]) => {
+    if ((f.page || 'front') !== role()) return;
+    if (f.mode === 'label') return;          // 關鍵字欄位沒有框，畫不出東西
+    const on = column === state.open;
+    g.lineWidth = on ? 3 : 2;
+    g.strokeStyle = on ? '#8a3d3d' : '#3b6ea5';
+    (f.parts || []).forEach(p => {
+      g.setLineDash([4,3]);
+      g.strokeRect(toView(p.box[0]), toView(p.box[1]), toView(p.box[2]), toView(p.box[3]));
+      if (p.suffix){
+        g.font = '12px sans-serif'; g.fillStyle = g.strokeStyle;
+        g.fillText(p.suffix, toView(p.box[0]) + 2, toView(p.box[1]) - 3);
+      }
+    });
+    g.setLineDash([]);
+    const [x,y,w,h] = f.box;
+    g.strokeRect(toView(x), toView(y), toView(w), toView(h));
+    const label = state.columns[column] + ((f.parts||[]).length
+        ? ` (${(f.parts.length + 1)} 格)` : '');
+    g.font = '12px sans-serif';
+    const tw = g.measureText(label).width + 8;
+    g.fillStyle = g.strokeStyle;
+    g.fillRect(toView(x), toView(y) - 16, tw, 16);
+    g.fillStyle = '#fff';
+    g.fillText(label, toView(x) + 4, toView(y) - 4);
+  });
+}
+
+function aim(column, adding){
+  state.aiming = column;
+  state.adding = !!adding;
+  el('overlay').classList.add('aiming');
+  el('banner').classList.add('on');
+  el('banner').textContent = adding
+      ? `在左邊圖上框出「${state.columns[column]}」的下一格　（Esc 取消）`
+      : `在左邊圖上拖曳框出「${state.columns[column]}」　（Esc 取消）`;
+}
+function stopAiming(){
+  state.aiming = null;
+  state.adding = false;
+  el('overlay').classList.remove('aiming');
+  el('banner').classList.remove('on');
+}
+
+function render(){
+  const groups = [
+    ['必要欄位（缺一不可）', state.critical],
+    ['其他欄位', Object.keys(state.columns).filter(k => !state.critical.includes(k))],
+  ];
+
+  el('list').innerHTML = groups.map(([title, keys]) => `<h2>${title}</h2>` + keys.map(column => {
+    const f = state.fields[column];
+    const need = state.critical.includes(column) && !f;
+    const page = f ? (f.page || 'front') : null;
+    return `
+    <div class="col ${f?'set':''} ${need?'need':''} ${column===state.open?'open sel':''}"
+         data-c="${column}">
+      <div class="head">
+        <span class="nm">${esc(state.columns[column])}${need?'<em>必要</em>':''}</span>
+        <span class="st ${f?'':'no'}">${f
+            ? (page === 'front' ? '正面' : '背面') + '　'
+              + (f.mode === 'label' ? '用關鍵字' : '已框選')
+            : '尚未設定'}</span>
+      </div>
+      <div class="body">
+        ${f ? `
+        <div class="row"><label>名稱</label>
+          <input type="text" data-k="name" value="${esc(f.name)}"></div>
+        <div class="row"><label>型別</label><select data-k="kind">${
+          Object.entries(state.kinds).map(([k,v]) =>
+            `<option value="${k}" ${f.kind===k?'selected':''}>${esc(v)}</option>`).join('')
+        }</select></div>
+        ${f.mode === 'anchor' ? `<div class="hint">
+          這一欄設定成「錨點相對」，但那個模式<b>還沒實作</b> —— 辨識時它會被
+          當成固定框處理。請改回固定框並確認框的位置對不對。</div>` : ''}
+        <div class="row"><label>怎麼找</label><select data-k="mode">
+          <option value="fixed" ${f.mode!=='label'?'selected':''}>固定框（手寫表格）</option>
+          <option value="label" ${f.mode==='label'?'selected':''}>關鍵字（電腦產製的表格）</option>
+        </select></div>
+        ${f.mode === 'label' ? `
+        <div class="row"><label>關鍵字</label>
+          <input type="text" data-k="label" value="${esc(f.label||'')}"
+                 placeholder="表格上印著的標籤，例如 房屋坐落"></div>
+        <p class="tip">整頁上找這個印刷標籤，再讀它右邊那一格。<b>欄位會隨資料
+          多寡上下移動的表格用這個</b>（例如稅務入口網的列印件，多一筆其他土地
+          坐落，底下每一列就整個往下推，固定框全部失準）。<br>
+          標籤要照表格上印的字打，一字不差最好；掉一兩個字還是找得到。</p>
+        ${f.column === 'address' ? `<div class="hint">
+          門牌那一格底下如果還印著房屋建號（一整串數字），會自動丟掉 ——
+          門牌不可能整行都是數字。</div>` : ''}` : `
+        <div class="row"><label>範圍</label><div class="boxrow">${
+          [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')
+        }</div></div>
+        <div class="row"><label>後綴</label>
+          <input type="text" data-k="suffix" value="${esc(f.suffix||'')}"
+                 placeholder="這一格後面印的字，例如 段、巷、弄、號"></div>`}
+        ${f.column === 'address' ? `<div class="hint">
+          路名那一格的後綴請<b>留空</b>。表格上印的「路／街」是二選一的標籤，
+          不是路名的一部分 —— 是路還是街由路名字典決定，
+          填「路/街」或填錯都不會改變結果。</div>` : ''}
+        ${f.mode === 'label' ? '' : (f.parts||[]).map((p, j) => `
+        <div class="part">
+          <span class="co">${p.box.join(', ')}</span>
+          <input type="text" data-part="${j}" value="${esc(p.suffix||'')}" placeholder="後綴">
+          <button data-drop="${j}">移除</button>
+        </div>`).join('')}
+        <div class="acts">
+          ${f.mode === 'label' ? '' : `
+          <button class="small" data-act="aim">重新框選第一格</button>
+          <button class="small" data-act="more">再加一格</button>`}
+          <button class="small" data-act="clear">清除這一欄</button>
+        </div>
+        ${f.mode === 'label' ? '' : `
+        <p class="tip">格子分開的欄位（門牌的 段／巷／弄／號／樓）要一格一框，
+          每格填它後面印的字。讀完會照順序接起來：民生<b>路</b>38<b>巷</b>14<b>號</b>。<br>
+          整排拉一個大框的話會變成「民生3814」，分不出哪個是巷哪個是號。</p>`}` : `
+        <div class="acts">
+          <button class="small primary" data-act="aim">在圖上框選</button>
+          <button class="small" data-act="bylabel">改用關鍵字</button>
+        </div>
+        <p style="font-size:12px;color:var(--soft);margin:8px 0 0">
+          按下之後到左邊圖上拖曳，框住這一欄要抓的位置。<br>
+          背面的欄位就先把上面的頁面切到背面再框。<br>
+          電腦產製、欄位會上下移動的表格，改用關鍵字比較穩。</p>`}
+      </div>
+    </div>`;
+  }).join('')).join('');
+
+  el('list').querySelectorAll('.col').forEach(node => {
+    const column = node.dataset.c;
+
+    node.querySelector('.head').addEventListener('click', () => {
+      state.open = state.open === column ? null : column;
+      stopAiming();
+      render(); draw();
+    });
+
+    node.querySelectorAll('[data-k]').forEach(input => {
+      input.addEventListener('change', () => {
+        const key = input.dataset.k;
+        state.fields[column][key] = input.type === 'number' ? +input.value : input.value;
+        if (key === 'mode') render();
+        draw();
+      });
+    });
+    node.querySelectorAll('[data-box]').forEach(input => {
+      input.addEventListener('change', () => {
+        state.fields[column].box[+input.dataset.box] = +input.value;
+        draw();
+      });
+    });
+
+    const labelBtn = node.querySelector('[data-act=bylabel]');
+    if (labelBtn) labelBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      state.fields[column] = {
+        id: 'f_' + column, name: state.columns[column], column: column,
+        kind: KIND_OF[column] || 'text', box: [0,0,0,0], page: role(),
+        mode: 'label', label: '', suffix: '', parts: [],
+        required: state.critical.includes(column),
+      };
+      state.open = column;
+      stopAiming();
+      render(); draw();
+    });
+
+    const aimBtn = node.querySelector('[data-act=aim]');
+    if (aimBtn) aimBtn.addEventListener('click', event => {
+      event.stopPropagation();
+      state.open = column;
+      state.adding = false;
+      render(); draw();
+      aim(column, false);                   // render() 會重建，旗標要在之後設
+    });
+
+    node.querySelectorAll('[data-part]').forEach(input => {
+      input.addEventListener('change', () => {
+        state.fields[column].parts[+input.dataset.part].suffix = input.value;
+      });
+    });
+    node.querySelectorAll('[data-drop]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        state.fields[column].parts.splice(+button.dataset.drop, 1);
+        render(); draw();
+      });
+    });
+
+    const more = node.querySelector('[data-act=more]');
+    if (more) more.addEventListener('click', event => {
+      event.stopPropagation();
+      state.open = column;
+      state.adding = true;          // 框好之後要接在 parts 後面，不是取代主框
+      render(); draw();
+      aim(column, true);
+    });
+
+    const clear = node.querySelector('[data-act=clear]');
+    if (clear) clear.addEventListener('click', event => {
+      event.stopPropagation();
+      delete state.fields[column];
+      stopAiming();
+      render(); draw();
+    });
+  });
+
+  refreshNotes();
+}
+
+function refreshNotes(){
+  const missing = state.critical.filter(k => !state.fields[k]);
+  el('notes').innerHTML = missing.length
+    ? `<div class="note"><b>還缺必要欄位：</b>${missing.map(k =>
+         esc(state.columns[k])).join('、')}<br>`
+      + '這三欄錯了或沒有，RPA 會拿著錯的資料去查別人的房子，'
+      + '而且從輸出的表格上看不出來。</div>'
+    : '';
+}
+
+/* 在圖上拖曳框出範圍。只有按了「框選」才進入這個模式 ——
+   不然滑鼠隨便一劃就冒出一個欄位，很難用。 */
+let drag = null;
+el('overlay').addEventListener('mousedown', e => {
+  if (!state.aiming) return;
+  const r = el('overlay').getBoundingClientRect();
+  drag = {x:e.clientX - r.left, y:e.clientY - r.top};
+});
+el('overlay').addEventListener('mousemove', e => {
+  if (!drag) return;
+  const r = el('overlay').getBoundingClientRect();
+  drag.x2 = e.clientX - r.left; drag.y2 = e.clientY - r.top;
+  draw();
+  const g = el('overlay').getContext('2d');
+  g.setLineDash([4,3]); g.strokeStyle = '#8a3d3d'; g.lineWidth = 2;
+  g.strokeRect(Math.min(drag.x,drag.x2), Math.min(drag.y,drag.y2),
+               Math.abs(drag.x2-drag.x), Math.abs(drag.y2-drag.y));
+});
+window.addEventListener('mouseup', () => {
+  if (!drag || drag.x2 === undefined){ drag = null; return; }
+  const w = Math.abs(drag.x2 - drag.x), h = Math.abs(drag.y2 - drag.y);
+  const column = state.aiming;
+  if (w > 8 && h > 8 && column){
+    const box = [toReal(Math.min(drag.x,drag.x2)), toReal(Math.min(drag.y,drag.y2)),
+                 toReal(w), toReal(h)];
+    const old = state.fields[column];
+    if (state.adding && old){
+      old.parts = old.parts || [];
+      old.parts.push({box: box, suffix: ''});
+      stopAiming();
+      say(`「${state.columns[column]}」多了一格，記得填後綴`, 'ok');
+      render(); drag = null; draw();
+      return;
+    }
+    state.fields[column] = {
+      id: old ? old.id : 'f_' + column,
+      name: old ? old.name : state.columns[column],
+      column: column,
+      kind: old ? old.kind : (KIND_OF[column] || 'text'),
+      box: box,
+      page: role(),
+      mode: old ? old.mode : 'fixed',
+      suffix: old ? (old.suffix || '') : '',
+      label: old ? (old.label || '') : '',
+      parts: old ? (old.parts || []) : [],
+      anchor_text: old ? old.anchor_text : '',
+      anchor_index: old ? old.anchor_index : 1,
+      required: state.critical.includes(column),
+    };
+    stopAiming();
+    say(`已框選「${state.columns[column]}」`, 'ok');
+    render();
+  }
+  drag = null; draw();
+});
+window.addEventListener('keydown', e => { if (e.key === 'Escape') { stopAiming(); draw(); } });
+
+el('code').addEventListener('change', e => selectCode(e.target.value));
+el('view').addEventListener('change', e => {
+  stopAiming();
+  showView(+e.target.value);
+  render();
+});
+el('save').addEventListener('click', async () => {
+  const missing = state.critical.filter(k => !state.fields[k]);
+  if (missing.length){
+    say('還缺必要欄位：' + missing.map(k => state.columns[k]).join('、'), 'err');
+    return;
+  }
+  say('儲存中…');
+  const res = await fetch(api('api/template?code=' + encodeURIComponent(state.code)),
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({fields: Object.values(state.fields)})});
+  const out = await res.json();
+  if (out.ok) say('已儲存 ' + out.count + ' 個欄位', 'ok');
+  else say(out.error, 'err');
+});
+window.addEventListener('resize', () => { sizeOverlay(); draw(); });
+loadCodes();
+</script>
+</body>
+</html>

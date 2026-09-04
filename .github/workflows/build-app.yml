@@ -1,0 +1,156 @@
+name: build-app
+
+# 把正式程式打包成 Windows 綠色版並發布。
+#
+# 用 onedir 不用 onefile：onefile 每次啟動都要把上百 MB 解壓到暫存資料夾，
+# 開啟明顯變慢；環境探測確認過兩種都能執行，所以選快的那個。
+on:
+  push:
+    branches: ['main', 'claude/**']
+    paths:
+      - 'app.py'
+      - 'pipeline/**'
+      - 'tools/**'
+      - 'editor/**'
+      - 'data/**'
+      - '說明.txt'
+      - 'requirements.txt'
+      - '.github/workflows/build-app.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 一次只跑一個。連續推好幾次的時候，兩個建置會同時去動同一個 Release ——
+# 一個正在刪、另一個正在建，就出現 HTTP 403 建置失敗，而且中間那段時間
+# 下載連結是 404。舊的直接取消，反正只有最新那一版有意義。
+concurrency:
+  group: build-app
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安裝套件
+        shell: pwsh
+        run: |
+          # 預設只有最後一個指令的結束碼算數，中間的 pip 裝失敗會被吃掉
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.15.0 pyinstaller-hooks-contrib
+
+      - name: 自我檢查
+        shell: pwsh
+        run: |
+          # 先跑過再打包。有一次改動把 summarise() 連帶刪掉，每個模組
+          # 單獨 import 都正常，只有使用者按下「轉換」才會炸 ——
+          # 壞掉的版本照樣發布出去了。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          # runner 的主控台是 cp1252，不指定的話印中文就炸
+          $env:PYTHONIOENCODING = 'utf-8'
+          $env:PYTHONWARNINGS = 'error::SyntaxWarning'
+          python tools/selftest.py
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          # 版本編號要跟著程式走 —— 診斷報告靠它才知道使用者手上跑的是哪一版
+          "$env:GITHUB_SHA".Substring(0,7) | Out-File -Encoding utf8 -NoNewline version.txt
+          pyinstaller --onedir --name 紙本轉excel `
+            --collect-all rapidocr_onnxruntime `
+            --collect-all onnxruntime `
+            --collect-all cv2 `
+            --collect-all numpy `
+            --collect-all pymupdf `
+            --add-data "editor;editor" `
+            --add-data "data;data" `
+            --add-data "version.txt;." `
+            --hidden-import tools.review `
+            --hidden-import tools.template_editor `
+            app.py
+          Copy-Item 說明.txt dist\紙本轉excel\
+
+      - name: 檢查打包內容
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'dist\紙本轉excel'
+          foreach ($item in @('紙本轉excel.exe', '說明.txt', '_internal\version.txt',
+                              '_internal\editor\page.html', '_internal\editor\review.html',
+                              '_internal\data\roads-三峽-鶯歌.txt',
+                              '_internal\data\sections-三峽-鶯歌.txt',
+                              '_internal\data\簡繁對照.txt',
+                              '_internal\data\易混字.txt',
+                              '_internal\data\公文文號.txt')) {
+              if (-not (Test-Path (Join-Path $root $item))) { throw "打包後少了 $item" }
+          }
+          # 指名要哪三個模型。只數 *.onnx 的話會把 onnxruntime 自帶的測試模型
+          # (logreg_iris、mul_1、sigmoid) 算進去，OCR 模型漏收也照樣通過。
+          foreach ($model in @('ch_PP-OCRv4_det_infer.onnx',
+                               'ch_PP-OCRv4_rec_infer.onnx',
+                               'ch_ppocr_mobile_v2.0_cls_infer.onnx')) {
+              $found = Get-ChildItem -Recurse $root -Filter $model
+              if (-not $found) { throw "OCR 模型 $model 沒有包進去" }
+              Write-Host ("   {0}  {1:N1} MB" -f $found[0].Name, ($found[0].Length/1MB))
+          }
+          $size = (Get-ChildItem -Recurse $root | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("整包大小 {0:N0} MB" -f $size)
+
+      - name: 打包成 zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          # 檔名用純英數 —— GitHub 的 Release 附件會把非 ASCII 濾掉，
+          # 「紙本轉excel.zip」上傳後會變成「excel.zip」，看起來像壞掉的檔案。
+          Compress-Archive -Path dist\紙本轉excel -DestinationPath release\paper2excel.zip
+          Get-ChildItem release | ForEach-Object {
+              Write-Host ("{0}  {1:N0} MB" -f $_.Name, ($_.Length/1MB)) }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: release/
+          retention-days: 30
+
+      - name: 發布 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 原本是先 delete 再 create。那中間有一段時間 Release 不存在，
+          # 使用者剛好在那時候點下載連結就是 404 —— 看起來像「又沒有連結」。
+          # 改成就地覆蓋附件，連結任何時候都指得到東西。
+          $exists = gh release view app-latest --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create app-latest release\paper2excel.zip `
+                --repo $env:GITHUB_REPOSITORY `
+                --target $env:GITHUB_SHA `
+                --title "紙本轉 Excel" `
+                --notes-file 說明.txt
+          } else {
+              gh release upload app-latest release\paper2excel.zip --clobber `
+                --repo $env:GITHUB_REPOSITORY
+              gh release edit app-latest --repo $env:GITHUB_REPOSITORY `
+                --target $env:GITHUB_SHA `
+                --title "紙本轉 Excel" `
+                --notes-file 說明.txt
+          }
+
+          # 確認發布出去的真的是這一版，不是上一版留下來的
+          $head = gh release view app-latest --repo $env:GITHUB_REPOSITORY --json targetCommitish -q .targetCommitish
+          if ($head -ne $env:GITHUB_SHA) {
+              throw "Release 指向 $head，不是這次的 $env:GITHUB_SHA"
+          }
+          Write-Host "Release 已更新到 $head"
