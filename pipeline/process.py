@@ -222,8 +222,12 @@ class Converter:
                 "value": diagnose.mask(value),
                 "problem": diagnose.mask_problem(record.problems.get(column, "")),
                 "cells": how.get("格數", 0),
+                # **白名單，不是黑名單。** 只有列在這裡的讀法才會進報告 ——
+                # 新增一種讀法時如果忘了加，報告會少一欄（看得出來），
+                # 而不是把沒遮罩過的東西漏出去（看不出來）。
                 "readings": {name: diagnose.mask(how.get(name, ""))
-                             for name in ("整行", "照格子", "逐格", "逐空白", "採用")
+                             for name in ("整行", "照格子", "逐格", "逐空白",
+                                          "關鍵字", "整頁找", "採用")
                              if name in how},
             })
         return {

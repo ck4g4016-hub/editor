@@ -31,9 +31,9 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import fields as fieldmod, resources  # noqa: E402
-from pipeline import layout, render  # noqa: E402
+from pipeline import fields as fieldmod, layout, render, resources  # noqa: E402
 from pipeline.process import CRITICAL  # noqa: E402
+from tools import localserver  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = resources.path("editor", "page.html")
@@ -157,7 +157,7 @@ class Workspace:
         }
 
 
-def make_handler(workspace):
+def make_handler(workspace, guard):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, mime):
             self.send_response(code)
@@ -172,6 +172,10 @@ def make_handler(workspace):
                        "application/json; charset=utf-8")
 
         def do_GET(self):  # noqa: N802
+            refused = guard.check(self)
+            if refused:
+                localserver.deny(self, *refused)
+                return
             route = urlparse(self.path)
             query = parse_qs(route.query)
 
@@ -181,10 +185,17 @@ def make_handler(workspace):
             elif route.path == "/api/codes":
                 self._json(workspace.codes())
             elif route.path == "/api/template":
-                self._json(workspace.describe(query.get("code", [""])[0]))
+                code = localserver.safe_code(query.get("code", [""])[0])
+                if code is None:
+                    self._send(400, b"bad code", "text/plain")
+                    return
+                self._json(workspace.describe(code))
             elif route.path == "/api/image":
-                body, _ = workspace.png(query.get("code", [""])[0],
-                                        int(query.get("view", ["0"])[0]))
+                code = localserver.safe_code(query.get("code", [""])[0])
+                if code is None:
+                    self._send(400, b"bad code", "text/plain")
+                    return
+                body, _ = workspace.png(code, int(query.get("view", ["0"])[0]))
                 if body is None:
                     self._send(404, b"no sample for this form", "text/plain")
                 else:
@@ -193,6 +204,10 @@ def make_handler(workspace):
                 self._send(404, b"not found", "text/plain")
 
         def do_POST(self):  # noqa: N802
+            refused = guard.check(self, write=True)
+            if refused:
+                localserver.deny(self, *refused)
+                return
             route = urlparse(self.path)
             if route.path != "/api/template":
                 self._send(404, b"not found", "text/plain")
@@ -201,7 +216,9 @@ def make_handler(workspace):
             # 「Failed to fetch」—— 那句話什麼線索都沒有。寧可回一份
             # traceback 讓人直接看到是哪一行。
             try:
-                code = parse_qs(route.query).get("code", [""])[0]
+                code = localserver.safe_code(parse_qs(route.query).get("code", [""])[0])
+                if code is None:
+                    raise ValueError("樣板代號只能是英數字、底線與減號")
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 items = [fieldmod.Field.from_dict(item)
@@ -257,8 +274,11 @@ def main():
     args = parser.parse_args()
 
     workspace = Workspace(args.store, collect(args.samples))
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(workspace))
-    url = "http://127.0.0.1:%d/" % server.server_address[1]
+    guard = localserver.Guard()
+    server = ThreadingHTTPServer(("127.0.0.1", args.port),
+                                 make_handler(workspace, guard))
+    guard.port = server.server_address[1]
+    url = guard.url()
 
     print()
     print("樣板編輯器已啟動：%s" % url)

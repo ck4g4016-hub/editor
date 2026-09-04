@@ -867,6 +867,11 @@ def check():
     if "00368000" not in kept:
         problems.append("不丟數字時應該連建號一起讀到，得到 %r" % kept)
 
+    # 本機小網頁伺服器的三道防護，真的開一台起來打打看。
+    # 複核畫面上有姓名、身分證、門牌，這幾道漏一道就是個資外洩。
+    problems.extend(_server_guard())
+    problems.extend(_offline())
+
     for label, run, want in cases:
         try:
             got = run()
@@ -876,6 +881,196 @@ def check():
         if got != want:
             problems.append("%s 得到 %r，應該是 %r" % (label, got, want))
 
+    return problems
+
+
+def _server_guard():
+    """實際開一台伺服器，用各種不合法的請求打它，確認都被擋下來。
+
+    這幾條規則很容易在改別的東西時被弄壞，而壞掉之後**畫面照樣正常**——
+    只有攻擊者知道。所以一定要有自動檢查，不能靠記得。
+    """
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from tools import localserver
+
+    problems = []
+
+    guard = localserver.Guard()
+
+    from http.server import BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        def _run(self, write):
+            refused = guard.check(self, write=write)
+            if refused:
+                localserver.deny(self, *refused)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def do_GET(self):       # noqa: N802
+            self._run(False)
+
+        def do_POST(self):      # noqa: N802
+            self._run(True)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    guard.port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host = "127.0.0.1:%d" % guard.port
+        good = "http://127.0.0.1:%d" % guard.port
+
+        def call(method, path, headers=None, body=None):
+            conn = http.client.HTTPConnection("127.0.0.1", guard.port, timeout=5)
+            try:
+                conn.request(method, path, body=body, headers=headers or {})
+                return conn.getresponse().status
+            finally:
+                conn.close()
+
+        checks = [
+            ("帶著權杖的一般請求", 200,
+             call("GET", "/?k=" + guard.token, {"Host": host})),
+            ("沒帶權杖", 403, call("GET", "/", {"Host": host})),
+            ("權杖是錯的", 403, call("GET", "/?k=wrong", {"Host": host})),
+            ("Host 是別的網域（DNS rebinding）", 403,
+             call("GET", "/?k=" + guard.token, {"Host": "evil.example.com"})),
+            ("跨來源的請求", 403,
+             call("GET", "/?k=" + guard.token,
+                  {"Host": host, "Origin": "http://evil.example.com"})),
+            ("同來源的請求", 200,
+             call("GET", "/?k=" + guard.token, {"Host": host, "Origin": good})),
+            ("表單送出的 POST（CSRF）", 415,
+             call("POST", "/?k=" + guard.token,
+                  {"Host": host, "Content-Type": "text/plain",
+                   "Content-Length": "2"}, b"{}")),
+            ("正常的 POST", 200,
+             call("POST", "/?k=" + guard.token,
+                  {"Host": host, "Content-Type": "application/json",
+                   "Content-Length": "2"}, b"{}")),
+        ]
+        for label, want, got in checks:
+            if got != want:
+                problems.append("伺服器防護：%s 回了 %d，應該是 %d" % (label, got, want))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # 樣板代號會被拿去組資料夾路徑，跳出去的一律擋掉
+    for bad in ("../x", "a/b", "..", "a\\b", "", "x" * 20, "A B"):
+        if localserver.safe_code(bad) is not None:
+            problems.append("樣板代號 %r 應該被擋下來" % bad)
+    for good_code in ("A", "F", "form-1", "a_2"):
+        if localserver.safe_code(good_code) != good_code:
+            problems.append("樣板代號 %r 不該被擋" % good_code)
+    return problems
+
+
+# 打包時會進到執行檔裡的程式碼。probe/ 是另外的診斷工具，不打包。
+SHIPPED = ("app.py", "pipeline", "editor", "tools/review.py",
+           "tools/template_editor.py", "tools/localserver.py", "tools/newform.py")
+
+# 會對外連線的模組。socket 這一項連 localserver 自己都不例外 ——
+# 它只用 secrets，真正開伺服器的是 app.py 用 http.server（那是本機的）。
+NETWORK = ("socket", "urllib.request", "urllib.error", "requests", "httpx",
+           "ftplib", "smtplib", "telnetlib", "poplib", "imaplib", "xmlrpc",
+           "http.client", "websocket", "aiohttp", "boto3", "paramiko")
+
+
+def _offline():
+    """離線是這支程式的硬性需求，所以要有自動檢查盯著。
+
+    承辦人的顧慮很具體：這是民眾的個資，不能有任何一個位元流到機關外面。
+    「我看過程式碼、沒有連線」不是保證 —— 下一次改動就可能加進來，
+    而且加進來的人不會知道這條規則。所以把它寫成檢查。
+
+    兩層：
+      靜態  出貨的程式碼裡不可以出現對外連線的模組
+      動態  把 socket 攔下來，載入模組、跑一次真正的辨識，看有沒有人想連線
+    """
+    import ast
+    import socket
+
+    import cv2
+    import numpy as np
+
+    from pipeline import resources
+
+    problems = []
+    root = resources.base_dir()
+
+    # ---- 靜態：出貨的程式碼有沒有 import 對外連線的東西 ----
+    targets = []
+    for item in SHIPPED:
+        full = os.path.join(root, item)
+        if os.path.isdir(full):
+            for folder, _dirs, names in os.walk(full):
+                targets += [os.path.join(folder, n) for n in names if n.endswith(".py")]
+        elif full.endswith(".py") and os.path.isfile(full):
+            targets.append(full)
+
+    for path in targets:
+        with open(path, encoding="utf-8") as handle:
+            try:
+                tree = ast.parse(handle.read(), filename=path)
+            except SyntaxError as error:
+                problems.append("%s 語法有問題：%s" % (path, error))
+                continue
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                for banned in NETWORK:
+                    if name == banned or name.startswith(banned + "."):
+                        problems.append(
+                            "%s 第 %d 行 import 了 %s —— 這支程式必須完全離線"
+                            % (os.path.relpath(path, root), node.lineno, name))
+
+    # ---- 動態：真的攔一次 ----
+    allowed = {"127.0.0.1", "::1", "localhost", None}
+    tried = []
+    real_connect = socket.socket.connect
+    real_getaddrinfo = socket.getaddrinfo
+
+    def watched_connect(self, address):
+        host = address[0] if isinstance(address, tuple) else address
+        if host not in allowed:
+            tried.append(str(host))
+        return real_connect(self, address)
+
+    def watched_getaddrinfo(host, *args, **kwargs):
+        if host not in allowed:
+            tried.append(str(host))
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    socket.socket.connect = watched_connect
+    socket.getaddrinfo = watched_getaddrinfo
+    try:
+        sheet = np.full((160, 700, 3), 255, np.uint8)
+        cv2.putText(sheet, "OFFLINE CHECK 1155698196", (20, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
+        from pipeline import pagetext as _pagetext
+
+        _pagetext.read_image(sheet)
+    finally:
+        socket.socket.connect = real_connect
+        socket.getaddrinfo = real_getaddrinfo
+
+    if tried:
+        problems.append("載入模型與辨識時試圖連線到：%s" % "、".join(sorted(set(tried))))
     return problems
 
 

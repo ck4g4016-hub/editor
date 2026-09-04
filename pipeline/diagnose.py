@@ -277,6 +277,8 @@ def build(journal, notes=None, version=None):
     out.append("  逐格    身分證專用：一格兩種讀法，再用檢查碼挑出唯一解。")
     out.append("          「?」代表那一格什麼都沒讀到，「|」是格子的分界。")
     out.append("  逐空白  沒有格線時，照墨跡之間的空白切（只有身分證會做）")
+    out.append("  關鍵字  電腦產製的表格：在整頁上找印刷標籤，再讀它那一格")
+    out.append("  整頁找  公文文號專用：整頁上找十碼、開頭是民國年的數字")
     out.append("")
     out.append("**格數是 0 就代表沒找到印刷格線**，那一欄只有整行讀的結果。")
     out.append("一字一格的欄位如果格數是 0，問題就出在找格線那一步，不是 OCR。")
@@ -294,10 +296,12 @@ def build(journal, notes=None, version=None):
                          readings.get("照格子") or "－",
                          readings.get("逐格") or "－",
                          readings.get("逐空白") or "－",
+                         readings.get("關鍵字") or "－",
+                         readings.get("整頁找") or "－",
                          readings.get("採用") or "（空）"])
     if rows:
         out.extend(_table(["件", "欄位", "格數", "整行", "照格子", "逐格", "逐空白",
-                           "採用"], rows))
+                           "關鍵字", "整頁找", "採用"], rows))
     else:
         out.append("沒有資料。")
 

@@ -103,6 +103,13 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
    現在跟 API 拿，只有一份。 */
 let KIND_OF = {};
 
+// 每次啟動產生的權杖，從網址帶進來。所有 API 都要帶著它 ——
+// 本機的其他行程雖然連得上這個埠，但不知道權杖就什麼都拿不到。
+const TOKEN = new URLSearchParams(location.search).get('k') || '';
+function api(path){
+  return path + (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN);
+}
+
 let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[], adding:false,
              fields:{},          // column -> 欄位定義
              open:null,          // 展開中的那一欄
@@ -112,7 +119,7 @@ function say(text, cls){ el('msg').textContent = text; el('msg').className = cls
 const role = () => (state.views[state.view] || {}).role || 'front';
 
 async function loadCodes(){
-  const codes = await (await fetch('api/codes')).json();
+  const codes = await (await fetch(api('api/codes'))).json();
   el('code').innerHTML = codes.map(c =>
       `<option value="${esc(c.code)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
   if (codes.length) selectCode(codes[0].code);
@@ -120,7 +127,7 @@ async function loadCodes(){
 }
 
 async function selectCode(code){
-  const data = await (await fetch('api/template?code=' + encodeURIComponent(code))).json();
+  const data = await (await fetch(api('api/template?code=' + encodeURIComponent(code)))).json();
   state.code = code;
   state.scale = data.scale;
   state.columns = data.columns;
@@ -456,7 +463,7 @@ el('save').addEventListener('click', async () => {
     return;
   }
   say('儲存中…');
-  const res = await fetch('api/template?code=' + encodeURIComponent(state.code),
+  const res = await fetch(api('api/template?code=' + encodeURIComponent(state.code)),
       {method:'POST', headers:{'Content-Type':'application/json'},
        body: JSON.stringify({fields: Object.values(state.fields)})});
   const out = await res.json();

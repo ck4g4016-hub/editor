@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import diagnose, fields as fieldmod, resources  # noqa: E402
+from tools import localserver  # noqa: E402
 from pipeline import output, process  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,7 +36,7 @@ PAGE = resources.path("editor", "review.html")
 ORDER = ["address", "id_number", "doc_number", "district", "name", "section", "land_number"]
 
 
-def make_handler(state):
+def make_handler(state, guard):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, mime):
             self.send_response(code)
@@ -50,6 +51,10 @@ def make_handler(state):
                        "application/json; charset=utf-8")
 
         def do_GET(self):  # noqa: N802
+            refused = guard.check(self)
+            if refused:
+                localserver.deny(self, *refused)
+                return
             route = urlparse(self.path)
             query = parse_qs(route.query)
 
@@ -70,6 +75,10 @@ def make_handler(state):
                 self._send(404, b"not found", "text/plain")
 
         def do_POST(self):  # noqa: N802
+            refused = guard.check(self, write=True)
+            if refused:
+                localserver.deny(self, *refused)
+                return
             route = urlparse(self.path).path
             if route not in ("/api/export", "/api/diagnose"):
                 self._send(404, b"not found", "text/plain")
@@ -212,8 +221,11 @@ def main():
 
     state = {"records": records, "unresolved": unresolved, "out": args.out,
              "journal": converter.journal, "unknown": converter.unknown}
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(state))
-    url = "http://127.0.0.1:%d/" % server.server_address[1]
+    guard = localserver.Guard()
+    server = ThreadingHTTPServer(("127.0.0.1", args.port),
+                                 make_handler(state, guard))
+    guard.port = server.server_address[1]
+    url = guard.url()
     print()
     print("複核介面已啟動：%s" % url)
     print("只綁 127.0.0.1，不對外開放。按 Ctrl+C 結束。")

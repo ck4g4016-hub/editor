@@ -20,8 +20,20 @@
 案件編號太長、收件時間是 14 碼、電話 0910118290 剛好也是十碼但中間三碼不對。
 四件的公文文號全部讀到，信心都是 1.00，沒有一件誤判。
 
-機關代號每年會換，所以放在 data/公文文號.txt 讓承辦人自己改；
-萬一忘了改，還有「開頭三碼是合理的民國年」這條退路，只是會標記起來讓人看。
+**機關代號不能當成必要條件。** 承辦人指出它會隨著流水號用完而往上跳：
+今年從 5670001 開始，四碼用完變成 5680001，再用完變成 5690001，明年又是
+另一組。寫死一個值的話，跳號那天全部的件就通不過了，而且沒有人會知道
+是為什麼 —— 那種「設定過期造成的沉默失效」比讀錯還難查。
+
+所以改成**逐層縮小**，機關代號只在最後當破平手用：
+
+  1. 十碼、開頭三碼是合理的民國年
+  2. 還不只一個 → 留下年份跟這一頁上收文日期同年的
+  3. 還不只一個 → 留下中間三碼符合 data/公文文號.txt 的
+  4. 剩下剛好一個就用它；還是不只一個就標記起來，不猜
+
+實測那四頁在第 1 層就只剩一個了，根本用不到設定檔 —— 換句話說，
+機關代號跳號、跨年度，程式都不必改，設定檔也不必動。
 """
 
 import re
@@ -39,17 +51,28 @@ _TEN = re.compile(r"(?<!\d)\d{10}(?!\d)")
 
 
 def agency_codes():
-    """機關當年度被分到的那三碼。讀 data/公文文號.txt，一行一個。"""
-    codes = []
+    """機關代號那三碼。讀 data/公文文號.txt。
+
+    一行一個，可以寫單一個值（569）或一段範圍（567-570）——
+    代號會隨流水號用完往上跳，寫範圍就不必每次跳號都來改。
+    這份設定是**選用的**：整頁上只有一個候選時根本用不到它。
+    """
+    codes = set()
     try:
         with open(resources.path("data", "公文文號.txt"), encoding="utf-8") as handle:
             for line in handle:
                 line = line.strip()
-                if line and not line.startswith("#") and re.fullmatch(r"\d{3}", line):
-                    codes.append(line)
+                if not line or line.startswith("#"):
+                    continue
+                span = re.fullmatch(r"(\d{3})\s*[-~－]\s*(\d{3})", line)
+                if span:
+                    low, high = sorted((int(span.group(1)), int(span.group(2))))
+                    codes.update("%03d" % n for n in range(low, high + 1))
+                elif re.fullmatch(r"\d{3}", line):
+                    codes.add(line)
     except OSError:
         pass
-    return codes
+    return sorted(codes)
 
 
 def _plausible(value):
@@ -57,13 +80,26 @@ def _plausible(value):
     return len(value) == 10 and YEAR_LOW <= int(value[:3]) <= YEAR_HIGH
 
 
+# 收文戳上的日期，例如 115/08/18。它跟文號印在一起，年份一定同一年。
+_ROC_DATE = re.compile(r"(?<!\d)(1\d{2})\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{1,2}(?!\d)")
+
+
+def stamp_years(texts):
+    """整頁上出現過的民國年（從收文日期上抓）。"""
+    years = set()
+    for text in texts:
+        for year in _ROC_DATE.findall(validate.to_halfwidth(text or "")):
+            if YEAR_LOW <= int(year) <= YEAR_HIGH:
+                years.add(year)
+    return years
+
+
 def candidates(texts):
-    """從整頁的辨識結果裡挑出可能的公文文號。回傳 [(文號, 是否符合機關代號)]。
+    """從整頁的辨識結果裡挑出可能的公文文號。回傳 [文號]。
 
     先把英文字母換回形狀相近的數字 —— 手寫沒有這個問題，但條碼下面那行
     印得很小，8 讀成 B、0 讀成 O 都發生過。
     """
-    codes = set(agency_codes())
     found, seen = [], set()
     for text in texts:
         cleaned = "".join(
@@ -76,33 +112,41 @@ def candidates(texts):
             if not _plausible(run) or run in seen:
                 continue
             seen.add(run)
-            found.append((run, run[3:6] in codes))
+            found.append(run)
     return found
 
 
 def pick(texts):
     """從整頁的辨識結果裡決定公文文號。回傳 (文號, 提醒)。
 
-    找不到就回 (None, 原因)，讓呼叫端退回框選的結果。
+    逐層縮小，每一層都先問「剩下剛好一個了嗎」。機關代號排在最後，
+    因為它會跳號、會跨年度換 —— 把會過期的東西放在必要條件上，
+    設定一過期就整批沉默失效。
     """
     found = candidates(texts)
     if not found:
         return None, "整頁上找不到十碼的公文文號"
+    if len(found) == 1:
+        return found[0], None
 
-    matched = [value for value, ok in found if ok]
-    if len(matched) == 1:
-        return matched[0], None
-    if len(matched) > 1:
-        return None, ("整頁上有 %d 個都符合機關代號，分不出是哪一個" % len(matched))
+    years = stamp_years(texts)
+    if years:
+        same = [value for value in found if value[:3] in years]
+        if len(same) == 1:
+            return same[0], None
+        if same:
+            found = same
 
-    # 沒有一個符合機關代號。可能是換年度了（代號每年會換），
-    # 也可能根本抓錯。值照樣給，但一定要標起來 —— 這是猜的。
-    others = [value for value, _ok in found]
-    if len(others) == 1:
-        return others[0], ("「%s」的中間三碼不在 data/公文文號.txt 裡，"
-                           "如果機關代號換了請去改，否則請確認這個號碼"
-                           % others[0])
-    return None, "整頁上有 %d 個十碼數字，中間三碼都對不上機關代號" % len(others)
+    codes = set(agency_codes())
+    if codes:
+        matched = [value for value in found if value[3:6] in codes]
+        if len(matched) == 1:
+            return matched[0], None
+        if matched:
+            found = matched
+
+    return None, ("整頁上有 %d 個看起來都像公文文號的十碼數字，分不出是哪一個"
+                  % len(found))
 
 
 def read_page(page, rotation=0, dpi=SCAN_DPI):

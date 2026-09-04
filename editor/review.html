@@ -117,6 +117,13 @@
   </div>
 </dialog>
 <script>
+// 每次啟動產生的權杖，從網址帶進來。所有 API 都要帶著它 ——
+// 本機的其他行程雖然連得上這個埠，但不知道權杖就什麼都拿不到。
+const TOKEN = new URLSearchParams(location.search).get('k') || '';
+function api(path){
+  return path + (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN);
+}
+
 const el = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -135,7 +142,7 @@ const DEAD = '複核程式已經不在了，所以這一頁失效了。\n\n'
 
 
 async function load(){
-  data = await (await fetch('api/records')).json();
+  data = await (await fetch(api('api/records'))).json();
   render();
 }
 
@@ -169,7 +176,7 @@ function render(){
     const cells = data.columns.map(c => {
       const flag = r.flags[c.key];
       const crop = r.crops.includes(c.key)
-        ? `<img src="api/crop?record=${i}&column=${c.key}" alt=""
+        ? `<img src="${api(`api/crop?record=${i}&column=${c.key}`)}" alt=""
                 data-zoom="${esc(c.name)}">
            <div class="zoomhint">點圖片可放大</div>` : '';
       const raw = (r.raw[c.key] && r.raw[c.key] !== r.values[c.key])
@@ -242,7 +249,7 @@ function idOK(v){
 el('report').addEventListener('click', async () => {
   el('msg').textContent = '整理中…'; el('msg').className = '';
   try {
-    const res = await fetch('api/diagnose', {method:'POST',
+    const res = await fetch(api('api/diagnose'), {method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({notes: {overall: el('overall-note').value, records: notes}})});
     const out = await res.json();
@@ -283,7 +290,7 @@ el('shot').addEventListener('click', event => {
 el('export').addEventListener('click', async () => {
   el('msg').textContent = '產生中…'; el('msg').className = '';
   try {
-    const res = await fetch('api/export', {method:'POST',
+    const res = await fetch(api('api/export'), {method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({records: data.records.map(r => r.values)})});
     const out = await res.json();

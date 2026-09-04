@@ -30,6 +30,7 @@ import webbrowser
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pipeline import resources  # noqa: E402
+from tools import localserver  # noqa: E402
 
 WORKSPACE = resources.workspace()
 STORE = os.path.join(WORKSPACE, "樣板")
@@ -412,8 +413,11 @@ def run_editor():
                 "樣板資料夾是空的，樣板編輯器沒有東西可以編。\n\n"
                 "請先按「新增表格」，把每一種表格建立起來，再回來框欄位。")
         return
-    server = ThreadingHTTPServer(("127.0.0.1", 0), template_editor.make_handler(workspace))
-    serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "樣板編輯器",
+    guard = localserver.Guard()
+    server = ThreadingHTTPServer(("127.0.0.1", 0),
+                                 template_editor.make_handler(workspace, guard))
+    guard.port = server.server_address[1]
+    serve(server, guard.url(), "樣板編輯器",
           "每一種表格框完欄位都要按「儲存」，\n沒存的話關掉就沒了。",
           finished=lambda: workspace.saved, pending="儲存")
 
@@ -486,8 +490,10 @@ def run_convert():
 
     state = {"records": records, "unresolved": unresolved, "out": OUTPUT,
              "journal": converter.journal, "unknown": converter.unknown}
-    server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state))
-    serve(server, "http://127.0.0.1:%d/" % server.server_address[1], "複核介面",
+    guard = localserver.Guard()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state, guard))
+    guard.port = server.server_address[1]
+    serve(server, guard.url(), "複核介面",
           "確認完要按「產生輸出檔」，\n檔案才會出現在「輸出」資料夾。"
           + ("\n（診斷報告已經先寫了一份在「輸出\\診斷」）" if early else ""),
           finished=lambda: state.get("exported"), pending="產生輸出檔")
