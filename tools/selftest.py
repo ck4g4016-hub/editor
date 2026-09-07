@@ -871,6 +871,7 @@ def check():
     # 複核畫面上有姓名、身分證、門牌，這幾道漏一道就是個資外洩。
     problems.extend(_server_guard())
     problems.extend(_offline())
+    problems.extend(_inner_sheet())
 
     for label, run, want in cases:
         try:
@@ -1071,6 +1072,62 @@ def _offline():
 
     if tried:
         problems.append("載入模型與辨識時試圖連線到：%s" % "、".join(sorted(set(tried))))
+    return problems
+
+
+def _inner_sheet():
+    """內網中繼檔的 A 欄放的是公文文號，不是流水號。
+
+    這一欄餵給內網腳本 2，而腳本 2 是**用欄位名稱取值**的，所以名稱一旦
+    改掉就可能拿到空值而且沒有任何錯誤訊息 —— 名稱要釘住，內容才是我們的事。
+    """
+    import tempfile
+
+    from openpyxl import load_workbook
+
+    from pipeline import output
+
+    problems = []
+    records = [
+        {"doc_number": "1155698196", "district": "鶯歌區",
+         "id_number": "A123456789", "address": "鳳鳴路9號", "name": "王大明"},
+        # 公文文號讀不到的那一件：留空，**不可以**退回流水號 ——
+        # 同一欄混兩種東西，從 Excel 上分不出哪一格是文號、哪一格是第幾列
+        {"doc_number": "", "district": "三峽區",
+         "id_number": "A223456780", "address": "民生街1號", "name": "李小華"},
+    ]
+    folder = tempfile.mkdtemp()
+    path = output.write_inner(records, os.path.join(folder, "HH1150907_01.xlsx"))
+    sheet = load_workbook(path).active
+
+    headers = [cell.value for cell in sheet[1]]
+    if headers != output.INNER_HEADERS:
+        problems.append("內網標題列變成 %r，腳本 2 靠名稱取值，不能動" % headers)
+    if headers and headers[0] != "序號":
+        problems.append("A 欄標題被改名了：%r" % headers[0])
+
+    first = sheet.cell(row=2, column=1).value
+    if first != "1155698196":
+        problems.append("內網 A 欄應該是公文文號，得到 %r" % first)
+    if not isinstance(first, str):
+        problems.append("公文文號要存成文字，得到 %s" % type(first).__name__)
+
+    second = sheet.cell(row=3, column=1).value
+    if second not in ("", None):
+        problems.append("讀不到公文文號時 A 欄應該留空，得到 %r" % second)
+
+    # 其餘欄位沒有被推移
+    if sheet.cell(row=2, column=2).value != "鶯歌區":
+        problems.append("B 欄不是行政區：%r" % sheet.cell(row=2, column=2).value)
+    if sheet.cell(row=2, column=4).value != "新北市鶯歌區鳳鳴路9號":
+        problems.append("D 欄完整地址不對：%r" % sheet.cell(row=2, column=4).value)
+
+    # 外網那份的「申請案號或事由」本來就放公文文號，兩份要一致
+    outer = output.write_outer(records, os.path.join(folder, "outer.xlsx"))
+    osheet = load_workbook(outer).active
+    if osheet.cell(row=2, column=3).value != "1155698196":
+        problems.append("外網 C 欄的公文文號不對：%r"
+                        % osheet.cell(row=2, column=3).value)
     return problems
 
 

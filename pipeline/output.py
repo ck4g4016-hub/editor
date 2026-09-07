@@ -38,6 +38,11 @@ OUTER_RPA_COLUMNS = 8
 
 # 內網中繼檔的欄位。前四個是腳本 0 原本產的（它的第 56~59 行），
 # 名稱必須一字不差，腳本 2 靠名稱取值。姓名是我們多加的，只給人核對用。
+#
+# **標題維持「序號」，不要改成「公文文號」。** 腳本 2 是用名稱取值的
+# （它的第 126 行 `District = firstRow.RawData("行政區")`），改掉名稱等於
+# 賭它沒有讀這一欄 —— 賭輸的話腳本會拿到空值，而且不會有任何錯誤訊息。
+# 裡面裝什麼是我們決定的，欄位叫什麼不是。
 INNER_HEADERS = ["序號", "行政區", "所有權人IDN", "完整地址", "姓名"]
 
 # 「完整地址」照腳本 0 的寫法要含縣市與行政區 —— 它的第 130 行
@@ -128,16 +133,26 @@ def write_inner(records, path):
         cell.fill = _HEADER_FILL
         cell.alignment = Alignment(horizontal="center")
 
-    for serial, record in enumerate(records, start=1):
+    for record in records:
         sheet.append([
-            serial,
+            # A 欄放公文文號，不是流水號。
+            #
+            # 腳本 0 的這一欄裝的本來就是**案件編號**（它的第 123 行
+            # `caseNum = "'" & Mid(...)`，前面還黏一個單引號逼 Excel 當文字），
+            # 只是我們的來源是紙本申請書、沒有那個編號，才先填流水號頂著。
+            # 現在公文文號整頁找得到了，就填它 —— 那是這一件在機關裡的身分。
+            #
+            # 讀不到的時候留空，**不要退回流水號**：同一欄混兩種東西，
+            # 從 Excel 上完全分不出哪一格是文號、哪一格只是第幾列。
+            # 公文文號是必要欄位，讀不到在複核畫面上就會被標記。
+            _text(record, "doc_number"),
             _text(record, "district"),
             _text(record, "id_number"),
             inner_address(record),
             _text(record, "name"),
         ])
 
-    for column, width in zip("ABCDE", (8, 10, 14, 40, 12)):
+    for column, width in zip("ABCDE", (14, 10, 14, 40, 12)):
         sheet.column_dimensions[column].width = width
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
