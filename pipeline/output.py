@@ -52,8 +52,8 @@ INNER_CITY = "新北市"
 
 # ── 戶政系統直接吃的地址清冊（YHQ101_addr）─────────────────────────
 #
-# 規格是從承辦人翻拍的 YHQ101_addr_Sample.xls 逆向出來的，**還沒實測匯入過**。
-# 每一條都標了是「看得到的事實」還是「猜的」，因為猜錯的代價是整批匯入失敗。
+# 規格來自承辦人提供的 YHQ101_addr_Sample.xls（假資料範例檔）。
+# 一開始是從翻拍照片逆向的，拿到原檔之後全部核對過 —— 現在沒有猜測成分了。
 #
 #   事實  沒有標題列，第 1 列就是資料
 #   事實  A=案號、B=縣市、C=鄉鎮市區、D=空、E=空、F=路以下的門牌
@@ -61,9 +61,10 @@ INNER_CITY = "新北市"
 #         （三段、六樓、地下二層）。A 欄的數字則是半形。
 #   事實  舊制省轄縣寫成「臺灣省苗栗縣」，直轄市就寫「臺北市」
 #   事實  .xls（相容模式），工作表叫 Sheet1，儲存格格式是文字
-#   猜的  D、E 是村里與鄰 —— 範例四列都空著，所以我們也留空
-#   猜的  檔名規則。範例叫 YHQ101_addr_Sample.xls，我們照 YHQ101_addr_ 開頭
-#   猜的  一次匯入的筆數上限，先沿用中繼檔那邊的 750
+#   事實  D 欄是村里、E 欄是鄰，兩欄都非必填，但**欄位要保留**
+#         （樣本檔 D1／E1 的儲存格註解原文就是「請保留此欄位」）
+#   事實  非直轄市的縣市要寫成「臺灣省」＋縣市（樣本檔 B4 的儲存格註解）
+#   事實  檔名必須是 upload1.xls —— 內網腳本用 GetBaseName = "upload1" 找檔
 HOUSEHOLD_CITY = "新北市"
 HOUSEHOLD_SHEET = "Sheet1"
 
@@ -186,8 +187,16 @@ def write_inner(records, path):
     return path
 
 
-def household_path(folder, serial=1, when=None):
-    return os.path.join(folder, "YHQ101_addr_%s_%02d.xls" % (roc_date(when), serial))
+def household_path(folder, when=None):
+    """檔名**只能叫 upload1.xls**。
+
+    內網腳本是這樣找檔的（它的第 76 行）：
+
+        If fso.GetBaseName(file.Name) = "upload1" Then
+
+    名字不對就整個跳過，而且不會有任何錯誤訊息 —— 畫面上看起來就像沒有資料。
+    """
+    return os.path.join(folder, "upload1.xls")
 
 
 def write_household(records, path):
@@ -248,5 +257,7 @@ def write_all(records, folder, when=None):
                for i in range(0, max(len(records), 1), INNER_BATCH_LIMIT)] or [[]]
     for serial, batch in enumerate(batches, start=1):
         written.append(write_inner(batch, inner_path(folder, serial, when)))
-        written.append(write_household(batch, household_path(folder, serial, when)))
+    # 戶政檔不分批。承辦人說一次最多 30 件，離匯入上限很遠；而且分批也沒有意義 ——
+    # 內網腳本一次只認一個叫 upload1 的檔，多產幾個它也只會用到其中一個。
+    written.append(write_household(records, household_path(folder, when)))
     return written
