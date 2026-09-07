@@ -50,6 +50,32 @@ INNER_HEADERS = ["序號", "行政區", "所有權人IDN", "完整地址", "姓�
 # 反推回去第 1~3 個字就是縣市。外網那份則相反，只留路街門牌。
 INNER_CITY = "新北市"
 
+# ── 戶政系統直接吃的地址清冊（YHQ101_addr）─────────────────────────
+#
+# 規格是從承辦人翻拍的 YHQ101_addr_Sample.xls 逆向出來的，**還沒實測匯入過**。
+# 每一條都標了是「看得到的事實」還是「猜的」，因為猜錯的代價是整批匯入失敗。
+#
+#   事實  沒有標題列，第 1 列就是資料
+#   事實  A=案號、B=縣市、C=鄉鎮市區、D=空、E=空、F=路以下的門牌
+#   事實  F 欄的巷弄號用**全形**阿拉伯數字（１巷２弄３號），段與樓層用中文數字
+#         （三段、六樓、地下二層）。A 欄的數字則是半形。
+#   事實  舊制省轄縣寫成「臺灣省苗栗縣」，直轄市就寫「臺北市」
+#   事實  .xls（相容模式），工作表叫 Sheet1，儲存格格式是文字
+#   猜的  D、E 是村里與鄰 —— 範例四列都空著，所以我們也留空
+#   猜的  檔名規則。範例叫 YHQ101_addr_Sample.xls，我們照 YHQ101_addr_ 開頭
+#   猜的  一次匯入的筆數上限，先沿用中繼檔那邊的 750
+HOUSEHOLD_CITY = "新北市"
+HOUSEHOLD_SHEET = "Sheet1"
+
+# 全形阿拉伯數字。範例檔的門牌欄是全形（１巷２弄３號），A 欄的案號是半形 ——
+# 這不是排版習慣，是同一個檔裡兩種寫法並存，所以應該是規格。
+_FULLWIDTH_DIGITS = {chr(0x30 + i): chr(0xFF10 + i) for i in range(10)}
+
+
+def to_fullwidth(text):
+    """把半形阿拉伯數字換成全形。只換數字，其餘原樣。"""
+    return "".join(_FULLWIDTH_DIGITS.get(ch, ch) for ch in text or "")
+
 _HEADER_FILL = PatternFill("solid", fgColor="EFE6D0")
 _RESERVED_FILL = PatternFill("solid", fgColor="F5F5F5")
 
@@ -160,15 +186,67 @@ def write_inner(records, path):
     return path
 
 
+def household_path(folder, serial=1, when=None):
+    return os.path.join(folder, "YHQ101_addr_%s_%02d.xls" % (roc_date(when), serial))
+
+
+def write_household(records, path):
+    """戶政系統的地址清冊（.xls）—— 給人直接匯入，不經過腳本 2。
+
+    **這一份還沒實測匯入過。** 它跟中繼檔並存，不是取代 —— 先拿它去試，
+    確認戶政系統吃得下去，再決定要不要停掉中繼檔那條路。
+
+    為什麼值得直接產：我們手上的縣市、行政區、門牌**本來就是分開的**，
+    而這個格式要的也正好是分開的三欄。中繼檔卻是把三段黏成一串，
+    腳本 2 再用 `Mid(address, 4, 3)` 從第 4~6 個字把行政區切回來 ——
+    黏起來再切開，中間那一刀只要遇到「臺灣省苗栗縣」這種長度不同的寫法就會切錯。
+    直接產等於把這一來一回省掉。
+
+    副檔名是 .xls 這件事順便解決了一個衝突：腳本 2 的 `GetTargetExcel` 只找
+    .xlsx（它的第 234 行 `GetExtensionName(...) = "xlsx"`），撿到第一個就
+    `Exit Function`。這一份是 .xls，所以跟中繼檔放在同一個資料夾也不會被它撿走。
+    """
+    import xlwt
+
+    book = xlwt.Workbook(encoding="utf-8")
+    sheet = book.add_sheet(HOUSEHOLD_SHEET)
+    # 儲存格格式設成文字。案號是身分不是數量，門牌裡的全形數字也不能被
+    # Excel 當成數字處理 —— 一被當成數字，全形就會被吃掉。
+    style = xlwt.easyxf(num_format_str="@")
+
+    for row, record in enumerate(records):
+        for column, value in enumerate((
+                _text(record, "doc_number"),        # A 案號
+                HOUSEHOLD_CITY,                     # B 縣市
+                _text(record, "district"),          # C 鄉鎮市區
+                "",                                 # D 村里（範例是空的）
+                "",                                 # E 鄰（範例是空的）
+                to_fullwidth(_text(record, "address")))):   # F 路以下的門牌
+            sheet.write(row, column, value, style)
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    book.save(path)
+    return path
+
+
 # 內網系統一次匯入的上限
 INNER_BATCH_LIMIT = 750
 
 
 def write_all(records, folder, when=None):
-    """兩個檔一起產。內網超過匯入上限就自動分批。"""
+    """三個檔一起產。超過匯入上限就自動分批。
+
+    外網    給 RPA 查調謄本
+    中繼檔  給內網腳本 2（現行、已經在跑的那條路）
+    戶政檔  直接給戶政系統匯入（**還沒實測過**，先並行，不取代中繼檔）
+
+    並行而不取代是刻意的：中繼檔那條路已經在跑，能用就別斷。新的那份猜錯了
+    也只是多一個沒人用的檔，損失是零；反過來換掉現行的那份，猜錯就是整批停擺。
+    """
     written = [write_outer(records, outer_path(folder, when))]
     batches = [records[i:i + INNER_BATCH_LIMIT]
                for i in range(0, max(len(records), 1), INNER_BATCH_LIMIT)] or [[]]
     for serial, batch in enumerate(batches, start=1):
         written.append(write_inner(batch, inner_path(folder, serial, when)))
+        written.append(write_household(batch, household_path(folder, serial, when)))
     return written

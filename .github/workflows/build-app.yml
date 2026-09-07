@@ -77,6 +77,7 @@ jobs:
             --add-data "editor;editor" `
             --add-data "data;data" `
             --add-data "version.txt;." `
+            --hidden-import xlwt `
             --hidden-import tools.review `
             --hidden-import tools.template_editor `
             app.py

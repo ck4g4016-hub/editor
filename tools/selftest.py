@@ -872,6 +872,7 @@ def check():
     problems.extend(_server_guard())
     problems.extend(_offline())
     problems.extend(_inner_sheet())
+    problems.extend(_household_sheet())
 
     for label, run, want in cases:
         try:
@@ -1128,6 +1129,64 @@ def _inner_sheet():
     if osheet.cell(row=2, column=3).value != "1155698196":
         problems.append("外網 C 欄的公文文號不對：%r"
                         % osheet.cell(row=2, column=3).value)
+    return problems
+
+
+def _household_sheet():
+    """戶政系統直接匯入用的地址清冊（.xls）。
+
+    規格是從承辦人翻拍的 YHQ101_addr_Sample.xls 逆向的，**還沒實測匯入過**，
+    所以這裡釘住的是「照片上看得到的事實」那幾條：沒有標題列、六個欄位的順序、
+    門牌的巷弄號是全形、真的是 .xls 而不是改副檔名的 .xlsx。
+    """
+    import tempfile
+
+    from pipeline import output
+
+    problems = []
+    try:
+        import xlrd
+    except ImportError:
+        xlrd = None
+
+    records = [
+        {"doc_number": "1155698196", "district": "鶯歌區",
+         "address": "鳳鳴路9號六樓", "name": "王大明", "id_number": "A123456789"},
+        {"doc_number": "1155691776", "district": "三峽區",
+         "address": "大學路176之3號十八樓", "name": "李小華",
+         "id_number": "A223456780"},
+    ]
+    folder = tempfile.mkdtemp()
+    path = output.write_household(records, os.path.join(folder, "YHQ101_addr_x.xls"))
+
+    # 真的是 .xls（OLE 複合檔），不是改了副檔名的 zip
+    with open(path, "rb") as handle:
+        magic = handle.read(8)
+    if magic != b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        problems.append("戶政清冊不是真正的 .xls（開頭是 %r）" % magic)
+
+    # 全形只換數字，段與樓層的中文數字不能動
+    if output.to_fullwidth("鳳鳴路9號六樓") != "鳳鳴路９號六樓":
+        problems.append("全形轉換不對：%r" % output.to_fullwidth("鳳鳴路9號六樓"))
+    if output.to_fullwidth("中正路二段15號") != "中正路二段１５號":
+        problems.append("全形轉換動到中文數字：%r"
+                        % output.to_fullwidth("中正路二段15號"))
+
+    if xlrd is None:
+        return problems
+
+    sheet = xlrd.open_workbook(path).sheet_by_index(0)
+    if sheet.ncols != 6:
+        problems.append("戶政清冊有 %d 欄，範例是 6 欄" % sheet.ncols)
+    if sheet.nrows != len(records):
+        problems.append("戶政清冊有 %d 列 —— 範例**沒有標題列**，第 1 列就是資料"
+                        % sheet.nrows)
+    want = ["1155698196", "新北市", "鶯歌區", "", "", "鳳鳴路９號六樓"]
+    got = [sheet.cell_value(0, c) for c in range(min(sheet.ncols, 6))]
+    if got != want:
+        problems.append("戶政清冊第 1 列是 %r，應該是 %r" % (got, want))
+    if sheet.nrows > 1 and sheet.cell_value(1, 5) != "大學路１７６之３號十八樓":
+        problems.append("門牌的全形沒轉：%r" % sheet.cell_value(1, 5))
     return problems
 
 
