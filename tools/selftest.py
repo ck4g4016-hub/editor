@@ -867,6 +867,18 @@ def check():
     if "00368000" not in kept:
         problems.append("不丟數字時應該連建號一起讀到，得到 %r" % kept)
 
+    # 公文文號現在是內網腳本 3、4 用來對應資料的鍵（腳本 4 第 75 行把它寫進
+    # 查調系統的案號，腳本 3 第 52 行用它把下載結果對回身分證字號）。
+    # 撞號會有一筆在對應表裡被蓋掉，而且從輸出的 Excel 上看不出來。
+    dup = output.duplicate_doc_numbers([
+        {"doc_number": "1155698196"}, {"doc_number": "1155697295"},
+        {"doc_number": "1155698196"}, {"doc_number": ""}, {"doc_number": ""}])
+    if dict(dup) != {"1155698196": 2, "": 2}:
+        problems.append("重複的公文文號沒抓對：%r" % dup)
+    if output.duplicate_doc_numbers([{"doc_number": "1155698196"},
+                                     {"doc_number": "1155697295"}]):
+        problems.append("沒有重複卻被誤報")
+
     # 本機小網頁伺服器的三道防護，真的開一台起來打打看。
     # 複核畫面上有姓名、身分證、門牌，這幾道漏一道就是個資外洩。
     problems.extend(_server_guard())

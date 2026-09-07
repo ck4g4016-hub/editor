@@ -124,7 +124,20 @@ def make_handler(state, guard):
             for path in written:
                 print("已產出: %s" % path)
             state["exported"] = True
-            self._json({"ok": True, "files": [os.path.basename(p) for p in written]})
+
+            # 公文文號現在是內網腳本 3、4 用來對應的鍵，撞號會有一筆被蓋掉。
+            # 檔還是照產（人已經複核完了，不該白做），但一定要講出來。
+            warnings = []
+            for value, count in output.duplicate_doc_numbers(rows):
+                warnings.append(
+                    "公文文號「%s」出現 %d 次。內網腳本是用這個號碼對應資料的，"
+                    "重複會有一筆被蓋掉，請確認是不是同一件掃了兩次。"
+                    % (value or "（空白）", count))
+            for line in warnings:
+                print("注意：%s" % line)
+            self._json({"ok": True,
+                        "files": [os.path.basename(p) for p in written],
+                        "warnings": warnings})
 
         def _diagnose(self, payload):
             journal = state.get("journal")

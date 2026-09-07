@@ -242,6 +242,31 @@ def write_household(records, path):
 INNER_BATCH_LIMIT = 750
 
 
+def duplicate_doc_numbers(records):
+    """一批裡有沒有重複的公文文號。回傳 [(文號, 出現次數)]。
+
+    **為什麼要檢查**：公文文號現在是跨腳本的「鍵」，不只是給人看的編號。
+    內網腳本 4（查調一親等）的第 75 行：
+
+        finalCaseID = CaseNumber & "-" & row.RawData("序號")
+
+    它把序號欄寫進查調系統的案號；腳本 3（下載全戶及除戶）的第 52 行：
+
+        Set idnLookup = CreateLookupMap(allRows, "序號", "所有權人IDN")
+
+    再用序號把下載回來的結果對回身分證字號。序號欄裝的是公文文號之後，
+    **兩筆撞號就會有一筆在對應表裡被蓋掉** —— 而且從輸出的 Excel 上完全
+    看不出來。原本填流水號時不會有這個問題（流水號一定唯一）。
+
+    空的文號同樣危險：對應表的鍵會是空字串，全部擠在一起。
+    """
+    seen = {}
+    for record in records:
+        value = _text(record, "doc_number").strip()
+        seen[value] = seen.get(value, 0) + 1
+    return sorted((value, count) for value, count in seen.items() if count > 1)
+
+
 def write_all(records, folder, when=None):
     """三個檔一起產。超過匯入上限就自動分批。
 

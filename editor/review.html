@@ -55,7 +55,7 @@
   .note{background:#fbf4e6;border:1px solid #e6d5b0;border-radius:7px;padding:10px 13px;
         margin-bottom:16px;font-size:13px}
   #msg{font-size:13px;color:var(--soft)}
-  #msg.ok{color:var(--ok)} #msg.err{color:var(--accent)}
+  #msg.ok{color:var(--ok)} #msg.err{color:var(--accent)} #msg.warn{color:var(--warn)}
   .say{grid-column:1/-1;padding:9px 14px;border-bottom:1px solid #f0ece2;background:#fcfbf8}
   .say label{font-size:12px;color:var(--soft)}
   textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:5px;
@@ -295,8 +295,10 @@ el('export').addEventListener('click', async () => {
         body: JSON.stringify({records: data.records.map(r => r.values)})});
     const out = await res.json();
     if (out.ok){
-      el('msg').textContent = '已產出：' + out.files.join('、');
-      el('msg').className = 'ok';
+      const warn = out.warnings || [];
+      el('msg').textContent = '已產出：' + out.files.join('、')
+          + (warn.length ? '　⚠ ' + warn.join('　') : '');
+      el('msg').className = warn.length ? 'warn' : 'ok';
     } else {
       showFailure(out);
     }
