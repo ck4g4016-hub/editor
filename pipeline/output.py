@@ -30,11 +30,16 @@ from openpyxl.styles import Alignment, Font, PatternFill
 # 外網欄位。E~H 由 RPA 回寫，我們一定要留空。
 # 尤其是 H（備註）—— 腳本每一列開頭會讀它，只要有內容整列就直接跳過，
 # 不查、不回寫，畫面上也不會有任何提示。
+#
+# **這一份沒有姓名欄。** 原本放在 I 欄給人核對用，但外網流程的第 45 行是
+#
+#     SortRangeCoordinates StartColumn: A StartRow: 2 EndColumn: D ...
+#
+# 它只排序 A~D，I 欄留在原地 —— 排序之後姓名就對到別人那一列了。
+# 「對錯的姓名」比沒有姓名更糟：人會照著它去判斷，而且看不出來哪裡錯。
+# 承辦人 2026-09-08 決定拿掉；姓名在內網中繼檔與複核畫面上都還在。
 OUTER_HEADERS = ["行政區", "門牌", "申請案號或事由", "身分證字號",
-                 "段名(或代碼)", "地號", "建號", "備註", "姓名"]
-
-# RPA 只讀到 H，排序也只到 D，所以新增的姓名放 I 欄不會影響它
-OUTER_RPA_COLUMNS = 8
+                 "段名(或代碼)", "地號", "建號", "備註"]
 
 # 內網中繼檔的欄位。前四個是腳本 0 原本產的（它的第 56~59 行），
 # 名稱必須一字不差，腳本 2 靠名稱取值。姓名是我們多加的，只給人核對用。
@@ -79,7 +84,6 @@ def to_fullwidth(text):
     return "".join(_FULLWIDTH_DIGITS.get(ch, ch) for ch in text or "")
 
 _HEADER_FILL = PatternFill("solid", fgColor="EFE6D0")
-_RESERVED_FILL = PatternFill("solid", fgColor="F5F5F5")
 
 
 def roc_date(when=None):
@@ -110,9 +114,9 @@ def write_outer(records, path):
     sheet.title = "查調清冊"
 
     sheet.append(OUTER_HEADERS)
-    for index, cell in enumerate(sheet[1], start=1):
+    for cell in sheet[1]:
         cell.font = Font(bold=True)
-        cell.fill = _HEADER_FILL if index <= OUTER_RPA_COLUMNS else _RESERVED_FILL
+        cell.fill = _HEADER_FILL
         cell.alignment = Alignment(horizontal="center")
 
     for record in records:
@@ -122,10 +126,9 @@ def write_outer(records, path):
             _text(record, "doc_number"),
             _text(record, "id_number"),
             "", "", "", "",          # 段名、地號、建號、備註 —— 留給 RPA
-            _text(record, "name"),
         ])
 
-    for column, width in zip("ABCDEFGHI", (10, 34, 16, 14, 14, 12, 12, 24, 12)):
+    for column, width in zip("ABCDEFGH", (10, 34, 16, 14, 14, 12, 12, 24)):
         sheet.column_dimensions[column].width = width
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
