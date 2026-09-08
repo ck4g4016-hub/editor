@@ -64,7 +64,8 @@ INNER_CITY = "新北市"
 #   事實  D 欄是村里、E 欄是鄰，兩欄都非必填，但**欄位要保留**
 #         （樣本檔 D1／E1 的儲存格註解原文就是「請保留此欄位」）
 #   事實  非直轄市的縣市要寫成「臺灣省」＋縣市（樣本檔 B4 的儲存格註解）
-#   事實  檔名必須是 upload1.xls —— 內網腳本用 GetBaseName = "upload1" 找檔
+#   決定  檔名用 YHQ101_民國年月日.xls。現在是承辦人自己上傳、不經過腳本 2，
+#         所以檔名取得有意義一點。要改回走腳本 2 的話得換成 upload1.xls
 HOUSEHOLD_CITY = "新北市"
 HOUSEHOLD_SHEET = "Sheet1"
 
@@ -188,15 +189,19 @@ def write_inner(records, path):
 
 
 def household_path(folder, when=None):
-    """檔名**只能叫 upload1.xls**。
+    """戶政清冊的檔名：YHQ101_民國年月日.xls（承辦人 2026-09-08 定的）。
 
-    內網腳本是這樣找檔的（它的第 76 行）：
+    這個名字是給**人**看的 —— 現在的做法是承辦人自己在戶政系統上傳，
+    不再經過內網腳本 2，所以檔名可以取得有意義一點。
+
+    **注意**：如果哪天要改回走腳本 2，檔名得換成 upload1.xls ——
+    它是這樣找檔的（第 76 行）：
 
         If fso.GetBaseName(file.Name) = "upload1" Then
 
-    名字不對就整個跳過，而且不會有任何錯誤訊息 —— 畫面上看起來就像沒有資料。
+    名字不對就整個跳過，而且不會有任何錯誤訊息。
     """
-    return os.path.join(folder, "upload1.xls")
+    return os.path.join(folder, "YHQ101_%s.xls" % roc_date(when))
 
 
 def write_household(records, path):
