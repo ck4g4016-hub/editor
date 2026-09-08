@@ -330,8 +330,13 @@ class Converter:
                 for definition in by_box:
                     self._read_field(record, sheet, definition, keep_crops, base)
 
-        if any(d.column == "doc_number" for d in definitions):
-            self._read_stamp(record, document)
+        # 公文文號**一律**整頁找，不管樣板有沒有定義這一欄。
+        #
+        # 原本的條件是「樣板有 doc_number 欄才找」，那等於逼承辦人為了一個
+        # 根本不用框的東西去建一個空欄位 —— 而且忘了建就整批沒有文號，
+        # 三個輸出檔的案號欄全空，還不會有任何提示。
+        # 它是必要欄位，每一種表格都有收文戳，就不要讓它取決於設定。
+        self._read_stamp(record, document)
 
         for column in CRITICAL:
             if not record.values.get(column):
