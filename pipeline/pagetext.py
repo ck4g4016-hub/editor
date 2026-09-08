@@ -201,7 +201,7 @@ def value_lines(lines, label_line, rules=()):
                   if line is not label_line
                   and line.left > label_line.right - margin
                   and top < line.middle < bottom]
-        return _same_column(picked)
+        return _tidy(picked)
 
     # 左欄＝開頭比標籤更靠左或差不多的那些行
     left_column = [line for line in lines
@@ -220,22 +220,26 @@ def value_lines(lines, label_line, rules=()):
         if limit is not None and line.middle >= limit:
             continue
         out.append(line)
-    return _same_column(out)
+    return _tidy(out)
 
 
-def _same_column(picked):
-    """只留「值」那一欄。
+# 只有標籤、沒有值的行，例如「建號：」「配偶姓名：」。
+# 那種行不帶任何資料，接進值裡只會變成雜訊。
+_EMPTY_LABEL = re.compile(r"^[^%s]{1,10}[%s]\s*$" % (_SEPARATOR, _SEPARATOR))
 
-    同一列的最右邊還可能有別的東西 —— A 表的收文戳就跟「申請房屋使用情形」
-    同一個高度，不擋的話會讀成「…自住稅率115/08/18機關收文」。
+
+def _tidy(picked):
+    """整理一格裡的行：丟掉空標籤，由上而下排好。
+
+    **這裡刻意不做「只收最左邊那一欄」的過濾。** 曾經做過，因為 A 表的收文戳
+    跟某一列同高、會被讀進來；但格線帶（band_of）本來就已經把它擋在別的列了，
+    多那一層過濾反而把同一格裡靠右的內容切掉 —— 實測 B 表的
+    「地址：鶯歌區　　115巷15號五樓」中間有一大段空白（原本印路名的地方），
+    右半截就被當成別欄丟掉，門牌只剩「地址：鶯歌區」。
     """
-    if not picked:
-        return []
-    column = min(line.left for line in picked)
-    width = max(line.right - line.left for line in picked)
-    picked = [line for line in picked if line.left <= column + max(width, 200)]
-    picked.sort(key=lambda line: (line.top, line.left))
-    return picked
+    out = [line for line in picked if not _EMPTY_LABEL.match(line.text.strip())]
+    out.sort(key=lambda line: (line.top, line.left))
+    return out
 
 
 def value_for(lines, label, drop_digits=False, rules=()):

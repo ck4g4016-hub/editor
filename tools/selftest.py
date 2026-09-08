@@ -867,6 +867,36 @@ def check():
     if "00368000" not in kept:
         problems.append("不丟數字時應該連建號一起讀到，得到 %r" % kept)
 
+    # 同一格裡靠右的內容不可以被丟掉。
+    # 實測 B 表的「地址：鶯歌區　　　115巷15號五樓」中間有一大段空白（原本
+    # 印路名的地方被塗掉了），右半截曾經被當成「別欄」濾掉，門牌只剩前半段。
+    wide = np.full((260, 1000, 3), 255, np.uint8)
+    for y in (40, 140, 240):
+        cv2.line(wide, (40, y), (960, y), (0, 0, 0), 2)
+    for x in (40, 400, 960):
+        cv2.line(wide, (x, 40), (x, 240), (0, 0, 0), 2)
+    cv2.putText(wide, "HOUSE SITE", (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                0.8, (0, 0, 0), 2)
+    cv2.putText(wide, "ADDR", (420, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                0.8, (0, 0, 0), 2)
+    cv2.putText(wide, "NO 15", (800, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                0.8, (0, 0, 0), 2)          # 隔著一大段空白的後半截
+    wide_lines = pagetext.read_image(wide)
+    wide_rules = pagetext.horizontal_rules(wide)
+    got, _s, _n = pagetext.value_for(wide_lines, "HOUSE SITE", rules=wide_rules)
+    if "NO" not in got or "15" not in got:
+        problems.append("同一格裡隔著空白的後半截被丟掉了：%r" % got)
+
+    # 只有標籤沒有值的行（「建號：」「配偶姓名：」）不該接進值裡
+    if pagetext._EMPTY_LABEL.match("建號：") is None:
+        problems.append("「建號：」應該被當成空標籤")
+    if pagetext._EMPTY_LABEL.match("地址：鶯歌區9號") is not None:
+        problems.append("有值的行被當成空標籤了")
+
+    # 「户」是「戶」的異體字，辨識常吐這個 —— 不轉的話「戶籍地址」永遠找不到
+    if validate.to_traditional("户籍地址") != "戶籍地址":
+        problems.append("户 沒有轉成 戶")
+
     # 公文文號現在是內網腳本 3、4 用來對應資料的鍵（腳本 4 第 75 行把它寫進
     # 查調系統的案號，腳本 3 第 52 行用它把下載結果對回身分證字號）。
     # 撞號會有一筆在對應表裡被蓋掉，而且從輸出的 Excel 上看不出來。
