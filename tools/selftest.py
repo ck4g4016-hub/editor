@@ -918,6 +918,7 @@ def check():
     problems.extend(_household_sheet())
     problems.extend(_stamp_year_gate())
     problems.extend(_stamp_scans_both_ways())
+    problems.extend(_doc_number_not_forced())
 
     for label, run, want in cases:
         try:
@@ -1273,6 +1274,45 @@ def _pages_carry_token():
     return problems
 
 
+def _doc_number_not_forced():
+    """公文文號不可以被列成「一定要設定」。
+
+    **這條檢查是踩過坑才有的。** 承辦人照著「公文文號不用設關鍵字」去做，
+    樣板卻怎麼樣都存不起來：關鍵字模式擋「關鍵字沒填」，把那一欄清掉又擋
+    「還缺必要欄位」—— 兩邊都堵死，沒有一個合法的狀態走得通。
+
+    根源是「輸出上這一欄不能空」（CRITICAL）跟「建樣板的人一定要動手設定」
+    （MUST_CONFIGURE）共用了同一份清單。公文文號兩者不一致：它由整頁掃描
+    自動找，不必框也不必給關鍵字。
+
+    畫面那一半也要一起顧 —— 存檔的擋門在 page.html 裡，它退回去用 critical
+    的話，Python 這邊分得再清楚都沒有用。
+    """
+    from pipeline import process
+    from pipeline import resources
+
+    problems = []
+    if "doc_number" in process.MUST_CONFIGURE:
+        problems.append("公文文號被列進 MUST_CONFIGURE，樣板會存不起來")
+    for column in process.MUST_CONFIGURE:
+        if column not in process.CRITICAL:
+            problems.append("MUST_CONFIGURE 裡的 %r 不在 CRITICAL 裡，兩份清單對不起來"
+                            % column)
+
+    path = os.path.join(resources.base_dir(), "editor", "page.html")
+    text = open(path, encoding="utf-8").read()
+    if "must_configure" not in text:
+        problems.append("editor/page.html 沒有讀 must_configure")
+    # 擋存檔與提示那兩處必須用 state.must，用 state.critical 就等於沒改
+    for phrase in ("state.must.filter(k => !state.fields[k])",):
+        if text.count(phrase) < 2:
+            problems.append("editor/page.html 擋存檔的地方沒有全部改用 state.must，"
+                            "公文文號還是會被當成缺少的必要欄位")
+    if "state.critical.filter(k => !state.fields[k])" in text:
+        problems.append("editor/page.html 還有地方拿 state.critical 擋存檔")
+    return problems
+
+
 def _stamp_year_gate():
     """整頁找到的十碼數字，年份跟這一頁的日期對不上就不准採用。
 
@@ -1554,6 +1594,7 @@ def _editor_serves_image(store, sample):
     「包了但端點本身壞了」。兩層都要，因為壞掉的樣子都是一片空白。
     """
     import http.client
+    import json
     import threading
     from http.server import ThreadingHTTPServer
 
@@ -1590,6 +1631,59 @@ def _editor_serves_image(store, sample):
         status, body = get("/api/template?code=F")
         if status != 200 or b'"fields"' not in body:
             problems.append("/api/template 回了 %d：%s" % (status, body[:80]))
+
+        # 公文文號不設定也要存得起來 —— 見 _template_saves_without_doc_number
+        status, body = get("/api/template?code=F")
+        if status == 200:
+            import json as _json
+            data = _json.loads(body.decode("utf-8"))
+            if "must_configure" not in data:
+                problems.append("/api/template 沒有回 must_configure，"
+                                "畫面會退回用 critical 擋存檔，公文文號就存不起來")
+            elif "doc_number" in data.get("must_configure", []):
+                problems.append("/api/template 把公文文號列成「一定要設定」，"
+                                "但它是整頁自動找的，設不出來也存不起來")
+
+        def post(path, payload):
+            conn = http.client.HTTPConnection("127.0.0.1", guard.port, timeout=10)
+            try:
+                sep = "&" if "?" in path else "?"
+                conn.request("POST", path + sep + "k=" + guard.token,
+                             body=json.dumps(payload).encode("utf-8"),
+                             headers={"Host": host,
+                                      "Origin": "http://" + host,
+                                      "Content-Type": "application/json"})
+                response = conn.getresponse()
+                return response.status, response.read()
+            finally:
+                conn.close()
+
+        # 存檔會蓋掉 F 的 fields.json，測完要放回去 —— 後面還有檢查在用它。
+        # 「檢查本身把環境弄壞，害下一支檢查誤報」比沒測還難查。
+        original = open(os.path.join(store, "F", "fields.json"),
+                        encoding="utf-8").read()
+
+        # 正向：沒有公文文號那一欄的樣板，要存得起來
+        keep = [{"id": "f_id", "name": "身分證字號", "column": "id_number",
+                 "kind": "id_number", "box": [100, 100, 400, 60], "page": "front"},
+                {"id": "f_addr", "name": "門牌", "column": "address",
+                 "kind": "address", "box": [100, 200, 800, 60], "page": "front"}]
+        status, body = post("/api/template?code=F", {"fields": keep})
+        if status != 200 or b'"ok": true' not in body.replace(b'"ok":true', b'"ok": true'):
+            problems.append("沒有公文文號那一欄的樣板存不起來：%d %s" % (status, body[:200]))
+
+        # 負向驗證：關鍵字模式卻沒填關鍵字，一定要被擋 —— 那個檢查還在
+        bad = keep + [{"id": "f_doc", "name": "公文文號", "column": "doc_number",
+                       "kind": "doc_number", "box": [0, 0, 0, 0], "page": "front",
+                       "mode": "label", "label": ""}]
+        status, body = post("/api/template?code=F", {"fields": bad})
+        if status == 200 and b'"ok": true' in body.replace(b'"ok":true', b'"ok": true'):
+            problems.append("關鍵字模式沒填關鍵字竟然存得起來 —— "
+                            "那一欄辨識時會整個廢掉，這個檢查不能拿掉")
+
+        with open(os.path.join(store, "F", "fields.json"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(original)
 
         # 這就是漏掉權杖時壞掉的那一個
         status, body = get("/api/image?code=F&view=0")

@@ -32,7 +32,7 @@ import cv2
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import fields as fieldmod, layout, render, resources  # noqa: E402
-from pipeline.process import CRITICAL  # noqa: E402
+from pipeline.process import CRITICAL, MUST_CONFIGURE  # noqa: E402
 from tools import localserver  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -147,6 +147,7 @@ class Workspace:
             "kinds": fieldmod.KINDS,
             "default_kinds": fieldmod.DEFAULT_KIND,
             "critical": list(CRITICAL),
+            "must_configure": list(MUST_CONFIGURE),
             "fields": [f.to_dict() for f in fieldmod.load(self.store, code)],
             "views": [{"label": v["label"], "role": v["role"]} for v in views],
             "has_base": os.path.isfile(os.path.join(self.store, code, "base.png")),

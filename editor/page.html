@@ -110,7 +110,7 @@ function api(path){
   return path + (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN);
 }
 
-let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[], adding:false,
+let state = {code:null, view:0, views:[], scale:1, columns:{}, kinds:{}, critical:[], must:[], adding:false,
              fields:{},          // column -> 欄位定義
              open:null,          // 展開中的那一欄
              aiming:null};       // 正在框選哪一欄
@@ -134,6 +134,8 @@ async function selectCode(code){
   state.kinds = data.kinds;
   KIND_OF = data.default_kinds || {};
   state.critical = data.critical;
+  // 「輸出上不能空」跟「建樣板時一定要動手設定」是兩件事，公文文號只符合前者
+  state.must = data.must_configure || data.critical;
   state.views = data.views;
   state.view = 0;
   state.open = null;
@@ -226,7 +228,7 @@ function render(){
 
   el('list').innerHTML = groups.map(([title, keys]) => `<h2>${title}</h2>` + keys.map(column => {
     const f = state.fields[column];
-    const need = state.critical.includes(column) && !f;
+    const need = state.must.includes(column) && !f;
     const page = f ? (f.page || 'front') : null;
     return `
     <div class="col ${f?'set':''} ${need?'need':''} ${column===state.open?'open sel':''}"
@@ -236,7 +238,7 @@ function render(){
         <span class="st ${f?'':'no'}">${f
             ? (page === 'front' ? '正面' : '背面') + '　'
               + (f.mode === 'label' ? '用關鍵字' : '已框選')
-            : '尚未設定'}</span>
+            : (state.must.includes(column) ? '尚未設定' : '不用設定')}</span>
       </div>
       <div class="body">
         ${f ? `
@@ -263,7 +265,11 @@ function render(){
           標籤要照表格上印的字打，一字不差最好；掉一兩個字還是找得到。</p>
         ${f.column === 'address' ? `<div class="hint">
           門牌那一格底下如果還印著房屋建號（一整串數字），會自動丟掉 ——
-          門牌不可能整行都是數字。</div>` : ''}` : `
+          門牌不可能整行都是數字。</div>` : ''}
+        ${f.column === 'doc_number' ? `<div class="hint">
+          <b>公文文號的關鍵字幾乎都會讀到日期，不是文號。</b>收文戳的版面是
+          「機關收文」標籤右邊放日期、文號印在條碼底下，不在標籤那一格裡。
+          這一欄建議直接「清除這一欄」，交給整頁自動找。</div>` : ''}` : `
         <div class="row"><label>範圍</label><div class="boxrow">${
           [0,1,2,3].map(j => `<input type="number" data-box="${j}" value="${f.box[j]}">`).join('')
         }</div></div>
@@ -294,6 +300,12 @@ function render(){
           <button class="small primary" data-act="aim">在圖上框選</button>
           <button class="small" data-act="bylabel">改用關鍵字</button>
         </div>
+        ${column === 'doc_number' ? `<div class="hint">
+          <b>公文文號不設定也可以，這是正常的。</b>程式一律會在整頁上找
+          十碼、開頭是民國年的數字（收文戳的文號就是這個格式），不必框、
+          也不必給關鍵字 —— 標籤貼歪、貼到別的地方都還是找得到。<br>
+          框起來也可以，那會當成對照：兩邊讀出來不一樣時會標記出來讓人選。
+        </div>` : ''}
         <p style="font-size:12px;color:var(--soft);margin:8px 0 0">
           按下之後到左邊圖上拖曳，框住這一欄要抓的位置。<br>
           背面的欄位就先把上面的頁面切到背面再框。<br>
@@ -384,12 +396,13 @@ function render(){
 }
 
 function refreshNotes(){
-  const missing = state.critical.filter(k => !state.fields[k]);
+  const missing = state.must.filter(k => !state.fields[k]);
   el('notes').innerHTML = missing.length
     ? `<div class="note"><b>還缺必要欄位：</b>${missing.map(k =>
          esc(state.columns[k])).join('、')}<br>`
-      + '這三欄錯了或沒有，RPA 會拿著錯的資料去查別人的房子，'
-      + '而且從輸出的表格上看不出來。</div>'
+      + '這幾欄錯了或沒有，RPA 會拿著錯的資料去查別人的房子，'
+      + '而且從輸出的表格上看不出來。<br>'
+      + '（公文文號不在這裡，它由整頁自動找，不必設定。）</div>'
     : '';
 }
 
@@ -457,7 +470,7 @@ el('view').addEventListener('change', e => {
   render();
 });
 el('save').addEventListener('click', async () => {
-  const missing = state.critical.filter(k => !state.fields[k]);
+  const missing = state.must.filter(k => !state.fields[k]);
   if (missing.length){
     say('還缺必要欄位：' + missing.map(k => state.columns[k]).join('、'), 'err');
     return;
