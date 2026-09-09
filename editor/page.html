@@ -156,8 +156,8 @@ function showView(which){
   el('subtitle').textContent = data ? `${data.label}　—　拖曳框選時請對準這一頁的內容` : '';
   const img = el('sheet');
   img.onload = () => { sizeOverlay(); draw(); };
-  img.src = 'api/image?code=' + encodeURIComponent(state.code)
-          + '&view=' + which + '&t=' + Date.now();
+  img.src = api('api/image?code=' + encodeURIComponent(state.code)
+          + '&view=' + which + '&t=' + Date.now());
 }
 
 function sizeOverlay(){

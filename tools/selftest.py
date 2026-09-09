@@ -912,6 +912,7 @@ def check():
     # 本機小網頁伺服器的三道防護，真的開一台起來打打看。
     # 複核畫面上有姓名、身分證、門牌，這幾道漏一道就是個資外洩。
     problems.extend(_server_guard())
+    problems.extend(_pages_carry_token())
     problems.extend(_offline())
     problems.extend(_inner_sheet())
     problems.extend(_household_sheet())
@@ -1232,6 +1233,44 @@ def _household_sheet():
     return problems
 
 
+def _pages_carry_token():
+    """畫面上每一個 api/ 請求都必須包在 api() 裡（權杖是那個函式加上去的）。
+
+    **這條檢查是踩過坑才有的。** 加本機權杖那一次，我把所有 fetch() 都包好了，
+    卻漏掉樣板編輯器裡用 img.src 載入掃描影像的那一行 ——
+
+        img.src = 'api/image?code=' + ...        ← 沒有權杖
+
+    結果被自己的防護擋成 403：右邊的欄位清單正常（那些走 fetch），左邊的圖
+    整片空白。而且**畫面上不會有任何錯誤訊息**，看起來就像程式壞了。
+
+    漏掉一個就會壞掉、壞掉又看不出原因，這種東西不能靠記得。
+    """
+    import re
+
+    from pipeline import resources
+
+    problems = []
+    root = resources.base_dir()
+    for name in ("page.html", "review.html"):
+        path = os.path.join(root, "editor", name)
+        if not os.path.isfile(path):
+            problems.append("找不到 %s" % name)
+            continue
+        text = open(path, encoding="utf-8").read()
+        # 抓出所有出現 'api/xxx' 或 `api/xxx` 的地方，看前面有沒有 api(
+        for match in re.finditer(r"""['"`]api/[A-Za-z]+""", text):
+            start = match.start()
+            line = text.count("\n", 0, start) + 1
+            before = text[max(0, start - 6):start]
+            if "api(" not in before:
+                problems.append(
+                    "editor/%s 第 %d 行的 api/ 請求沒有包在 api() 裡，"
+                    "會因為沒帶權杖被擋成 403：%s"
+                    % (name, line, text[start:start + 40].replace("\n", " ")))
+    return problems
+
+
 def end_to_end():
     r"""從 PDF 一路跑到資料列，整條走一遍。
 
@@ -1321,6 +1360,71 @@ def end_to_end():
                           version=resources.version())
     if wanted in text:
         problems.append("端對端：診斷報告裡出現了未遮罩的身分證")
+
+    problems.extend(_editor_serves_image(store, path))
+    return problems
+
+
+def _editor_serves_image(store, sample):
+    """真的把樣板編輯器跑起來，把畫面會發的每一個請求打一遍。
+
+    **這是踩過坑才有的。** 加本機權杖那一次漏掉 img.src 那一行，樣板編輯器
+    左邊的掃描影像整片空白（被自己的防護擋成 403），而畫面上不會有任何錯誤
+    訊息 —— 承辦人看到的是「以前能跑出來的東西全部都無法顯示」。
+
+    靜態掃描（_pages_carry_token）擋的是「忘記包 api()」；這一支擋的是
+    「包了但端點本身壞了」。兩層都要，因為壞掉的樣子都是一片空白。
+    """
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from tools import localserver, template_editor
+
+    problems = []
+    workspace = template_editor.Workspace(store, [sample])
+    guard = localserver.Guard()
+    server = ThreadingHTTPServer(("127.0.0.1", 0),
+                                 template_editor.make_handler(workspace, guard))
+    guard.port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host = "127.0.0.1:%d" % guard.port
+
+        def get(path):
+            conn = http.client.HTTPConnection("127.0.0.1", guard.port, timeout=10)
+            try:
+                sep = "&" if "?" in path else "?"
+                conn.request("GET", path + sep + "k=" + guard.token, headers={"Host": host})
+                response = conn.getresponse()
+                return response.status, response.read()
+            finally:
+                conn.close()
+
+        status, body = get("/")
+        if status != 200 or b"<canvas" not in body:
+            problems.append("樣板編輯器首頁回了 %d（%d bytes）" % (status, len(body)))
+
+        status, body = get("/api/codes")
+        if status != 200 or b'"F"' not in body:
+            problems.append("/api/codes 回了 %d：%s" % (status, body[:80]))
+
+        status, body = get("/api/template?code=F")
+        if status != 200 or b'"fields"' not in body:
+            problems.append("/api/template 回了 %d：%s" % (status, body[:80]))
+
+        # 這就是漏掉權杖時壞掉的那一個
+        status, body = get("/api/image?code=F&view=0")
+        if status != 200:
+            problems.append("/api/image 回了 %d：%s —— 樣板編輯器左邊會是一片空白"
+                            % (status, body[:120]))
+        elif body[:8] != b"\x89PNG\r\n\x1a\n":
+            problems.append("/api/image 回的不是 PNG（開頭 %r）" % body[:8])
+        elif len(body) < 2000:
+            problems.append("/api/image 回的 PNG 只有 %d bytes，太小了" % len(body))
+    finally:
+        server.shutdown()
+        server.server_close()
     return problems
 
 
