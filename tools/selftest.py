@@ -916,6 +916,8 @@ def check():
     problems.extend(_offline())
     problems.extend(_inner_sheet())
     problems.extend(_household_sheet())
+    problems.extend(_stamp_year_gate())
+    problems.extend(_stamp_scans_both_ways())
 
     for label, run, want in cases:
         try:
@@ -1268,6 +1270,92 @@ def _pages_carry_token():
                     "editor/%s 第 %d 行的 api/ 請求沒有包在 api() 裡，"
                     "會因為沒帶權杖被擋成 403：%s"
                     % (name, line, text[start:start + 40].replace("\n", " ")))
+    return problems
+
+
+def _stamp_year_gate():
+    """整頁找到的十碼數字，年份跟這一頁的日期對不上就不准採用。
+
+    **這條檢查是踩過坑才有的。** 拿 E 表（戶政系統的橫式報表）轉正之後掃
+    整頁，真正的文號 1155697586 開頭那個 1 被切掉，只剩九碼落選；報表內文
+    裡的 1125555274（民國 112 年）卻通過了「十碼＋合理民國年」，變成整頁上
+    唯一的候選，然後拿去蓋掉框選讀對的值。那一頁上印的日期全部是 115 年。
+
+    「只剩一個候選」不等於「它就是對的」—— 年份的比對因此從破平手用的
+    條件改成必要條件。
+
+    負向驗證在最後一段：把年份的關卡拿掉，錯的那個一定要被撿回來。
+    不會叫的檢查比沒有檢查更糟。
+    """
+    from pipeline import stamp
+
+    problems = []
+
+    # 正向一：這一頁上寫著 115 年，卻只找得到一個 112 年的十碼數字 → 不採用
+    decoy = ["製表日期：115/08/11", "1125555274", "155697587"]
+    value, note = stamp.pick(decoy)
+    if value is not None:
+        problems.append(
+            "整頁找的年份關卡沒擋住：這一頁的日期是 115 年，卻採用了 %s" % value)
+    elif not note:
+        problems.append("整頁找擋掉了年份對不上的候選，卻沒有給提醒")
+
+    # 正向二：真的文號讀到了，就要挑出真的那個，不能因為多了雜訊而放棄
+    value, _note = stamp.pick(decoy + ["1155697587"])
+    if value != "1155697587":
+        problems.append("整頁找沒有從雜訊裡挑出年份對得上的 1155697587，拿到的是 %r" % value)
+
+    # 正向三：整頁上根本沒有日期可比的時候，不能反過來把唯一的候選也擋掉
+    value, _note = stamp.pick(["1155697587"])
+    if value != "1155697587":
+        problems.append("整頁上沒有日期可比時，唯一的候選被誤擋了，拿到的是 %r" % value)
+
+    # 負向驗證：把年份關卡拿掉，錯的那個一定要被撿回來 —— 撿不回來就代表
+    # 上面那個正向案例根本沒測到年份這一關，這支檢查是假的安心。
+    real_years = stamp.stamp_years
+    try:
+        stamp.stamp_years = lambda _texts: set()
+        broken, _note = stamp.pick(decoy)
+    finally:
+        stamp.stamp_years = real_years
+    if broken != "1125555274":
+        problems.append(
+            "負向驗證失敗：拿掉年份關卡之後，錯的 1125555274 應該要被撿回來，"
+            "實際拿到 %r —— 表示這支檢查測到的不是年份那一關" % broken)
+    return problems
+
+
+def _stamp_scans_both_ways():
+    """轉正過的頁面，整頁找要連原圖一起掃。
+
+    **這條檢查是踩過坑才有的。** E 表六頁實測，轉正 90 度之後（程式實際在
+    用的那個方向）三頁讀丟開頭那個 1、一頁撿到內文的數字；同樣六頁不轉直接
+    掃，兩種解析度每一頁都讀對。兩個方向併起來才十二次全對。
+
+    只掃一個方向就會漏，而漏掉的時候畫面上看起來一切正常 —— 框選剛好也讀
+    得到的話，連提醒都不會有。
+
+    負向驗證在最後一段：沒轉正的頁面不可以白白多掃一遍。
+    """
+    from pipeline import stamp
+
+    problems = []
+    calls = []
+    real = stamp.read_page
+    try:
+        stamp.read_page = lambda page, rotation=0, dpi=None: calls.append(rotation) or []
+        stamp.scan(object(), 90)
+        if sorted(calls) != [0, 90]:
+            problems.append(
+                "轉正 90 度的頁面應該要掃「轉正後」與「原圖」兩個方向，"
+                "實際掃的是 %r" % (calls,))
+        # 負向驗證：rotation 是 0 的頁面只掃一遍，不能為了保險每頁都掃兩次
+        calls[:] = []
+        stamp.scan(object(), 0)
+        if calls != [0]:
+            problems.append("沒轉正的頁面只該掃一遍，實際掃的是 %r" % (calls,))
+    finally:
+        stamp.read_page = real
     return problems
 
 

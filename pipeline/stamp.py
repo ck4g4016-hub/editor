@@ -28,12 +28,12 @@
 所以改成**逐層縮小**，機關代號只在最後當破平手用：
 
   1. 十碼、開頭三碼是合理的民國年
-  2. 還不只一個 → 留下年份跟這一頁上收文日期同年的
+  2. 年份要跟這一頁上的日期對得起來，對不起來的一律不採用（必要條件）
   3. 還不只一個 → 留下中間三碼符合 data/公文文號.txt 的
   4. 剩下剛好一個就用它；還是不只一個就標記起來，不猜
 
-實測那四頁在第 1 層就只剩一個了，根本用不到設定檔 —— 換句話說，
-機關代號跳號、跨年度，程式都不必改，設定檔也不必動。
+第 2 層是必要條件不是破平手用的，理由寫在 pick() 裡：只剩一個候選
+不代表它就是對的。機關代號跳號、跨年度，程式跟設定檔都不必動。
 """
 
 import re
@@ -119,23 +119,32 @@ def candidates(texts):
 def pick(texts):
     """從整頁的辨識結果裡決定公文文號。回傳 (文號, 提醒)。
 
-    逐層縮小，每一層都先問「剩下剛好一個了嗎」。機關代號排在最後，
-    因為它會跳號、會跨年度換 —— 把會過期的東西放在必要條件上，
-    設定一過期就整批沉默失效。
+    逐層縮小。機關代號排在最後，因為它會跳號、會跨年度換 —— 把會過期的
+    東西放在必要條件上，設定一過期就整批沉默失效。
+
+    **年份不一樣**：它排在最前面，而且是必要條件，不是破平手用的。
+    文號開頭三碼就是收文那一年，而同一頁上一定還印著同年的日期
+    （收文日期、製表日期）。年份對不上的十碼數字是別的東西。
+
+    這一條是有代價才加的。E 表（戶政系統的橫式報表）轉正之後掃整頁，
+    真正的文號開頭那個 1 被切掉只剩九碼而落選，卻撿到報表內文裡的
+    1125555274（民國 112 年，那一頁的日期全部是 115 年），然後拿它去
+    蓋掉框選讀對的值。**只剩一個候選不代表它就是對的**，所以年份的
+    比對不能只在「候選不只一個」的時候才做。
     """
     found = candidates(texts)
     if not found:
         return None, "整頁上找不到十碼的公文文號"
-    if len(found) == 1:
-        return found[0], None
 
     years = stamp_years(texts)
     if years:
         same = [value for value in found if value[:3] in years]
-        if len(same) == 1:
-            return same[0], None
-        if same:
-            found = same
+        if not same:
+            return None, ("整頁上找到的十碼數字，開頭的民國年跟這一頁上的"
+                          "日期都對不起來，不採用")
+        found = same
+    if len(found) == 1:
+        return found[0], None
 
     codes = set(agency_codes())
     if codes:
@@ -161,6 +170,27 @@ def read_page(page, rotation=0, dpi=SCAN_DPI):
     return [text for _box, text, _score in (rows or [])]
 
 
+def scan(page, rotation=0):
+    """把一頁掃成候選用的文字清單。轉正過的頁面連原圖一起掃。
+
+    **為什麼兩個方向都掃**：拿 E 表六頁實測，轉正 90 度之後 —— 也就是
+    程式實際在用的那個方向 —— 有三頁讀丟開頭那個 1（1155697586 變成
+    155697586，九碼，直接落選），還有一頁撿到內文的數字；同樣六頁不轉
+    直接掃，兩種解析度、每一頁都讀對。
+
+    誰好誰壞沒有定論，所以不挑邊：兩個方向的結果併起來一起交給 pick()
+    去比。併起來只會多候選不會少，多出來的候選過不了年份那一關就會被
+    刷掉，刷不掉就變成「分不出是哪一個」被標記出來 —— 兩種結果都比
+    「安靜地用了錯的那個」好。
+
+    沒轉正的頁面（rotation 是 0）只掃一遍，不多花時間。
+    """
+    texts = read_page(page, rotation)
+    if rotation % 360:
+        texts = texts + read_page(page, 0)
+    return texts
+
+
 def find(pages, rotation=0):
     """依序掃過幾頁，找到就停。回傳 (文號, 提醒)。
 
@@ -170,7 +200,7 @@ def find(pages, rotation=0):
     for page in pages:
         if page is None:
             continue
-        value, note = pick(read_page(page, rotation))
+        value, note = pick(scan(page, rotation))
         if value:
             return value, note
         last = note or last
