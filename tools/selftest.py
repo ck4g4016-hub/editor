@@ -1362,6 +1362,96 @@ def end_to_end():
         problems.append("端對端：診斷報告裡出現了未遮罩的身分證")
 
     problems.extend(_editor_serves_image(store, path))
+    problems.extend(_review_serves_everything(records, unresolved, converter, work))
+    return problems
+
+
+def _review_serves_everything(records, unresolved, converter, work):
+    """真的把複核畫面跑起來，把它會發的每一個請求打一遍，一路做到匯出。
+
+    跟 _editor_serves_image 同一個理由：畫面載不出東西的時候**不會有錯誤
+    訊息**，只會是一片空白，而單元檢查不會發現。這裡驗的是「正常使用還能
+    不能用」，不是「防護擋不擋得住」。
+
+    每一個回應都看內容，不是只看狀態碼 —— 200 配一個空的 PNG 照樣是壞的。
+    """
+    import http.client
+    import json as jsonlib
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from tools import localserver, review
+
+    problems = []
+    out = os.path.join(work, "輸出")
+    state = {"records": records, "unresolved": unresolved, "out": out,
+             "journal": converter.journal, "unknown": converter.unknown}
+    guard = localserver.Guard()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), review.make_handler(state, guard))
+    guard.port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host = "127.0.0.1:%d" % guard.port
+
+        def call(method, path, body=None, kind=None):
+            conn = http.client.HTTPConnection("127.0.0.1", guard.port, timeout=20)
+            try:
+                headers = {"Host": host}
+                if kind:
+                    headers["Content-Type"] = kind
+                sep = "&" if "?" in path else "?"
+                conn.request(method, path + sep + "k=" + guard.token,
+                             body=body, headers=headers)
+                response = conn.getresponse()
+                return response.status, response.read()
+            finally:
+                conn.close()
+
+        status, body = call("GET", "/")
+        if status != 200 or b"api/records" not in body:
+            problems.append("複核畫面首頁回了 %d（%d bytes）" % (status, len(body)))
+
+        status, body = call("GET", "/api/records")
+        if status != 200:
+            problems.append("/api/records 回了 %d" % status)
+        elif len(jsonlib.loads(body).get("records", [])) != len(records):
+            problems.append("/api/records 的件數對不上")
+
+        # 原圖裁切：跟樣板編輯器那張圖同一類的坑
+        status, body = call("GET", "/api/crop?record=0&column=id_number")
+        if status != 200:
+            problems.append("/api/crop 回了 %d —— 複核畫面上會看不到原圖" % status)
+        elif body[:8] != b"\x89PNG\r\n\x1a\n":
+            problems.append("/api/crop 回的不是 PNG（開頭 %r）" % body[:8])
+
+        status, body = call("POST", "/api/diagnose",
+                            jsonlib.dumps({"notes": {"overall": "自我檢查"}}).encode(),
+                            "application/json")
+        if status != 200 or not jsonlib.loads(body).get("ok"):
+            problems.append("/api/diagnose 回了 %d：%s" % (status, body[:120]))
+
+        rows = [record.values for record in records]
+        status, body = call("POST", "/api/export",
+                            jsonlib.dumps({"records": rows}).encode(),
+                            "application/json")
+        result = jsonlib.loads(body) if status == 200 else {}
+        if not result.get("ok"):
+            problems.append("/api/export 回了 %d：%s" % (status, body[:160]))
+        else:
+            # 三個檔都要真的產出來，而且不是空的
+            want = ("RPA-查調謄本清冊", "HH", "YHQ101")
+            names = result.get("files", [])
+            for prefix in want:
+                hit = [n for n in names if n.startswith(prefix)]
+                if not hit:
+                    problems.append("匯出少了 %s 開頭的檔案，只有 %s" % (prefix, names))
+                    continue
+                full = os.path.join(out, hit[0])
+                if not os.path.isfile(full) or os.path.getsize(full) < 1000:
+                    problems.append("%s 沒產出來或是空的" % hit[0])
+    finally:
+        server.shutdown()
+        server.server_close()
     return problems
 
 
