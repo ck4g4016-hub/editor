@@ -923,6 +923,8 @@ def check():
     problems.extend(_review_page_can_add_manual())
     problems.extend(_address_drops_building_number())
     problems.extend(_report_keeps_its_own_words())
+    problems.extend(_grid_survives_thin_lines())
+    problems.extend(_grid_image_falls_back())
     problems.extend(_sheet_quality_reported())
 
     for label, run, want in cases:
@@ -1279,6 +1281,122 @@ def _pages_carry_token():
                     "editor/%s 第 %d 行的 api/ 請求沒有包在 api() 裡，"
                     "會因為沒帶權杖被擋成 403：%s"
                     % (name, line, text[start:start + 40].replace("\n", " ")))
+    return problems
+
+
+def _grid_survives_thin_lines():
+    """影印件那種又細又淡的格線，合成底稿之後還要找得到。
+
+    **這條檢查是踩過坑才有的。** 承辦人的 C 表是房屋稅來文的影印件，格線
+    又細又淡。底稿的合成規則是「逐像素取最亮的」—— 只要有任何一份樣本在
+    那個點沒有墨，那個點就變白。每份掃描對位差一兩個像素，三份一疊就把
+    格線吃到只剩殘骸，程式再也認不出「一排格子」。
+
+    後果不是「差一點」，是**整欄退回整行讀**：身分證十個字連在一起讀成
+    六碼、七碼，而診斷報告上只看得到「格數 0」這三個字。
+
+    拿承辦人給的真實 C 表實測：單張原稿找得到 5~11 條格線，三份／四份／
+    五份合成的底稿**全部找不到**；加粗 4 像素之後找到 11 條，grid_spans
+    切出 10 格、每格寬 94~96 像素。
+
+    負向驗證兩條，都在最後：
+      * 加粗 0 的結果必須跟預設完全一樣（相減用的底稿一個像素都不能動）
+      * 加粗過的底稿必須真的比較黑（不然這條檢查等於什麼都沒測）
+    """
+    import cv2
+    import numpy as np
+
+    from pipeline import baseimage, recognise
+
+    problems = []
+
+    # 固定的特徵點，讓 align 有東西可以對；位置固定所以每次跑結果一樣
+    texture = np.random.RandomState(1)
+    dots = [(texture.randint(20, 1180), texture.randint(20, 240)) for _ in range(500)]
+
+    def photocopy(seed, dx, dy):
+        """一份「影印件」：細又淡的格線 + 每份不同的手寫 + 對位誤差。"""
+        rng = np.random.RandomState(seed)
+        img = np.full((260, 1200), 255, np.uint8)
+        for x, y in dots:
+            cv2.rectangle(img, (x, y), (x + 3, y + 3), 40, -1)
+        for index in range(11):                       # 十個格子要十一條線
+            cv2.line(img, (60 + index * 100, 40), (60 + index * 100, 210), 150, 1)
+        for index in range(10):                       # 每份寫不一樣的字
+            cv2.putText(img, str(rng.randint(0, 10)),
+                        (60 + index * 100 + 25, 170),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.8, 0, 4)
+        return cv2.warpAffine(img, np.float32([[1, 0, dx], [0, 1, dy]]),
+                              (1200, 260), borderValue=255)
+
+    samples = [photocopy(0, 0, 0), photocopy(1, 2, 1), photocopy(2, -2, -1),
+               photocopy(3, 1, -2), photocopy(4, -1, 2)]
+
+    plain, weak = baseimage.compose(samples)
+    if weak:
+        problems.append("測試樣本有 %d 份對不齊，這條檢查測不到東西" % len(weak))
+    thick, _weak = baseimage.compose(samples, thicken=baseimage.GRID_THICKEN)
+
+    # 正向：加粗過的那張找得到一排格線
+    lines, _top, _bottom = recognise.grid_lines(thick)
+    if not lines or len(lines) < recognise.MIN_CELLS + 1:
+        problems.append("加粗 %d 之後還是找不到格線（找到 %s 條）"
+                        % (baseimage.GRID_THICKEN,
+                           len(lines) if lines else 0))
+
+    # 這條檢查要有意義，前提是「不加粗真的會失敗」。不會失敗就代表
+    # 樣本做得不像影印件，這條檢查是假的安心。
+    before, _t, _b = recognise.grid_lines(plain)
+    if before and len(before) >= recognise.MIN_CELLS + 1:
+        problems.append("不加粗竟然也找得到格線 —— 測試樣本沒有重現影印件"
+                        "被吃掉格線的情形，這條檢查等於沒測")
+
+    # 負向驗證一：相減用的底稿一個像素都不能動
+    again, _weak = baseimage.compose(samples, thicken=0)
+    if not np.array_equal(plain, again):
+        problems.append("thicken=0 的結果跟預設不一樣 —— 相減用的底稿被動到了")
+
+    # 負向驗證二：加粗過的那張必須真的比較黑
+    if (thick < 160).sum() <= (plain < 160).sum():
+        problems.append("加粗過的底稿沒有比較黑，thicken 根本沒有作用")
+    return problems
+
+
+def _grid_image_falls_back():
+    """沒有 grid.png 的舊樣板要照舊能跑，有的時候要用它。
+
+    退回 base.png 是刻意的：舊樣板還沒重做底稿，退回去就是改之前的行為，
+    不會壞掉，重做一次就自動變好。**「改版之後舊樣板整批壞掉」比慢一點
+    才變好糟得多。**
+    """
+    import json
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    from pipeline import process, resources
+
+    problems = []
+    store = tempfile.mkdtemp()
+    os.makedirs(os.path.join(store, "Z"))
+    with open(os.path.join(store, "Z", "index.json"), "w", encoding="utf-8") as handle:
+        json.dump({"code": "Z", "name": "測試", "pages": {}}, handle, ensure_ascii=False)
+
+    base = np.full((80, 80, 3), 200, np.uint8)
+    resources.imwrite(os.path.join(store, "Z", "base.png"), base)
+
+    converter = process.Converter(store)
+    got = converter.grid_of("Z")
+    if got is None or int(got.mean()) != 200:
+        problems.append("沒有 grid.png 的時候沒有退回 base.png")
+
+    grid = np.full((80, 80, 3), 100, np.uint8)
+    resources.imwrite(os.path.join(store, "Z", "grid.png"), grid)
+    converter = process.Converter(store)          # 重新載入，不吃快取
+    got = converter.grid_of("Z")
+    if got is None or int(got.mean()) != 100:
+        problems.append("有 grid.png 的時候沒有拿它來用")
     return problems
 
 

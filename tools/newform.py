@@ -157,11 +157,22 @@ def base_from_scans(store, code, paths):
     image, weak = baseimage.compose(samples, reference=previous)
     if not resources.imwrite(target, image):
         raise ValueError("寫不出底圖：%s" % target)
+
+    # 再疊一張「找格線用」的。同一批樣本、同一個座標系，差別只在合成前
+    # 把墨跡加粗 —— 影印件的細格線經不起「逐像素取最亮」，見 GRID_THICKEN。
+    # 相減照樣用上面那張，所以這一張加粗不會影響到手寫筆畫。
+    grid_target = os.path.join(store, code, "grid.png")
+    grid, _weak = baseimage.compose(samples, reference=previous,
+                                    thicken=baseimage.GRID_THICKEN)
+    if not resources.imwrite(grid_target, grid):
+        raise ValueError("寫不出找格線用的底圖：%s" % grid_target)
+
     note = "底圖來源：%d 份掃描件合成" % (len(samples) - len(weak))
     if weak:
         note += "（有 %d 份對不齊，沒有納入）" % len(weak)
     if previous is not None:
         note += "。沿用原本底圖的座標系，欄位框不用重框"
+    note += "。另存了一張 grid.png 專供找格線用（影印件的細格線靠它）"
     return target, note
 
 

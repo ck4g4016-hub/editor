@@ -118,6 +118,24 @@ class Converter:
                                                 cv2.IMREAD_COLOR)
         return self._bases[key]
 
+    def grid_of(self, code, role="front"):
+        """**找格線專用**的底圖。沒有就退回一般底圖。
+
+        跟 base.png 同一批樣本、同一個座標系，差別只在合成前把墨跡加粗過
+        —— 影印來文（承辦人的 C 表）格線又細又淡，「逐像素取最亮」會把它
+        吃掉，格線一找不到，身分證那一欄就退回整行讀，十個字讀成六碼。
+
+        退回 base.png 是刻意的：舊樣板沒有 grid.png，退回去就是改之前的
+        行為，不會壞掉，重做一次底稿就會自動變好。
+        """
+        key = (code, role, "grid")
+        if key not in self._bases:
+            name = "grid.png" if role == "front" else "grid_back.png"
+            image = resources.imread(os.path.join(self.store, code, name),
+                                     cv2.IMREAD_COLOR)
+            self._bases[key] = image if image is not None else self.base_of(code, role)
+        return self._bases[key]
+
     def fields_of(self, code):
         if code not in self._fields:
             self._fields[code] = fieldmod.load(self.store, code)
@@ -203,6 +221,12 @@ class Converter:
                     "roles": 0,
                     "base": "有" if base is not None else "沒有",
                     "base_size": "%dx%d" % (base.shape[1], base.shape[0]) if base is not None else "-",
+                    # 有沒有專供找格線的那張。沒有就是還沒重做底稿 ——
+                    # 影印來文的細格線會被吃掉，一字一格的欄位會退回整行讀，
+                    # 而報告上只看得到「格數 0」，看不出是這個原因。
+                    "grid": ("有" if os.path.isfile(
+                        os.path.join(self.store, template.code, "grid.png"))
+                        else "沒有（底稿要重做一次）"),
                     "field_count": len(definitions),
                     "fields": "、".join(
                         "%s/%s/%s" % (fieldmod.COLUMNS.get(d.column, d.column), d.kind, d.mode)
@@ -357,8 +381,11 @@ class Converter:
                 _, sheet, base, quality = self.sheet_of(
                     code, page, role, front.rotation)
                 record.sheets[role] = quality
+                # 找格線用加粗過的那張（沒有就自動退回 base）。它只拿來找
+                # 格線，切字讀字用的還是 sheet —— 相減那一步完全沒動到。
+                grid = self.grid_of(code, role) if base is not None else None
                 for definition in by_box:
-                    self._read_field(record, sheet, definition, keep_crops, base)
+                    self._read_field(record, sheet, definition, keep_crops, grid)
 
         # 公文文號**一律**整頁找，不管樣板有沒有定義這一欄。
         #
@@ -454,7 +481,7 @@ class Converter:
         elif problem:
             record.problems[definition.column] = problem
 
-    def _read_field(self, record, sheet, definition, keep_crops, base=None):
+    def _read_field(self, record, sheet, definition, keep_crops, grid=None):
         """讀一個欄位。
 
         同一個欄位最多讀三遍，因為沒有一種讀法對所有欄位都最好：
@@ -491,7 +518,11 @@ class Converter:
 
             # 照原稿印好的格線再讀一次。格線在底圖上，減掉版面之後的影像
             # 只剩手寫，所以要拿底圖去找線、拿減完的影像去切字。
-            printed = recognise.crop_field(base, box) if base is not None else crop
+            #
+            # 這裡拿的是**加粗過的**那張（grid.png），不是相減用的那張 ——
+            # 影印件的細格線經不起「逐像素取最亮」。切字讀字用的還是 crop，
+            # 所以加粗不會碰到手寫筆畫。詳見 baseimage.GRID_THICKEN。
+            printed = recognise.crop_field(grid, box) if grid is not None else crop
             spans = recognise.grid_spans(printed, crop)
             cells = [crop[:, a:b] for a, b in spans]
             if spans and grid_source is None:

@@ -253,9 +253,15 @@ def build(journal, notes=None, version=None):
 
     section("樣板")
     if journal.templates:
-        rows = [[t["code"], t["roles"], t["base"], t["base_size"], t["field_count"],
-                 t["fields"] or "── 還沒定義欄位"] for t in journal.templates]
-        out.extend(_table(["代號", "頁數", "底圖", "底圖尺寸", "欄位數", "欄位"], rows))
+        rows = [[t["code"], t["roles"], t["base"], t.get("grid", "?"), t["base_size"],
+                 t["field_count"], t["fields"] or "── 還沒定義欄位"]
+                for t in journal.templates]
+        out.extend(_table(["代號", "頁數", "底圖", "格線圖", "底圖尺寸", "欄位數", "欄位"], rows))
+        out.append("")
+        out.append("「格線圖」是專門用來找印刷格線的那張底稿（grid.png）。影印來文的")
+        out.append("格線又細又淡，一般底稿在合成時會把它吃掉，一字一格的欄位就退回")
+        out.append("整行讀 —— 身分證十個字會讀成六碼、七碼。**顯示「沒有」就去重做一次")
+        out.append("底稿**，欄位框不用重框。")
     else:
         out.append("樣板資料夾是空的 —— 這樣什麼都認不出來。")
 
