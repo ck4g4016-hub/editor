@@ -921,6 +921,8 @@ def check():
     problems.extend(_doc_number_not_forced())
     problems.extend(_export_warnings())
     problems.extend(_review_page_can_add_manual())
+    problems.extend(_address_drops_building_number())
+    problems.extend(_sheet_quality_reported())
 
     for label, run, want in cases:
         try:
@@ -1276,6 +1278,124 @@ def _pages_carry_token():
                     "editor/%s 第 %d 行的 api/ 請求沒有包在 api() 裡，"
                     "會因為沒帶權杖被擋成 403：%s"
                     % (name, line, text[start:start + 40].replace("\n", " ")))
+    return problems
+
+
+def _address_drops_building_number():
+    """門牌後面印的「建號：01234-000」要切掉，但不能切到路名。
+
+    承辦人 2026-09-10：「地址的部分把建號抓出來了，不要建號這些東西。」
+
+    **原本不但沒切，還通過驗證** —— 「…26號16樓建號：12345-000」正規化完
+    看起來仍然像一個合法的門牌，畫面上一個提醒都沒有，就這樣進了 RPA。
+
+    負向驗證在最後兩段：真的帶「建」字的路名一個都不能被切，而且拿兩區的
+    官方路名清單整份掃一遍，確認沒有任何一條路名會踩到這條規則。
+    不然這一刀哪天就會砍掉真的門牌，而且是安靜地砍。
+    """
+    from pipeline import lexicon, validate
+
+    problems = []
+
+    # 正向：建號那一段要不見，前面的門牌要原封不動
+    for text, want in (
+            ("地址：三峽區中山里民生街27巷26號五樓建號：01234-000", "民生街27巷26號五樓"),
+            ("三峽區大埔里民生街27巷26號16樓建號：12345-000", "民生街27巷26號十六樓"),
+            ("民生街27巷26號五樓 房屋建號：", "民生街27巷26號五樓")):
+        got, _note = validate.address(text)
+        if got != want:
+            problems.append("「%s」應該變成「%s」，實際是「%s」" % (text, want, got))
+
+    # 負向驗證一：帶「建」字的路名不可以被砍
+    for text in ("建國路5號", "福建街12號", "建國南路一段3號", "建成路17巷2號"):
+        got, _note = validate.address(text)
+        if "建" not in got:
+            problems.append("「%s」被建號那條規則砍掉了，變成「%s」" % (text, got))
+
+    # 負向驗證二：整份官方路名清單掃一遍，沒有一條會踩到這條規則。
+    # 這一條比上面四個例子重要 —— 例子是我想得到的，清單是真的會遇到的。
+    names = set()
+    for _district, roads in (lexicon.builtin() or {}).items():
+        names.update(roads)
+    hit = [name for name in names if validate._BUILDING_NUMBER.search(name)]
+    if hit:
+        problems.append("路名清單裡有 %d 條會被建號那條規則砍到：%s"
+                        % (len(hit), sorted(hit)[:5]))
+    elif not names:
+        problems.append("路名清單讀不到，建號那條規則等於沒有驗過")
+    return problems
+
+
+def _sheet_quality_reported():
+    """診斷報告要看得出「底圖減得掉嗎」。
+
+    **這條檢查是踩過坑才有的。** 承辦人回報手寫的申請書「門牌會誤抓到旁邊
+    的字」，讀出來的東西裡混著印刷的「段」「弄」「號」「樓」。那有兩種完全
+    不同的原因：
+
+        底圖減不掉 → 欄位是從沒減過的原圖上裁的，印刷的字當然跟著進去
+        底圖減得掉 → 那就是框的位置或 OCR 的問題
+
+    修的地方不一樣（一個重建底圖、一個調樣板），而報告上**看不出是哪一種**，
+    只能猜。所以把它變成報告的一段。
+
+    負向驗證在最後一段：沒有底圖的時候一定要說「減不掉」，不能靜靜地退回
+    原圖當作沒事 —— 那正是現在這個情況難查的原因。
+    """
+    import json
+    import tempfile
+
+    import numpy as np
+
+    from pipeline import process, resources
+
+    problems = []
+    work = tempfile.mkdtemp()
+    store = os.path.join(work, "樣板")
+    os.makedirs(os.path.join(store, "F"))
+    blank = np.full((3508, 2480, 3), 255, np.uint8)
+    resources.imwrite(os.path.join(store, "F", "front.png"), blank)
+    with open(os.path.join(store, "F", "index.json"), "w", encoding="utf-8") as handle:
+        json.dump({"code": "F", "name": "測試表", "pages": {"front": "front.png"}},
+                  handle, ensure_ascii=False)
+
+    class Page:
+        source = None
+        index = 0
+        rotation = 0
+
+    # 造一頁真的可以算的影像
+    import cv2
+    import pymupdf
+
+    path = os.path.join(work, "scan.pdf")
+    document = pymupdf.open()
+    _ok, buffer = cv2.imencode(".png", blank)
+    page = document.new_page(width=595, height=842)
+    page.insert_image(pymupdf.Rect(0, 0, 595, 842), stream=buffer.tobytes())
+    document.save(path)
+    document.close()
+    Page.source = path
+
+    converter = process.Converter(store)
+    result = converter.sheet_of("F", Page(), "front", 0)
+    # 簽章本身也要守住：sheet_of 多回傳一個值而呼叫端沒改的話，
+    # 每一個單元檢查都會照樣通過，真正跑起來才會炸。
+    if len(result) != 4:
+        problems.append("sheet_of 回了 %d 個值，應該是 4 個（多了對位品質那一份）"
+                        % len(result))
+        return problems
+
+    # 負向驗證：這個樣板沒有 base.png，一定要說「減不掉」並講出原因
+    quality = result[3]
+    if quality.get("減版面"):
+        problems.append("沒有底圖卻回報「減得掉」—— 報告會看不出欄位是從原圖裁的")
+    if not quality.get("原因"):
+        problems.append("減不掉卻沒有講原因，報告上等於什麼都沒說")
+
+    text = open(resources.path("pipeline", "diagnose.py"), encoding="utf-8").read()
+    if "底圖減得掉嗎" not in text:
+        problems.append("診斷報告沒有「底圖減得掉嗎」這一段")
     return problems
 
 

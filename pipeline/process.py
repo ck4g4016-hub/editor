@@ -64,6 +64,11 @@ class Record:
         # 切出來的每一格影像。**含個資**，只給承辦人自己在本機看，
         # 不會進診斷報告。看圖才知道是「格子切歪了」還是「字真的認不出來」。
         self.cells = {}
+        # 每一面的底圖對位品質：{"front": {"減版面": True, "對位": 0.87}}。
+        # 減不掉的時候欄位是從**沒減過的原圖**上裁的，印刷的「段巷弄號樓」
+        # 會跟手寫混在一起被讀進來 —— 那種讀出來的東西看起來就像 OCR 很爛，
+        # 但根本不是 OCR 的問題。以前診斷報告看不出這件事，只能猜。
+        self.sheets = {}
 
     @property
     def status(self):
@@ -227,7 +232,10 @@ class Converter:
             how = record.how.get(column) or {}
             entries.append({
                 "column": column,
-                "kind": definition.kind if definition else "?",
+                # 沒有欄位定義不代表沒有型別 —— 公文文號現在是整頁自動找的，
+                # 樣板上根本不會有它的欄位，顯示「?」會讓人以為是壞掉了。
+                "kind": (definition.kind if definition
+                         else fieldmod.DEFAULT_KIND.get(column, "整頁找")),
                 "confidence": record.confidence.get(column, 0.0),
                 "raw": diagnose.mask(record.raw.get(column, "")),
                 "value": diagnose.mask(value),
@@ -247,12 +255,15 @@ class Converter:
             "file": self.journal.file_id(record.source),
             "page": record.page + 1,
             "fields": entries,
+            "sheets": record.sheets,
         }
 
     def sheet_of(self, code, page, role, rotation=None):
         """把一頁算成「減掉印刷版面之後」的影像。
 
-        回傳 (原圖, 減掉版面的影像, 底圖)。
+        回傳 (原圖, 減掉版面的影像, 底圖, 對位品質)。
+
+        對位品質是 {"減版面": bool, "對位": 0~1 或 None}，只給診斷報告用。
 
         底圖對得上就相減，只留手寫的內容；對不上就退回灰階原圖 ——
         減不掉頂多辨識差一點，硬減會把整頁弄糊。
@@ -269,11 +280,13 @@ class Converter:
             turn)
         base = self.base_of(code, role)
         if base is None:
-            return image, baseimage.as_gray(image), None
+            return image, baseimage.as_gray(image), None, {
+                "減版面": False, "對位": None, "原因": "這一面沒有底圖"}
         try:
             sheet = baseimage.subtract(base, image)
         except ValueError:
-            return image, baseimage.as_gray(image), None
+            return image, baseimage.as_gray(image), None, {
+                "減版面": False, "對位": None, "原因": "底圖對不上這張掃描件"}
 
         # 再靠顏色抽一次筆跡，兩條路取聯集（任一條認出的墨都留下）。
         #
@@ -283,11 +296,15 @@ class Converter:
         # 黑筆寫的抽不出來（跟格線同色），那時候顏色這條路是空的，
         # 聯集就等於只有減版面 —— 不會比現在差。
         moved, _inliers = baseimage.to_base(base, image)
+        quality = {"減版面": True, "對位": None, "原因": ""}
         if moved is not None:
             colour = baseimage.ink_by_colour(moved)
             if colour is not None and colour.shape == sheet.shape:
                 sheet = np.minimum(sheet, colour)
-        return image, sheet, base
+            # 對位有多準。減得掉不代表減得乾淨 —— 差幾個像素就會在印刷筆畫
+            # 邊緣留下殘影，欄位裡看起來像多了幾撇。這個數字讓報告看得出來。
+            quality["對位"] = baseimage.coverage(base, moved)
+        return image, sheet, base, quality
 
     def read_document(self, document, keep_crops=False):
         """讀一件申請案，把欄位辨識出來。
@@ -337,7 +354,9 @@ class Converter:
                     self._read_label_field(record, definition, lines, rules)
 
             if by_box:
-                _, sheet, base = self.sheet_of(code, page, role, front.rotation)
+                _, sheet, base, quality = self.sheet_of(
+                    code, page, role, front.rotation)
+                record.sheets[role] = quality
                 for definition in by_box:
                     self._read_field(record, sheet, definition, keep_crops, base)
 

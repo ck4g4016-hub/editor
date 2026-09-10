@@ -270,6 +270,29 @@ def build(journal, notes=None, version=None):
     else:
         out.append("沒有任何欄位被辨識 —— 樣板可能還沒定義欄位。")
 
+    section("底圖減得掉嗎")
+    out.append("欄位是從「掃描件減掉印刷版面」之後的影像上裁下來的，只留手寫的內容。")
+    out.append("減不掉的時候就退回原圖 —— 印刷的「段巷弄號樓」會跟手寫混在一起被")
+    out.append("讀進來，看起來像 OCR 很爛，其實是版面沒減掉。這一段就是要分清楚")
+    out.append("這兩件事，因為修的地方完全不同（一個是重建底圖，一個是 OCR）。")
+    out.append("")
+    out.append("對位是底圖的印刷筆畫有多少比例落在掃描件的墨跡上，越高越準。")
+    out.append("實測對得好的在 0.80 以上；低於 0.60 就要懷疑底圖是不是該重做。")
+    out.append("")
+    rows = []
+    for record in journal.records:
+        for role, quality in sorted((record.get("sheets") or {}).items()):
+            hit = quality.get("對位")
+            rows.append([record["index"] + 1, record["code"],
+                         "正面" if role == "front" else "背面",
+                         "減得掉" if quality.get("減版面") else "減不掉",
+                         "－" if hit is None else "%.2f" % hit,
+                         quality.get("原因") or ""])
+    if rows:
+        out.extend(_table(["件", "表格", "面", "版面", "對位", "說明"], rows))
+    else:
+        out.append("這一批沒有用到框選的欄位（全部是關鍵字模式），所以沒有減版面。")
+
     section("怎麼讀出來的")
     out.append("同一欄最多讀三遍，因為沒有一種讀法對所有欄位都最好：")
     out.append("  整行    一般欄位（門牌、姓名）唯一合理的讀法")
