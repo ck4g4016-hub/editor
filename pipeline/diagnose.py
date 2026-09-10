@@ -70,6 +70,39 @@ _PATH = re.compile(r"[A-Za-z]:\\[^\s\"\']*|/[^\s\"\']{4,}")
 _LONG_DIGITS = re.compile(r"\d{6,}")
 
 
+def mask_note(message):
+    """遮罩**程式自己寫的說明**（「沒讀到」「整頁上找不到十碼的公文文號」）。
+
+    這種字面要留著。以前它們是直接拼進讀法的結果裡一起被遮罩的，於是
+    「（沒讀到）」在報告上變成「（字字字）」—— 看起來像讀到了三個中文字，
+    我自己就這樣誤判過一次，以為報告前後矛盾。**看不懂的報告比沒有報告糟**，
+    因為它會把人帶去錯的方向。
+
+    但字面留著不等於整串放行：引號裡的內容跟六碼以上的連續數字照樣遮掉。
+    說明裡有沒有夾到讀出來的東西，是寫那句話的人當下才知道的事，
+    這裡不賭那個 —— 遮罩這一關寧可多做。
+    """
+    return _LONG_DIGITS.sub(lambda m: "9" * len(m.group()),
+                            mask_problem(message or ""))
+
+
+def mask_reading(item):
+    """遮罩一種讀法的結果。
+
+    字串就是「讀到的東西」，整串遮罩。
+    dict 是「讀到的東西」＋「程式自己的說明」，前者遮、後者不遮。
+    """
+    if not isinstance(item, dict):
+        return mask(item or "")
+    value = mask(item.get("值") or "")
+    note = mask_note(item.get("說明") or "")
+    if value and note:
+        return "%s（%s）" % (value, note)
+    if note:
+        return "（%s）" % note
+    return value
+
+
 def mask_error(message):
     """遮罩例外訊息。
 

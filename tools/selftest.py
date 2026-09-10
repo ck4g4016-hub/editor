@@ -922,6 +922,7 @@ def check():
     problems.extend(_export_warnings())
     problems.extend(_review_page_can_add_manual())
     problems.extend(_address_drops_building_number())
+    problems.extend(_report_keeps_its_own_words())
     problems.extend(_sheet_quality_reported())
 
     for label, run, want in cases:
@@ -1278,6 +1279,63 @@ def _pages_carry_token():
                     "editor/%s 第 %d 行的 api/ 請求沒有包在 api() 裡，"
                     "會因為沒帶權杖被擋成 403：%s"
                     % (name, line, text[start:start + 40].replace("\n", " ")))
+    return problems
+
+
+def _report_keeps_its_own_words():
+    """診斷報告裡「程式自己寫的話」不可以被遮罩掉。
+
+    **這條檢查是踩過坑才有的，而且被騙的人是我。** 承辦人 2026-09-09 那份
+    報告上，A 表段名那一欄的「怎麼讀出來的」寫著
+
+        「地段字段」→ （字字字）
+
+    看起來像「標籤找到了，也讀到三個中文字」，可是同一列的結果卻寫「整頁上
+    找不到這個標籤」。我把它當成報告前後矛盾，回報給承辦人說要再查。
+
+    真相是「（字字字）」根本不是讀到的東西，是程式自己的字串「（沒讀到）」
+    被遮罩了。**看不懂的報告比沒有報告糟**，因為它會把人帶去錯的方向。
+
+    負向驗證在最後三段：真的資料照樣要遮，而且說明裡夾到六碼以上的數字、
+    或引號裡的內容，一樣要遮掉 —— 「字面留著」不能變成整串放行。
+    """
+    from pipeline import diagnose
+
+    problems = []
+
+    # 正向：程式自己的說明要看得懂
+    got = diagnose.mask_reading({"值": "", "說明": "找不到：整頁上找不到十碼的公文文號"})
+    if "整頁上找不到十碼的公文文號" not in got:
+        problems.append("程式自己的說明被遮掉了：%s" % got)
+
+    got = diagnose.mask_reading({"值": "「地段小段」→", "說明": "沒讀到"})
+    if "沒讀到" not in got:
+        problems.append("「沒讀到」被遮成看不懂的東西：%s" % got)
+
+    # 負向驗證一：讀到的東西照樣要遮
+    got = diagnose.mask_reading("鳳鳴路9號")
+    if got != "字字路9號":
+        problems.append("讀出來的門牌沒有被遮罩：%s" % got)
+    got = diagnose.mask_reading({"值": "鳳鳴路9號", "說明": ""})
+    if "鳳鳴" in got:
+        problems.append("dict 形式的值沒有被遮罩：%s" % got)
+
+    # 負向驗證二：說明裡夾到長數字（文號、身分證）一樣要遮
+    got = diagnose.mask_reading({"值": "", "說明": "整頁上有 1155697586 這個號碼"})
+    if "1155697586" in got:
+        problems.append("說明裡的十碼數字漏出去了：%s" % got)
+
+    # 負向驗證三：說明裡引號夾住的內容要遮
+    got = diagnose.mask_reading({"值": "", "說明": "路名讀到的是「鳳鳴」"})
+    if "鳳鳴" in got:
+        problems.append("說明裡引號夾住的內容漏出去了：%s" % got)
+
+    # 那兩個現場不可以再把程式的話拼進要遮罩的字串裡
+    text = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "pipeline", "process.py"), encoding="utf-8").read()
+    for bad in ('or "（沒讀到）"', 'or ("找不到（%s）" % note)'):
+        if bad in text:
+            problems.append("process.py 又把程式自己的話拼進要遮罩的字串裡：%s" % bad)
     return problems
 
 

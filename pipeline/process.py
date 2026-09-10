@@ -244,7 +244,7 @@ class Converter:
                 # **白名單，不是黑名單。** 只有列在這裡的讀法才會進報告 ——
                 # 新增一種讀法時如果忘了加，報告會少一欄（看得出來），
                 # 而不是把沒遮罩過的東西漏出去（看不出來）。
-                "readings": {name: diagnose.mask(how.get(name, ""))
+                "readings": {name: diagnose.mask_reading(how.get(name, ""))
                              for name in ("整行", "照格子", "逐格", "逐空白",
                                           "關鍵字", "整頁找", "採用")
                              if name in how},
@@ -387,7 +387,9 @@ class Converter:
         boxed = record.values.get("doc_number")
         found, note = stamp.find([document.front, document.back], document.front.rotation)
         how = record.how.setdefault("doc_number", {})
-        how["整頁找"] = found or ("找不到（%s）" % note)
+        # 同上：找不到的原因是程式寫的字，遮掉就變成一串「字」看不懂了
+        how["整頁找"] = ({"值": found, "說明": ""} if found
+                        else {"值": "", "說明": "找不到：%s" % note})
 
         if not found:
             # 找不到就維持框選的結果，什麼都不動
@@ -435,7 +437,11 @@ class Converter:
             lines, definition.label, drop_digits=drop_digits, rules=rules)
 
         how = record.how.setdefault(definition.column, {})
-        how["關鍵字"] = "「%s」→ %s" % (definition.label, raw or "（沒讀到）")
+        # 「沒讀到」是程式自己的話，不能拼進要遮罩的那一串 ——
+        # 拼進去的話報告上會變成「（字字字）」，看起來像讀到了三個中文字。
+        how["關鍵字"] = {"值": "「%s」→ %s" % (definition.label, raw) if raw
+                                else "「%s」→" % definition.label,
+                        "說明": "" if raw else (note or "沒讀到")}
         how["採用"] = raw
 
         value, problem = validate.check(
