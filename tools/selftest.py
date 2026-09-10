@@ -1192,11 +1192,6 @@ def _household_sheet():
     from pipeline import output
 
     problems = []
-    try:
-        import xlrd
-    except ImportError:
-        xlrd = None
-
     records = [
         {"doc_number": "1155698196", "district": "鶯歌區",
          "address": "鳳鳴路9號六樓", "name": "王大明", "id_number": "A123456789"},
@@ -1220,7 +1215,15 @@ def _household_sheet():
         problems.append("全形轉換動到中文數字：%r"
                         % output.to_fullwidth("中正路二段15號"))
 
-    if xlrd is None:
+    # 以前這裡是「裝不到 xlrd 就直接 return」，於是 Windows 建置機上沒裝
+    # 的那段期間，下面每一條都靜靜地沒跑過，建置照樣綠燈。
+    # 現在 xlrd 列進 requirements.txt，缺了就讓檢查不過 ——
+    # 「跳過但不出聲」比沒有檢查更糟，它給的是假的安心。
+    try:
+        import xlrd
+    except ImportError:
+        problems.append("沒有裝 xlrd，戶政清冊的內容就沒有被驗過 —— "
+                        "請 pip install -r requirements.txt")
         return problems
 
     sheet = xlrd.open_workbook(path).sheet_by_index(0)

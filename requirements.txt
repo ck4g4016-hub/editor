@@ -10,3 +10,11 @@ rapidocr-onnxruntime==1.4.4
 # 戶政系統的地址清冊只吃 .xls（BIFF8），openpyxl 只會寫 .xlsx。
 # xlwt 是純 Python、100 kB，沒有任何網路行為。
 xlwt==1.3.0
+# xlrd 只有自我檢查在用：產出 .xls 之後**讀回來逐格比對**（CLAUDE.md 第一條）。
+# 正式程式不會 import 它，所以不會被打包進執行檔（build-app.yml 的
+# --hidden-import 裡也沒有它）。
+#
+# 以前沒有列在這裡，於是 Windows 建置機上一直沒裝，戶政清冊的內容檢查
+# 就靜靜地被跳過 —— 建置照樣綠燈，只是那一段從來沒真的驗過。
+# 那種「跳過但不出聲」比沒有檢查更糟，所以現在缺它會直接讓檢查不過。
+xlrd==2.0.2
