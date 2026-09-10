@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import diagnose, fields as fieldmod, resources  # noqa: E402
+from pipeline import diagnose, fields as fieldmod, resources, validate  # noqa: E402
 from tools import localserver  # noqa: E402
 from pipeline import output, process  # noqa: E402
 
@@ -127,7 +127,7 @@ def make_handler(state, guard):
 
             # 公文文號現在是內網腳本 3、4 用來對應的鍵，撞號會有一筆被蓋掉。
             # 檔還是照產（人已經複核完了，不該白做），但一定要講出來。
-            warnings = []
+            warnings = export_warnings(rows)
             for value, count in output.duplicate_doc_numbers(rows):
                 warnings.append(
                     "公文文號「%s」出現 %d 次。內網腳本是用這個號碼對應資料的，"
@@ -156,6 +156,39 @@ def make_handler(state, guard):
             pass
 
     return Handler
+
+
+# 匯出前最後一道關。看的是**最後真的要寫進檔案的那份值**，不是辨識當下的值 ——
+# 中間隔著一整個複核畫面，人可以改、也可以自己加一件手動輸入的。人改錯、
+# 手動那件漏填，前面所有的驗證都攔不到，因為那些驗證跑在人動手之前。
+#
+# 這裡只講、不改。值是人打的，程式沒有立場去動它（見 CLAUDE.md 第三條）。
+def export_warnings(rows):
+    """回傳匯出前要提醒的事情，一句一則。不會改動任何值。"""
+    warnings = []
+    for index, row in enumerate(rows, 1):
+        def note(column, text):
+            warnings.append("第 %d 件的%s%s" % (index, fieldmod.COLUMNS[column], text))
+
+        for column in process.CRITICAL:
+            if not (row.get(column) or "").strip():
+                note(column, "是空的")
+        # 行政區不在 CRITICAL 裡，但內網清冊的「完整地址」是拿它接出來的，
+        # 少了它那一欄會變成「新北市○○路5號」，戶政系統查不到。
+        if not (row.get("district") or "").strip():
+            note("district", "是空的，內網清冊的完整地址會少一段")
+
+        value = (row.get("id_number") or "").strip()
+        if value:
+            _fixed, problem = validate.id_number(value)
+            if problem:
+                note("id_number", "「%s」%s" % (value, problem))
+        value = (row.get("doc_number") or "").strip()
+        if value:
+            _fixed, problem = validate.doc_number(value)
+            if problem:
+                note("doc_number", "「%s」%s" % (value, problem))
+    return warnings
 
 
 def describe(state):

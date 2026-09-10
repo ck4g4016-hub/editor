@@ -29,6 +29,10 @@
   .badge{font-size:12px;padding:2px 9px;border-radius:11px;font-weight:600}
   .badge.ok{background:#e8f0e6;color:var(--ok)}
   .badge.review{background:#f6e6e6;color:var(--accent)}
+  .badge.hand{background:#eae6f2;color:#5b4a86}
+  .rec.hand > .head{background:#f6f4fa}
+  .rec > .head .grow{flex:1}
+  .rec > .head button{padding:4px 10px;font-size:12.5px}
   .fields{display:grid;grid-template-columns:1fr 1fr;gap:0}
   .fld{padding:11px 14px;border-bottom:1px solid #f0ece2;border-right:1px solid #f0ece2}
   .fld.flag{background:var(--flag)}
@@ -82,6 +86,7 @@
   <span class="stat" id="stat"></span>
   <span class="grow"></span>
   <span id="msg"></span>
+  <button id="add">手動加一件</button>
   <button id="report">產生診斷報告</button>
   <button class="primary" id="export">產生輸出檔</button>
 </header>
@@ -146,10 +151,49 @@ async function load(){
   render();
 }
 
+/* 手動加一件。
+
+   承辦人的原話：「有些特殊的申請書，少見但是有，作成樣本太浪費了。」
+   一年遇到兩三次的表格，為它建樣板、湊三份底稿、框十個欄位，划不來 ——
+   直接照著紙本打進來，跟辨識出來的一起輸出，是比較實際的做法。
+
+   手動的件放在最後面，所以辨識出來那幾件的序號不會被推移 ——
+   每一件的意見（notes）是照序號存的，序號一動，意見就會貼到別人身上。 */
+function addManual(){
+  data.records.push({
+    source: '手動輸入（沒有原圖可以對照）',
+    values: {}, raw: {}, flags: {}, crops: [], manual: true,
+  });
+  render();
+  const last = el('list').lastElementChild;
+  if (last){
+    last.scrollIntoView({behavior: 'smooth', block: 'center'});
+    const first = last.querySelector('input');
+    if (first) first.focus();
+  }
+  el('msg').textContent = '已加一件空白的，照著紙本填進去就好';
+  el('msg').className = '';
+}
+
+/* 只有手動加的可以刪。辨識出來的件刪掉會讓後面每一件的序號往前移，
+   而意見是照序號存的 —— 那會把寫給第 5 件的意見貼到第 6 件身上。 */
+function dropManual(index){
+  if (!data.records[index] || !data.records[index].manual) return;
+  data.records.splice(index, 1);
+  delete notes[index];
+  for (let k = index + 1; k <= data.records.length; k++){
+    if (k in notes){ notes[k - 1] = notes[k]; delete notes[k]; }
+  }
+  render();
+}
+
 function render(){
-  const flagged = data.records.filter(r => Object.keys(r.flags).length).length;
+  const hand = data.records.filter(r => r.manual).length;
+  const auto = data.records.filter(r => !r.manual);
+  const flagged = auto.filter(r => Object.keys(r.flags).length).length;
   el('stat').textContent =
-      `共 ${data.records.length} 件，${data.records.length - flagged} 件通過、${flagged} 件要看`;
+      `共 ${data.records.length} 件，${auto.length - flagged} 件通過、${flagged} 件要看`
+      + (hand ? `、${hand} 件手動輸入` : '');
 
   // 這個變數以前也叫 notes，把外層存意見的那個 notes 整個遮掉了 ——
   // 於是下面的 notes[i] = box.value 是在對一個字串設屬性，靜靜地什麼也沒發生，
@@ -175,7 +219,7 @@ function render(){
   el('list').innerHTML = data.records.map((r, i) => {
     const cells = data.columns.map(c => {
       const flag = r.flags[c.key];
-      const crop = r.crops.includes(c.key)
+      const crop = !r.manual && r.crops.includes(c.key)
         ? `<img src="${api(`api/crop?record=${i}&column=${c.key}`)}" alt=""
                 data-zoom="${esc(c.name)}">
            <div class="zoomhint">點圖片可放大</div>` : '';
@@ -195,18 +239,33 @@ function render(){
         ${check}${raw}</div>`;
     }).join('');
     const bad = Object.keys(r.flags).length;
+    const badge = r.manual
+      ? '<span class="badge hand">手動輸入</span>'
+      : `<span class="badge ${bad ? 'review' : 'ok'}">${bad ? bad + ' 個欄位要看' : '通過'}</span>`;
+    const drop = r.manual
+      ? `<span class="grow"></span><button data-drop="${i}">刪掉這一件</button>` : '';
+    const handnote = r.manual
+      ? `<div class="say"><label>這一件是手動輸入的，<b>沒有原圖可以對照</b> ——
+           程式只會在產生輸出檔時檢查格式（身分證檢查碼、公文文號十碼、欄位有沒有漏），
+           內容對不對只有你自己核得出來。行政區要填，內網清冊的完整地址是拿它接出來的。
+         </label></div>` : '';
     const say = `<div class="say">
       <label>這一件有什麼問題？（會寫進診斷報告，不影響輸出檔）</label>
       <textarea data-note="${i}" rows="1"
         placeholder="例如：門牌抓到上面那一格的內容">${esc(notes[i] || '')}</textarea></div>`;
-    return `<div class="rec">
+    return `<div class="rec ${r.manual ? 'hand' : ''}">
       <div class="head">
         <span class="who">第 ${i + 1} 件</span>
-        <span class="badge ${bad ? 'review' : 'ok'}">${bad ? bad + ' 個欄位要看' : '通過'}</span>
+        ${badge}
         <span class="src">${esc(r.source)}</span>
+        ${drop}
       </div>
-      <div class="fields">${cells}${say}</div></div>`;
+      <div class="fields">${handnote}${cells}${say}</div></div>`;
   }).join('');
+
+  el('list').querySelectorAll('button[data-drop]').forEach(btn => {
+    btn.addEventListener('click', () => dropManual(+btn.dataset.drop));
+  });
 
   el('list').querySelectorAll('textarea[data-note]').forEach(box => {
     box.addEventListener('input', () => { notes[+box.dataset.note] = box.value; });
@@ -245,6 +304,8 @@ function idOK(v){
   for (let i = 1; i <= 8; i++) total += (+v[i]) * (9 - i);
   return (total + (+v[9])) % 10 === 0;
 }
+
+el('add').addEventListener('click', addManual);
 
 el('report').addEventListener('click', async () => {
   el('msg').textContent = '整理中…'; el('msg').className = '';
@@ -297,8 +358,19 @@ el('export').addEventListener('click', async () => {
     if (out.ok){
       const warn = out.warnings || [];
       el('msg').textContent = '已產出：' + out.files.join('、')
-          + (warn.length ? '　⚠ ' + warn.join('　') : '');
+          + (warn.length ? `　⚠ 有 ${warn.length} 件事要看` : '');
       el('msg').className = warn.length ? 'warn' : 'ok';
+      // 提醒不能只塞在標題列。一行擠不下就看不到，而看不到的提醒等於沒有 ——
+      // 空白的門牌、打錯的檢查碼就這樣跟著輸出檔一起送進 RPA 了。
+      if (warn.length){
+        el('preview-path').textContent = '已產出：' + out.files.join('、');
+        el('preview-text').textContent =
+            '檔案已經產出來了，但下面這幾件請再看一眼：\n\n'
+            + warn.map(w => '• ' + w).join('\n')
+            + '\n\n程式沒有改動任何一個值，改不改由你決定。'
+            + '改完再按一次「產生輸出檔」就會覆蓋掉。';
+        el('preview').showModal();
+      }
     } else {
       showFailure(out);
     }

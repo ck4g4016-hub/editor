@@ -919,6 +919,8 @@ def check():
     problems.extend(_stamp_year_gate())
     problems.extend(_stamp_scans_both_ways())
     problems.extend(_doc_number_not_forced())
+    problems.extend(_export_warnings())
+    problems.extend(_review_page_can_add_manual())
 
     for label, run, want in cases:
         try:
@@ -1558,7 +1560,12 @@ def _review_serves_everything(records, unresolved, converter, work):
         if status != 200 or not jsonlib.loads(body).get("ok"):
             problems.append("/api/diagnose 回了 %d：%s" % (status, body[:120]))
 
-        rows = [record.values for record in records]
+        # 手動輸入的那一件跟辨識出來的一起送出去。複核畫面上按「手動加一件」
+        # 之後送出的就長這樣：沒有原圖、沒有辨識原文，只有人打進去的值。
+        手動 = {"district": "三峽區", "address": "民生街27巷26號16樓",
+                "id_number": "F128887458", "doc_number": "1155699478",
+                "name": "許三", "section": "民生段", "land_number": "0657-0000"}
+        rows = [record.values for record in records] + [手動]
         status, body = call("POST", "/api/export",
                             jsonlib.dumps({"records": rows}).encode(),
                             "application/json")
@@ -1577,9 +1584,126 @@ def _review_serves_everything(records, unresolved, converter, work):
                 full = os.path.join(out, hit[0])
                 if not os.path.isfile(full) or os.path.getsize(full) < 1000:
                     problems.append("%s 沒產出來或是空的" % hit[0])
+            problems.extend(_manual_row_in_files(out, names, 手動))
     finally:
         server.shutdown()
         server.server_close()
+    return problems
+
+
+def _manual_row_in_files(out, names, manual):
+    """手動輸入的那一件，三個輸出檔都要真的有它，而且是**讀回來**逐格比對。
+
+    **不能只看「匯出沒有報錯」。** 手動加的件跟辨識出來的件走的是同一條
+    輸出路徑，但它沒有 crops、沒有 raw、旗標是空的 —— 只要哪一段順手拿
+    record.crops 或 record.raw 去做事，它就會在半路被吃掉，而畫面上一切
+    正常：檔案照產、件數照樣寫著，只是少了一列。少一列這種事沒有人會發現。
+    """
+    import glob
+
+    problems = []
+
+    def find(prefix):
+        hit = [n for n in names if n.startswith(prefix)]
+        return os.path.join(out, hit[0]) if hit else None
+
+    # 外網清冊：行政區、門牌、公文文號、身分證
+    path = find("RPA-查調謄本清冊")
+    if path:
+        import openpyxl
+
+        rows = list(openpyxl.load_workbook(path).active.iter_rows(values_only=True))
+        want = (manual["district"], manual["address"],
+                manual["doc_number"], manual["id_number"])
+        if not any(tuple(r[:4]) == want for r in rows):
+            problems.append("外網清冊裡找不到手動輸入的那一件（要 %s，實際 %s）"
+                            % (want, [tuple(r[:4]) for r in rows[1:]]))
+
+    # 內網中繼檔：序號欄放公文文號、完整地址要接成一整串
+    path = find("HH")
+    if path:
+        import openpyxl
+
+        rows = list(openpyxl.load_workbook(path).active.iter_rows(values_only=True))
+        want = (manual["doc_number"], manual["district"], manual["id_number"],
+                "新北市" + manual["district"] + manual["address"], manual["name"])
+        if not any(tuple(r[:5]) == want for r in rows):
+            problems.append("內網中繼檔裡找不到手動輸入的那一件（要 %s，實際 %s）"
+                            % (want, [tuple(r[:5]) for r in rows[1:]]))
+
+    # 戶政清冊：地址要轉成全形
+    path = find("YHQ101")
+    if path:
+        import xlrd
+
+        from pipeline import output
+
+        sheet = xlrd.open_workbook(path).sheet_by_index(0)
+        want = output.to_fullwidth(manual["address"])
+        got = [[sheet.cell_value(r, c) for c in range(sheet.ncols)]
+               for r in range(sheet.nrows)]
+        if not any(want in row for row in got):
+            problems.append("戶政清冊裡找不到手動輸入那一件的全形地址（要 %r）" % want)
+    return problems
+
+
+def _export_warnings():
+    """匯出前的最後一道關：值是人打的，格式不對要講出來。
+
+    複核畫面上人可以改任何一個值，也可以自己加一件手動輸入的 —— 辨識時
+    跑過的驗證全部在那之前，攔不到人打錯的字。手動那件更是從頭到尾沒經過
+    任何驗證。
+
+    負向驗證在最後一段：一件完全正確的資料**必須一句話都不講**。
+    每一件都叫的檢查等於沒有檢查，人看兩次就開始跳過了。
+    """
+    from tools import review
+
+    problems = []
+    good = {"district": "三峽區", "address": "民生街27巷26號16樓",
+            "id_number": "F128887458", "doc_number": "1155699478", "name": "許三"}
+
+    cases = [
+        (dict(good, address=""), "門牌"),
+        (dict(good, district=""), "行政區"),
+        (dict(good, doc_number=""), "公文文號"),
+        (dict(good, id_number="F128887459"), "檢查碼"),
+        (dict(good, doc_number="11556994"), "10 碼"),
+    ]
+    for row, expect in cases:
+        said = review.export_warnings([row])
+        if not any(expect in line for line in said):
+            problems.append("匯出前的檢查沒有講出「%s」的問題，只說了 %s" % (expect, said))
+
+    # 負向驗證：完全正確的一件不可以有任何提醒
+    said = review.export_warnings([good])
+    if said:
+        problems.append("一件完全正確的資料也被提醒了：%s —— "
+                        "每一件都叫的檢查等於沒有檢查" % said)
+    return problems
+
+
+def _review_page_can_add_manual():
+    """複核畫面上一定要有「手動加一件」，而且刪除只能刪手動的那幾件。
+
+    刪掉辨識出來的件會讓後面每一件的序號往前移，而每一件的意見是照序號
+    存的 —— 那會把寫給第 5 件的意見貼到第 6 件身上，而且沒有人看得出來。
+    """
+    from pipeline import resources
+
+    problems = []
+    text = open(os.path.join(resources.base_dir(), "editor", "review.html"),
+                encoding="utf-8").read()
+    for need, why in (
+            ('id="add"', "沒有「手動加一件」的按鈕"),
+            ("function addManual", "沒有 addManual"),
+            ("function dropManual", "沒有 dropManual"),
+            ("manual: true", "手動加的件沒有標記成 manual，畫面分不出它沒有原圖")):
+        if need not in text:
+            problems.append("editor/review.html %s" % why)
+    if "if (!data.records[index] || !data.records[index].manual) return;" not in text:
+        problems.append("dropManual 沒有擋住「刪掉辨識出來的件」，"
+                        "序號一移，每一件的意見就會貼到別人身上")
     return problems
 
 
