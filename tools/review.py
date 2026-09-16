@@ -118,8 +118,13 @@ def make_handler(state, guard):
         def _export(self, payload):
             rows = payload.get("records", [])
             if not rows:
-                self._json({"ok": False, "error": "沒有資料可以輸出"}, 400)
+                self._json({"ok": False,
+                            "error": "沒有資料可以輸出（是不是每一件都被排除了？）"},
+                           400)
                 return
+            # 畫面上可以把掃錯的件排除掉，排除之後序號就不再等於清單位置。
+            # 提醒上寫的「第 N 件」要跟畫面對得起來，所以序號由畫面送過來。
+            numbers = payload.get("numbers")
             written = output.write_all(rows, state["out"])
             for path in written:
                 print("已產出: %s" % path)
@@ -127,7 +132,7 @@ def make_handler(state, guard):
 
             # 公文文號現在是內網腳本 3、4 用來對應的鍵，撞號會有一筆被蓋掉。
             # 檔還是照產（人已經複核完了，不該白做），但一定要講出來。
-            warnings = export_warnings(rows)
+            warnings = export_warnings(rows, numbers)
             for value, count in output.duplicate_doc_numbers(rows):
                 warnings.append(
                     "公文文號「%s」出現 %d 次。內網腳本是用這個號碼對應資料的，"
@@ -163,11 +168,23 @@ def make_handler(state, guard):
 # 手動那件漏填，前面所有的驗證都攔不到，因為那些驗證跑在人動手之前。
 #
 # 這裡只講、不改。值是人打的，程式沒有立場去動它（見 CLAUDE.md 第三條）。
-def export_warnings(rows):
-    """回傳匯出前要提醒的事情，一句一則。不會改動任何值。"""
+def export_warnings(rows, numbers=None):
+    """回傳匯出前要提醒的事情，一句一則。不會改動任何值。
+
+    numbers 是每一列在**複核畫面上**的序號。畫面可以把掃錯的件排除掉，
+    排除之後清單位置就不等於序號了 —— 提醒上如果還寫清單位置，人照著
+    「第 5 件」去找會看到第 6 件，然後開始懷疑提醒本身。沒給就照順序編。
+    """
     warnings = []
-    for index, row in enumerate(rows, 1):
-        def note(column, text):
+    for position, row in enumerate(rows):
+        index = position + 1
+        if numbers and position < len(numbers):
+            try:
+                index = int(numbers[position])
+            except (TypeError, ValueError):
+                index = position + 1
+
+        def note(column, text, index=index):
             warnings.append("第 %d 件的%s%s" % (index, fieldmod.COLUMNS[column], text))
 
         for column in process.CRITICAL:

@@ -31,6 +31,14 @@
   .badge.review{background:#f6e6e6;color:var(--accent)}
   .badge.hand{background:#eae6f2;color:#5b4a86}
   .rec.hand > .head{background:#f6f4fa}
+  /* 排除掉的件不刪除、只變灰 —— 序號要維持不動（原圖是照序號跟後端要的），
+     而且人要看得到自己排除了哪一件，隨時能反悔。 */
+  .rec.out{opacity:.55}
+  .rec.out > .head{background:#f1efe9}
+  .badge.out{background:#eceae4;color:var(--soft)}
+  .rec.out .fld input,.rec.out .fld textarea{background:#f7f6f3;color:var(--soft)}
+  .outbar{grid-column:1/-1;padding:9px 14px;background:#f1efe9;font-size:12.5px;
+          color:var(--soft);border-bottom:1px solid #f0ece2}
   .rec > .head .grow{flex:1}
   .rec > .head button{padding:4px 10px;font-size:12.5px}
   .fields{display:grid;grid-template-columns:1fr 1fr;gap:0}
@@ -175,8 +183,29 @@ function addManual(){
   el('msg').className = '';
 }
 
-/* 只有手動加的可以刪。辨識出來的件刪掉會讓後面每一件的序號往前移，
-   而意見是照序號存的 —— 那會把寫給第 5 件的意見貼到第 6 件身上。 */
+/* 辨識出來的件：**排除，不刪除**。
+
+   承辦人 2026-09-16 的原話：「第 3 件：我掃錯了，這個應該要直接加一件，
+   然後我覺得應該要加一個刪除功能來應對這種狀況。」掃錯的紙、重複掃到的
+   同一件，留在輸出檔裡就會被 RPA 拿去查調，確實要能拿掉。
+
+   但是**不能真的從清單裡刪掉**，原因有兩個，都是踩過的：
+     一、原圖是用序號跟後端要的（api/crop?record=N），前面少一件，
+         後面每一件的原圖就全部對到別人身上。
+     二、意見也是照序號存的，序號一動，寫給第 5 件的意見會貼到第 6 件。
+
+   所以改成標記起來：件還在原位、序號不動，只是不寫進輸出檔，
+   畫面上灰掉並且寫明白，隨時可以按「放回去」反悔。
+   悄悄消失的資料是最難查的那一種（CLAUDE.md 第三條）。 */
+function toggleDrop(index){
+  const record = data.records[index];
+  if (!record || record.manual) return;
+  record.dropped = !record.dropped;
+  render();
+}
+
+/* 只有手動加的可以真的刪掉 —— 它沒有原圖，而且一律排在最後面，
+   所以刪掉不會動到辨識出來那幾件的序號。 */
 function dropManual(index){
   if (!data.records[index] || !data.records[index].manual) return;
   data.records.splice(index, 1);
@@ -188,12 +217,14 @@ function dropManual(index){
 }
 
 function render(){
-  const hand = data.records.filter(r => r.manual).length;
-  const auto = data.records.filter(r => !r.manual);
+  const out = data.records.filter(r => r.dropped).length;
+  const hand = data.records.filter(r => r.manual && !r.dropped).length;
+  const auto = data.records.filter(r => !r.manual && !r.dropped);
   const flagged = auto.filter(r => Object.keys(r.flags).length).length;
   el('stat').textContent =
       `共 ${data.records.length} 件，${auto.length - flagged} 件通過、${flagged} 件要看`
-      + (hand ? `、${hand} 件手動輸入` : '');
+      + (hand ? `、${hand} 件手動輸入` : '')
+      + (out ? `、${out} 件不輸出` : '');
 
   // 這個變數以前也叫 notes，把外層存意見的那個 notes 整個遮掉了 ——
   // 於是下面的 notes[i] = box.value 是在對一個字串設屬性，靜靜地什麼也沒發生，
@@ -239,11 +270,19 @@ function render(){
         ${check}${raw}</div>`;
     }).join('');
     const bad = Object.keys(r.flags).length;
-    const badge = r.manual
+    const badge = r.dropped
+      ? '<span class="badge out">不輸出</span>'
+      : r.manual
       ? '<span class="badge hand">手動輸入</span>'
       : `<span class="badge ${bad ? 'review' : 'ok'}">${bad ? bad + ' 個欄位要看' : '通過'}</span>`;
     const drop = r.manual
-      ? `<span class="grow"></span><button data-drop="${i}">刪掉這一件</button>` : '';
+      ? `<span class="grow"></span><button data-drop="${i}">刪掉這一件</button>`
+      : `<span class="grow"></span><button data-out="${i}">${
+           r.dropped ? '放回去，要輸出' : '這一件不要輸出'}</button>`;
+    // 排除掉的件為什麼還留在畫面上，要講清楚，不然人會以為沒按成功
+    const outnote = r.dropped
+      ? `<div class="outbar">這一件<b>不會</b>寫進輸出檔。件還留在畫面上、序號也不動，
+           是為了讓後面每一件的原圖和意見不會跟著位移。按上面的「放回去」就恢復。</div>` : '';
     const handnote = r.manual
       ? `<div class="say"><label>這一件是手動輸入的，<b>沒有原圖可以對照</b> ——
            程式只會在產生輸出檔時檢查格式（身分證檢查碼、公文文號十碼、欄位有沒有漏），
@@ -253,18 +292,22 @@ function render(){
       <label>這一件有什麼問題？（會寫進診斷報告，不影響輸出檔）</label>
       <textarea data-note="${i}" rows="1"
         placeholder="例如：門牌抓到上面那一格的內容">${esc(notes[i] || '')}</textarea></div>`;
-    return `<div class="rec ${r.manual ? 'hand' : ''}">
+    return `<div class="rec ${r.manual ? 'hand' : ''} ${r.dropped ? 'out' : ''}">
       <div class="head">
         <span class="who">第 ${i + 1} 件</span>
         ${badge}
         <span class="src">${esc(r.source)}</span>
         ${drop}
       </div>
-      <div class="fields">${handnote}${cells}${say}</div></div>`;
+      <div class="fields">${outnote}${handnote}${cells}${say}</div></div>`;
   }).join('');
 
   el('list').querySelectorAll('button[data-drop]').forEach(btn => {
     btn.addEventListener('click', () => dropManual(+btn.dataset.drop));
+  });
+
+  el('list').querySelectorAll('button[data-out]').forEach(btn => {
+    btn.addEventListener('click', () => toggleDrop(+btn.dataset.out));
   });
 
   el('list').querySelectorAll('textarea[data-note]').forEach(box => {
@@ -312,7 +355,11 @@ el('report').addEventListener('click', async () => {
   try {
     const res = await fetch(api('api/diagnose'), {method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({notes: {overall: el('overall-note').value, records: notes}})});
+        body: JSON.stringify({notes: {
+            overall: el('overall-note').value, records: notes,
+            // 被排除的件一定要寫進報告：從輸出檔上看不出來少了什麼
+            excluded: data.records
+                .map((r, i) => (r.dropped ? i + 1 : 0)).filter(Boolean)}})});
     const out = await res.json();
     if (!out.ok){ showFailure(out); return; }
     el('msg').textContent = '診斷報告已產出'; el('msg').className = 'ok';
@@ -351,13 +398,21 @@ el('shot').addEventListener('click', event => {
 el('export').addEventListener('click', async () => {
   el('msg').textContent = '產生中…'; el('msg').className = '';
   try {
+    // 排除掉的件不送。序號要一起送過去 —— 提醒上寫的「第 N 件」必須跟
+    // 畫面上的序號是同一個，不然人照著去找會找到別件身上。
+    const keep = data.records
+        .map((r, i) => ({row: r, number: i + 1}))
+        .filter(item => !item.row.dropped);
+    const left = data.records.length - keep.length;
     const res = await fetch(api('api/export'), {method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({records: data.records.map(r => r.values)})});
+        body: JSON.stringify({records: keep.map(item => item.row.values),
+                              numbers: keep.map(item => item.number)})});
     const out = await res.json();
     if (out.ok){
       const warn = out.warnings || [];
       el('msg').textContent = '已產出：' + out.files.join('、')
+          + (left ? `　（已排除 ${left} 件不輸出）` : '')
           + (warn.length ? `　⚠ 有 ${warn.length} 件事要看` : '');
       el('msg').className = warn.length ? 'warn' : 'ok';
       // 提醒不能只塞在標題列。一行擠不下就看不到，而看不到的提醒等於沒有 ——
@@ -366,6 +421,7 @@ el('export').addEventListener('click', async () => {
         el('preview-path').textContent = '已產出：' + out.files.join('、');
         el('preview-text').textContent =
             '檔案已經產出來了，但下面這幾件請再看一眼：\n\n'
+            + (left ? `（另外有 ${left} 件被你排除，沒有寫進輸出檔）\n\n` : '')
             + warn.map(w => '• ' + w).join('\n')
             + '\n\n程式沒有改動任何一個值，改不改由你決定。'
             + '改完再按一次「產生輸出檔」就會覆蓋掉。';

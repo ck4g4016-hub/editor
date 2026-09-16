@@ -221,6 +221,13 @@ def build(journal, notes=None, version=None):
     notes = notes or {}
     overall = (notes.get("overall") or "").strip()
     out.append(overall if overall else "（沒有填寫整批意見）")
+    # 被排除的件從輸出檔上完全看不出來 —— 檔案裡就是少了一列。
+    # 報告是唯一留得下紀錄的地方，一定要寫。
+    excluded = notes.get("excluded") or []
+    if excluded:
+        out.append("")
+        out.append("排除不輸出：第 %s 件（人在複核畫面上按的，值沒有被程式改過）"
+                   % "、".join(str(n) for n in excluded))
     per_record = notes.get("records") or {}
     if per_record:
         out.append("")

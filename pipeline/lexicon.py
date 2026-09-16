@@ -493,6 +493,7 @@ def _resolve_head(head, names, threshold=THRESHOLD):
             blocked = blocked or (
                 "分不出是「%s」裡的哪一條" % "」「".join(sorted(tied)))
 
+    shortlist = []
     if blocked is None:
         # 只錯一個字、而且整份字典裡只有一個長得這麼像的，就修掉。
         #
@@ -505,6 +506,7 @@ def _resolve_head(head, names, threshold=THRESHOLD):
         # 「一三五七」那一位時，四條路都只差一個字，挑一個就是猜。
         trimmed = stem(core)
         hits = [name for name in names if _one_edit(trimmed, stem(name))]
+        shortlist = hits
         if len(hits) == 1:
             # **一定要標記。** 一字之差是「猜得有根據」，不是「讀出來的」——
             # 字典裡根本沒有那條路的時候，它照樣會找到一個一字之差的鄰居：
@@ -525,4 +527,24 @@ def _resolve_head(head, names, threshold=THRESHOLD):
                     "路名有一個字沒讀準，「%s」都只差一個字，"
                     "這裡是照表格上讀到的「%s」決定的，請確認"
                     % ("」「".join(sorted(hits)), read_suffix))
+            shortlist = picks or hits
+
+    # 對不上就是對不上，**不猜**。但「路街名不在字典裡」這句話是死路 ——
+    # 人拿著它只能自己去翻清單。字典裡只差一個字的如果就那麼幾條，
+    # 把它們列出來，複核的人對著原圖一眼就挑得出來。
+    #
+    # 這是踩到才加的。2026-09-16 的報告上第 2 件，「鳳鳴路」的「鳴」整個
+    # 沒被讀出來，只剩「鳳路」—— 鶯歌區有 12 條「鳳」開頭的路，程式沒有
+    # 任何根據挑一條（挑了就是猜，而猜錯的門牌會讓 RPA 去查別人的房子）。
+    # 但列出那幾條路，人 5 秒就選完了。
+    #
+    # 上限訂在 8 條：再多就不是「幫人縮小範圍」，是把整份清單倒在畫面上。
+    #
+    # 候選路名一律放進「」裡 —— 診斷報告是照引號遮罩的，這樣報告上只留得下
+    # 「有幾條對得起來」（那才是開發者要看的），不會把民眾的門牌縮小到
+    # 六條路裡。畫面上人看到的是完整的清單，不受影響。
+    if blocked is None and 1 < len(shortlist) <= 8:
+        blocked = ("路街名讀成「%s」，字典裡有 %d 條都只差一個字，分不出是哪一條，"
+                   "請對著原圖挑一條：「%s」"
+                   % (core, len(shortlist), "」「".join(sorted(shortlist))))
     return None, highest, blocked

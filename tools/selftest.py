@@ -922,6 +922,8 @@ def check():
     problems.extend(_export_warnings())
     problems.extend(_review_page_can_add_manual())
     problems.extend(_address_drops_building_number())
+    problems.extend(_address_floor_always_chinese())
+    problems.extend(_road_shortlist_when_stuck())
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
     problems.extend(_grid_image_falls_back())
@@ -1473,11 +1475,16 @@ def _address_drops_building_number():
 
     problems = []
 
-    # 正向：建號那一段要不見，前面的門牌要原封不動
+    # 正向：建號那一段要不見，前面的門牌要原封不動。
+    # 後面三個是**標籤印在值後面**的那種（2026-09-16 報告第 6 件）——
+    # 原本只切掉「建號」兩個字，前面那串段名與地號整段留在門牌裡。
     for text, want in (
             ("地址：三峽區中山里民生街27巷26號五樓建號：01234-000", "民生街27巷26號五樓"),
             ("三峽區大埔里民生街27巷26號16樓建號：12345-000", "民生街27巷26號十六樓"),
-            ("民生街27巷26號五樓 房屋建號：", "民生街27巷26號五樓")):
+            ("民生街27巷26號五樓 房屋建號：", "民生街27巷26號五樓"),
+            ("三峽區民生街27巷26號16樓中正段1234之5678建號", "民生街27巷26號十六樓"),
+            ("民生街26號 大埔段 0123 之 0045 房屋建號", "民生街26號"),
+            ("民生街26號之3 中正段1234建號", "民生街26號之3")):
         got, _note = validate.address(text)
         if got != want:
             problems.append("「%s」應該變成「%s」，實際是「%s」" % (text, want, got))
@@ -1493,12 +1500,111 @@ def _address_drops_building_number():
     names = set()
     for _district, roads in (lexicon.builtin() or {}).items():
         names.update(roads)
-    hit = [name for name in names if validate._BUILDING_NUMBER.search(name)]
+    hit = [name for name in names if validate._BUILDING_LABEL.search(name)]
     if hit:
         problems.append("路名清單裡有 %d 條會被建號那條規則砍到：%s"
                         % (len(hit), sorted(hit)[:5]))
     elif not names:
         problems.append("路名清單讀不到，建號那條規則等於沒有驗過")
+
+    # 負向驗證三：沒有「建號」兩個字的門牌，切的那一段一個字都不能動。
+    # 後置印法是從標籤往**前**切的，這一刀沒有守住就會砍到真的門牌。
+    for text in ("民生街27巷26號16樓", "中正路二段15號之3", "大湖路100號",
+                 "民權街5巷1弄2號3樓"):
+        if validate._drop_building_number(text) != text:
+            problems.append("「%s」裡面沒有建號，卻被切成「%s」"
+                            % (text, validate._drop_building_number(text)))
+    return problems
+
+
+def _road_shortlist_when_stuck():
+    """路名對不上字典的時候，要把「差一個字」的那幾條列出來給人挑。
+
+    2026-09-16 的報告第 2 件：「鳳鳴路」的「鳴」整個沒被讀出來，只剩
+    「鳳路」。鶯歌區有 12 條「鳳」開頭的路，程式沒有根據挑一條 ——
+    **也不該挑**，猜錯的門牌會讓 RPA 去查別人的房子。但原本那句
+    「路街名不在字典裡」是死路，人拿著它只能自己去翻清單。
+
+    負向驗證有三段，都很重要：
+      一、字典裡真的沒有一條像的，就不可以列清單（列了是硬湊）
+      二、對得上的一件不可以被列清單（那會變成每一件都在叫）
+      三、候選路名一定要在「」裡面 —— 診斷報告是照引號遮罩的，
+          沒有引號就等於把民眾的門牌縮小到六條路，寫進要送出機關的檔案。
+    """
+    from pipeline import diagnose, lexicon, validate
+
+    problems = []
+    roads = lexicon.for_district(lexicon.builtin(), "鶯歌區")
+    if not roads:
+        return ["讀不到鶯歌區的路名清單，這條檢查等於沒有驗過"]
+
+    _value, note = validate.address("新北市鶯歌區鳳路99號9樓", roads)
+    if not note or "鳳鳴路" not in note or "鳳福路" not in note:
+        problems.append("「鳳路」沒有列出差一個字的候選：%s" % note)
+
+    # 負向一：字典裡沒有像的，不可以硬湊出清單
+    _value, note = validate.address("新北市鶯歌區某某某某路5號", roads)
+    if note and "挑一條" in note:
+        problems.append("字典裡沒有像的路，卻列出了候選：%s" % note)
+
+    # 負向二：對得上的不可以被列清單
+    _value, note = validate.address("新北市鶯歌區鳳鳴路99號9樓", roads)
+    if note:
+        problems.append("路名讀對了卻還是被提醒：%s" % note)
+
+    # 負向三：候選路名要被診斷報告遮掉，只留下條數
+    _value, note = validate.address("新北市鶯歌區鳳路99號9樓", roads)
+    masked = diagnose.mask_note(note or "")
+    leaked = [name for name in roads if name in masked]
+    if leaked:
+        problems.append("診斷報告上留下了候選路名 %s —— "
+                        "那等於把門牌縮小到這幾條路，而報告是要送出機關的"
+                        % leaked[:3])
+    if "6 條" not in masked:
+        problems.append("診斷報告上看不出有幾條候選，開發者查不出問題：%s" % masked)
+    return problems
+
+
+def _address_floor_always_chinese():
+    """樓層與段一律中文數字 —— **讀不準的那幾件也要**。
+
+    承辦人 2026-09-16：「樓層的數字沒有改成國字，所有的樓層數字都要是國字。」
+
+    原本這兩行寫在 address() 的最後面，而前面有兩個提早 return
+    （路名不在字典裡、換完還有英文字母）。走那兩條路的門牌就停在阿拉伯
+    數字，同一批輸出裡有的寫「五樓」有的寫「5樓」。讀不準是一回事，
+    寫法統一是另一回事。
+
+    負向驗證在最後一段：**不是樓層的數字不可以被改成國字**。巷、弄、號
+    都要留半形數字 —— 那是外部系統認的格式（見 CLAUDE.md 第四條）。
+    """
+    from pipeline import validate
+
+    problems = []
+    # 字典裡故意不放「長壽路」，這樣第二個案例一定會走「路名對不上」那條路
+    roads = ["中正路", "民生街"]
+
+    # 正向：三條路徑（通過、路名對不上、有英文字母）都要轉
+    cases = [
+        ("中正路2段15號7樓", "中正路二段15號七樓", "路名對得上"),
+        ("鶯歌區長壽路99號9樓", "長壽路99號九樓", "路名對不上字典"),
+        ("中正路15號Q樓", None, "還有英文字母"),
+    ]
+    for text, want, why in cases:
+        got, _note = validate.address(text, roads)
+        if want is not None and got != want:
+            problems.append("（%s）「%s」應該變成「%s」，實際是「%s」"
+                            % (why, text, want, got))
+    got, note = validate.address("鶯歌區長壽路99號9樓", roads)
+    if "9樓" in got or not note:
+        problems.append("路名對不上字典的時候樓層沒有轉成國字，而且要有提醒："
+                        "得到「%s」／%s" % (got, note))
+
+    # 負向驗證：巷、弄、號的數字是半形的，不可以一起被換成國字
+    got, _note = validate.address("中正路27巷5弄26號16樓", roads)
+    if got != "中正路27巷5弄26號十六樓":
+        problems.append("巷弄號的數字被動到了：「中正路27巷5弄26號16樓」"
+                        "變成「%s」" % got)
     return problems
 
 
@@ -1859,6 +1965,22 @@ def _review_serves_everything(records, unresolved, converter, work):
         if status != 200 or not jsonlib.loads(body).get("ok"):
             problems.append("/api/diagnose 回了 %d：%s" % (status, body[:120]))
 
+        # 排除掉的件要寫進診斷報告。輸出檔上看不出來少了一列，
+        # 報告是唯一留得下紀錄的地方。
+        status, body = call("POST", "/api/diagnose",
+                            jsonlib.dumps({"notes": {"overall": "自我檢查",
+                                                     "excluded": [3, 5]}}).encode(),
+                            "application/json")
+        text = jsonlib.loads(body).get("text", "") if status == 200 else ""
+        if "第 3、5 件" not in text:
+            problems.append("診斷報告沒有記下被排除的件 —— 之後查不出少了什麼")
+        # 負向驗證：沒有排除任何件的時候不可以無中生有
+        status, body = call("POST", "/api/diagnose",
+                            jsonlib.dumps({"notes": {"overall": "自我檢查"}}).encode(),
+                            "application/json")
+        if "排除不輸出" in (jsonlib.loads(body).get("text", "") if status == 200 else ""):
+            problems.append("沒有排除任何件，報告上卻寫了「排除不輸出」")
+
         # 手動輸入的那一件跟辨識出來的一起送出去。複核畫面上按「手動加一件」
         # 之後送出的就長這樣：沒有原圖、沒有辨識原文，只有人打進去的值。
         手動 = {"district": "三峽區", "address": "民生街27巷26號16樓",
@@ -1884,6 +2006,27 @@ def _review_serves_everything(records, unresolved, converter, work):
                 if not os.path.isfile(full) or os.path.getsize(full) < 1000:
                     problems.append("%s 沒產出來或是空的" % hit[0])
             problems.extend(_manual_row_in_files(out, names, 手動))
+
+        # 複核畫面把掃錯的件排除掉之後送出來的樣子：少一列，而且序號有缺口。
+        # 提醒上的「第 N 件」必須照畫面的序號寫，不是照清單位置。
+        status, body = call(
+            "POST", "/api/export",
+            jsonlib.dumps({"records": [dict(手動, address="")],
+                           "numbers": [7]}).encode(), "application/json")
+        result = jsonlib.loads(body) if status == 200 else {}
+        if not result.get("ok"):
+            problems.append("排除過件之後匯出失敗：%d %s" % (status, body[:160]))
+        elif not any("第 7 件" in line for line in result.get("warnings", [])):
+            problems.append("排除過件之後，匯出提醒沒有照畫面的序號寫：%s"
+                            % result.get("warnings"))
+
+        # 全部都被排除掉的話要講清楚，不能丟一個看不懂的錯
+        status, body = call("POST", "/api/export",
+                            jsonlib.dumps({"records": [], "numbers": []}).encode(),
+                            "application/json")
+        if status == 200 or "排除" not in body.decode("utf-8", "replace"):
+            problems.append("一件都不剩的時候，匯出沒有講出原因：%d %s"
+                            % (status, body[:160]))
     finally:
         server.shutdown()
         server.server_close()
@@ -1956,6 +2099,7 @@ def _export_warnings():
     負向驗證在最後一段：一件完全正確的資料**必須一句話都不講**。
     每一件都叫的檢查等於沒有檢查，人看兩次就開始跳過了。
     """
+    from pipeline import resources
     from tools import review
 
     problems = []
@@ -1974,19 +2118,44 @@ def _export_warnings():
         if not any(expect in line for line in said):
             problems.append("匯出前的檢查沒有講出「%s」的問題，只說了 %s" % (expect, said))
 
-    # 負向驗證：完全正確的一件不可以有任何提醒
+    # 排除掉的件不送過來，所以清單位置不等於畫面上的序號。
+    # 提醒上寫的「第 N 件」一定要是畫面上看得到的那個號碼。
+    said = review.export_warnings([good, dict(good, address="")], numbers=[2, 7])
+    if not any("第 7 件" in line for line in said):
+        problems.append("排除過件之後，提醒沒有照畫面的序號寫：%s" % said)
+    if any("第 2 件" in line for line in said):
+        problems.append("沒有問題的那一件也被提醒了：%s" % said)
+
+    # 負向驗證一：完全正確的一件不可以有任何提醒
     said = review.export_warnings([good])
     if said:
         problems.append("一件完全正確的資料也被提醒了：%s —— "
                         "每一件都叫的檢查等於沒有檢查" % said)
+    # 負向驗證二：沒給序號就照順序編，不能因為少一個參數就整個錯位
+    said = review.export_warnings([good, dict(good, address="")])
+    if not any("第 2 件" in line for line in said):
+        problems.append("沒給序號的時候，提醒沒有照順序編：%s" % said)
+
+    # 函式會用序號不代表**有人把序號傳進去**。這一段就是驗那條接線 ——
+    # 上面全部測的是 export_warnings 本身，接線斷掉的話一條都不會叫。
+    source = open(os.path.join(resources.base_dir(), "tools", "review.py"),
+                  encoding="utf-8").read()
+    if "export_warnings(rows, numbers)" not in source:
+        problems.append("tools/review.py 匯出時沒有把畫面送來的序號傳進 "
+                        "export_warnings，提醒會標到別件身上")
+    if 'payload.get("numbers")' not in source:
+        problems.append("tools/review.py 沒有收畫面送來的序號")
     return problems
 
 
 def _review_page_can_add_manual():
-    """複核畫面上一定要有「手動加一件」，而且刪除只能刪手動的那幾件。
+    """複核畫面上要有「手動加一件」，掃錯的件要能排除，而且排除**不等於刪除**。
 
-    刪掉辨識出來的件會讓後面每一件的序號往前移，而每一件的意見是照序號
-    存的 —— 那會把寫給第 5 件的意見貼到第 6 件身上，而且沒有人看得出來。
+    承辦人 2026-09-16：「我掃錯了…應該要加一個刪除功能來應對這種狀況。」
+
+    辨識出來的件只能標記成不輸出，不能真的從清單裡拿掉：原圖是用序號跟
+    後端要的（api/crop?record=N），意見也是照序號存的 —— 序號一移，
+    後面每一件的原圖和意見就全部貼到別人身上，而且畫面上看不出來。
     """
     from pipeline import resources
 
@@ -1997,12 +2166,25 @@ def _review_page_can_add_manual():
             ('id="add"', "沒有「手動加一件」的按鈕"),
             ("function addManual", "沒有 addManual"),
             ("function dropManual", "沒有 dropManual"),
+            ("function toggleDrop", "沒有 toggleDrop，掃錯的件沒辦法排除"),
+            ("data-out=", "卡片上沒有「這一件不要輸出」的按鈕"),
+            ("r.dropped", "排除的狀態沒有畫出來，人看不出自己按了什麼"),
+            ("excluded:", "排除掉的件沒有寫進診斷報告，之後查不出少了什麼"),
             ("manual: true", "手動加的件沒有標記成 manual，畫面分不出它沒有原圖")):
         if need not in text:
             problems.append("editor/review.html %s" % why)
     if "if (!data.records[index] || !data.records[index].manual) return;" not in text:
         problems.append("dropManual 沒有擋住「刪掉辨識出來的件」，"
                         "序號一移，每一件的意見就會貼到別人身上")
+    if "record.splice" in text or "if (!record || record.manual) return;" not in text:
+        problems.append("toggleDrop 沒有擋住「真的把辨識出來的件刪掉」")
+    # 排除掉的件不能送去輸出，而且序號要一起送 —— 少了序號，提醒上的
+    # 「第 N 件」就跟畫面對不起來，人照著去找會找到別件身上。
+    for need, why in (
+            ("item => !item.row.dropped", "排除掉的件還是被送去輸出了"),
+            ("numbers: keep.map", "沒有把畫面上的序號送過去，提醒會標錯件")):
+        if need not in text:
+            problems.append("editor/review.html %s" % why)
     return problems
 
 

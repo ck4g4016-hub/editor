@@ -352,7 +352,36 @@ _ADDRESS_LABEL = re.compile(r"^[^\d]{0,3}址\s*[:：]?\s*")
 # 跟「地址：」「路／街」一樣當成印刷標籤處理，**不標記**：每一件 B 表都有
 # 這一段，每件都標等於整批都標，人看兩次就開始跳過了。辨識原文照樣留在
 # 複核畫面上，要對照隨時看得到。
-_BUILDING_NUMBER = re.compile(r"(?:房\s*屋)?建\s*號.*$")
+_BUILDING_LABEL = re.compile(r"(?:房\s*屋)?建\s*號")
+
+# 門牌本身一定結束在「號」或「樓」（「之N」可以掛在後面）。
+# 切建號的時候要找的就是這個邊界，見 _drop_building_number()。
+_HOUSE_END = re.compile(r"[號樓](?:\s*之\s*\d+)?")
+
+
+def _drop_building_number(value):
+    """把「建號」那一欄的內容從門牌裡切掉。
+
+    標籤有兩種印法，**兩種都遇過**：
+
+        前置  「…路15號　建號：01234-000」
+        後置  「…路15號五樓　中正段 1234 之 5678 建號」
+
+    原本只做前置那種（從標籤往後全部不要）。2026-09-16 的報告上第 6 件
+    是後置的：標籤在最後面，切完只拿掉「建號」兩個字，前面那串段名與
+    地號原樣留在門牌裡 —— 承辦人的原話是「門牌又抓到建號那欄」。
+
+    所以改成從標籤往**前**找門牌的結尾（最後一個「號」或「樓」），
+    中間那一段一起帶走。找不到結尾字就是前置印法，行為跟以前一樣。
+
+    「建」後面一定要緊接著「號」才算，所以「建國路」「福建街」不受影響。
+    """
+    match = _BUILDING_LABEL.search(value or "")
+    if not match:
+        return value
+    head = value[:match.start()]
+    ends = list(_HOUSE_END.finditer(head))
+    return head[:ends[-1].end()] if ends else head
 
 # 「之」常被寫成或認成各種符號
 _ZHI_SYMBOLS = "-–—~/\\_.,、"
@@ -360,6 +389,22 @@ _ZHI_SYMBOLS = "-–—~/\\_.,、"
 # 表格上「路／街」那個二選一的標籤。民眾圈一個，但整串常常一起被讀進來，
 # 承辦人也可能直接把欄位後綴填成「路/街」。它不是路名的一部分。
 _ROAD_LABEL = re.compile(r"[路街道]\s*[/／\\|、,，]?\s*[路街道]")
+
+
+def _units_to_chinese(value):
+    """段與樓層一律中文數字：2段 → 二段、17樓 → 十七樓。
+
+    **為什麼獨立成一個函式**：這兩行本來寫在 address() 的最後面，而前面有
+    兩個提早 return（路名不在字典裡、換完還有英文字母）。走到那兩條路上的
+    門牌就停在阿拉伯數字，同一批輸出裡有的寫「五樓」有的寫「5樓」——
+    2026-09-16 的報告上第 2 件與第 7 件都是這樣。
+
+    承辦人的原話：「所有的樓層數字都要是國字。」讀不準是一回事，
+    寫法統一是另一回事，不能因為前者就放掉後者：那一欄的值照樣要送去
+    複核，人改的時候看到的是程式的寫法，才不會各寫各的。
+    """
+    value = _SECTION.sub(lambda m: to_chinese_number(m.group(1)) + "段", value)
+    return _FLOOR.sub(lambda m: to_chinese_number(m.group(1)) + "樓", value)
 
 
 def _join_notes(*notes):
@@ -382,10 +427,10 @@ def address(text, roads=None):
     這同時解決「路還是街」，民眾圈選糊掉也沒關係，字典裡是哪個就是哪個。
     """
     value = to_traditional(to_halfwidth(text or "")).strip()
-    # 「建號：…」是後面那一欄的印刷標籤，先切掉 —— 留著會被當成門牌的一部分
+    # 「建號」是後面那一欄的印刷標籤，先切掉 —— 留著會被當成門牌的一部分
     # 而且整段是數字，正規化之後看起來還很像合法的門牌（實測「…號五樓建號：
     # 01234-000」原樣通過驗證，畫面上一個提醒都沒有）。
-    value = _BUILDING_NUMBER.sub("", value, count=1).strip()
+    value = _drop_building_number(value).strip()
     # 「地址：」這種印刷標籤擋在前面的話，底下拿掉縣市與行政區那一段就會失效
     value = _ADDRESS_LABEL.sub("", value, count=1)
     value = _DROP.sub("", value, count=1)
@@ -437,17 +482,17 @@ def address(text, roads=None):
             # 靠讀到的路／街決定的，一定要讓人看一眼 —— 那個字本來就不可信
             warning = note
         elif head:
-            return value, note or ("路街名不在字典裡（讀到「%s」）" % head)
+            return (_units_to_chinese(value),
+                    note or ("路街名不在字典裡（讀到「%s」）" % head))
 
     # 英文字母換成形狀相近的數字。地址只會有中文字與阿拉伯數字。
     value = "".join(_LETTER_TO_DIGIT.get(ch, ch) for ch in value)
     leftover = re.findall(r"[A-Za-z]", value)
     if leftover:
-        return value, "出現英文字母「%s」，地址不會有英文" % "".join(sorted(set(leftover)))
+        return (_units_to_chinese(value),
+                "出現英文字母「%s」，地址不會有英文" % "".join(sorted(set(leftover))))
 
-    # 段與樓層轉中文：2段 → 二段、17樓 → 十七樓
-    value = _SECTION.sub(lambda m: to_chinese_number(m.group(1)) + "段", value)
-    value = _FLOOR.sub(lambda m: to_chinese_number(m.group(1)) + "樓", value)
+    value = _units_to_chinese(value)
 
     if not value:
         return value, "地址是空的"
