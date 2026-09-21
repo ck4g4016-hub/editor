@@ -929,6 +929,7 @@ def check():
     problems.extend(_grid_image_falls_back())
     problems.extend(_grid_state_tells_the_truth())
     problems.extend(_partial_id_beats_a_wrong_one())
+    problems.extend(_id_search_space_stays_wide())
     problems.extend(_per_cell_display_matches_the_count())
     problems.extend(_sheet_quality_reported())
 
@@ -1524,6 +1525,68 @@ def _partial_id_beats_a_wrong_one():
                 encoding="utf-8").read()
     if "const holes" not in page or "讀不出來的（?）" not in page:
         problems.append("複核畫面把「?」當成打錯字，沒有講出那是程式讀不出來")
+    return problems
+
+
+def _id_search_space_stays_wide():
+    """讀不出來的格子一定要攤開全部十個數字，**不可以**縮到模型覺得最像的那幾個。
+
+    承辦人 2026-09-21 提的想法是對的方向：身分證只可能是英數，所以把不合法
+    的字元遮掉、只在數字裡排名，確實救得回來 —— 拿他給的五格實測，
+    真值全部進得了前三名，而目前讀不出來的那一格，真值還排第一名。
+
+    **但那個排名只能拿來給人看，不能拿去縮小檢查碼的搜尋範圍。**
+    實測造一排十格（真值 F128887458，中間兩格用承辦人給的難字），
+    模型限定數字後的前三名是「127」與「729」——「8」不在第二格的候選裡：
+
+        縮到前三名    只有一個組合通過檢查碼 → F128887958
+                      **錯的，而且通過檢查碼，畫面上完全看不出來**
+        攤開十個      十個組合都通過 → 分不出是哪一個，標記起來交給人
+
+    攤開的時候真值一定在搜尋範圍內，所以「唯一解」才可信；一旦縮小而真值
+    被排除，檢查碼反而會很有信心地挑出一個錯的號碼送進 RPA。這正是
+    CLAUDE.md 第三條在講的事：分不出來就回報分不出來，不要猜。
+    """
+    import itertools
+
+    from pipeline import validate
+
+    problems = []
+
+    # 讀不出來的格子要攤開十個
+    choices, was_read = validate._cell_options([], 3)
+    if was_read or len(choices) != 10:
+        problems.append("讀不出來的格子沒有攤開十個數字，只有 %s" % choices)
+
+    # 把上面那個實測案例寫死在這裡當守門員
+    read = "F1?8887?58"
+    truth = "F128887458"
+
+    def passing(options):
+        slots = [options.get(i, read[i]) for i in range(10)]
+        return ["".join(c) for c in itertools.product(*slots)
+                if validate.id_number("".join(c))[1] is None]
+
+    narrow = passing({2: "127", 7: "729"})
+    wide = passing({2: "0123456789", 7: "0123456789"})
+    if len(narrow) != 1 or narrow[0] == truth:
+        problems.append("這個案例不再示範得出縮小範圍的危險（narrow=%s），"
+                        "請換一組還會出事的例子，不要把檢查刪掉" % narrow)
+    if truth not in wide:
+        problems.append("攤開十個數字之後真值竟然不在裡面 —— 那整套檢查碼推論都不成立")
+    if len(wide) < 2:
+        problems.append("攤開十個數字只剩一個解，這個案例示範不出差別")
+
+    # 接線檢查：形狀排名只可以出現在給人看的訊息裡，不可以進到解碼
+    source = open(os.path.join(resources_base(), "pipeline", "process.py"),
+                  encoding="utf-8").read()
+    # 註解裡也提到 digit_shapes，所以要找的是真的有呼叫它
+    if "recognise.digit_shapes(all_cells[index], index)" not in source:
+        problems.append("process.py 沒有真的去問形狀排名，人看不到縮小後的候選")
+    for forbidden in ("solve_id(per_cell, ", "partial_id(per_cell, "):
+        if forbidden in source:
+            problems.append("形狀排名被餵進解碼了（%s）—— "
+                            "真值一旦被排除，檢查碼會挑出一個錯的號碼" % forbidden)
     return problems
 
 

@@ -546,6 +546,107 @@ def read_grid(crop, spans, band=None, window=WINDOW):
     return picks
 
 
+# 身分證每一位只可能是什麼。第 1 碼是英文字母（區域碼），其餘都是數字。
+_ID_LETTERS_ALL = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# 一格問幾種前處理。三種是量出來的：拿承辦人 2026-09-21 給的五格實測，
+# 三種取聯集之後五格的真值全在前三名裡；只用一種會漏掉。
+_SHAPE_VIEWS = 3
+
+
+def _legal_chars(position):
+    return _ID_LETTERS_ALL if position == 0 else "0123456789"
+
+
+def _shape_views(cell):
+    """同一格的幾種樣子。模型對「孤零零一個字」很敏感，換個擺法答案就不同。
+
+    **白邊要用補的，不能用裁的。** trim() 是在原圖範圍內裁，墨跡貼到格線
+    邊緣時它補不出白邊 —— 而承辦人給的五格**每一格都貼到邊**。實測差別
+    很明顯：用裁的，那個 8 的真值掉出前三名；用補的就回來了。
+    """
+    gray = cell if cell.ndim == 2 else cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+    views = [cell]
+    ys, xs = np.where(gray < 128)
+    if not len(xs):
+        return views
+    box = gray[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+
+    pad = int(max(box.shape[:2]) * 0.2) + 2
+    views.append(cv2.copyMakeBorder(box, pad, pad, pad, pad,
+                                    cv2.BORDER_CONSTANT, value=255))
+
+    side = 64
+    scale = side * 0.8 / max(box.shape[:2])
+    small = cv2.resize(box, (max(1, int(box.shape[1] * scale)),
+                             max(1, int(box.shape[0] * scale))),
+                       interpolation=cv2.INTER_AREA)
+    canvas = np.full((side, side), 255, np.uint8)
+    top = (side - small.shape[0]) // 2
+    left = (side - small.shape[1]) // 2
+    canvas[top:top + small.shape[0], left:left + small.shape[1]] = small
+    views.append(canvas)
+    return views[:_SHAPE_VIEWS]
+
+
+def digit_shapes(cell, position, top=3):
+    """這一格**如果一定是合法的字元**，模型覺得最像哪幾個？由像到不像排序。
+
+    承辦人 2026-09-21 的原話：「身分証只是英文字母配上數字的組合，所以說
+    辨別程式不需要去辨別數字以外的東西，只要是類似的就辨別成某個數字。」
+
+    做法不是事後把標點換成數字（那是猜形狀），而是**直接看模型自己的機率表**，
+    把不合法的字元整排遮掉，剩下的重新排名。模型平常輸出的是整個字典裡
+    分數最高的那個，孤零零一個手寫數字常常被判成標點 —— 但把標點遮掉之後，
+    它對數字的相對排序仍然有資訊。
+
+    拿承辦人給的五格實測（真值 5、4、1、8、1），三種前處理各取前三名再取
+    聯集：**五格的真值全部都在裡面**，候選平均 4.4 個（原本讀不出來時是
+    攤開全部 10 個）。只取第一名的話五格會漏掉兩格，所以不要只取第一名。
+
+    **這個結果只拿來給人看，不拿去縮小檢查碼的搜尋範圍**，理由寫在
+    validate.solve_id 裡：攤開全部 10 個時，真值一定在搜尋範圍內；
+    縮小之後就不一定了，而一旦真值被排除在外，檢查碼反而可能選中一個
+    「通過檢查碼但錯的」號碼，那是最危險的一種錯。
+
+    回傳 [字元]，由像到不像。讀不到或模型介面變了就回空的。
+    """
+    if cell is None or cell.size == 0:
+        return []
+    legal = _legal_chars(position)
+    try:
+        rec = engine().text_rec
+        chars = rec.postprocess_op.character
+        wanted = [i for i, ch in enumerate(chars) if ch in legal]
+        if not wanted:
+            return []
+        out = []
+        for view in _shape_views(cell):
+            image = view if view.ndim == 3 else cv2.cvtColor(view, cv2.COLOR_GRAY2BGR)
+            height, width = image.shape[:2]
+            table = rec.session(
+                rec.resize_norm_img(image, width / height)[None, ...])[0][0]
+            # 挑模型最有把握的那個時間點 —— 一格就一個字，不必管序列
+            best, score = None, -1.0
+            for step in range(table.shape[0]):
+                pick = int(table[step].argmax())
+                if chars[pick] == "blank":
+                    continue
+                if table[step][pick] > score:
+                    best, score = step, float(table[step][pick])
+            if best is None:
+                continue
+            row = table[best]
+            for index in sorted(wanted, key=lambda i: -row[i])[:top]:
+                if chars[index] not in out:
+                    out.append(chars[index])
+        return out
+    except Exception:                                               # noqa: BLE001
+        # 這是「多給一點線索」的功能，不是主要流程。模型介面哪天變了，
+        # 這裡安靜地不給線索就好，不要讓整批辨識掛掉。
+        return []
+
+
 def read_only(image):
     """跳過偵測直接辨識。單一個字或短短一段時它比走完整流程好。"""
     if image is None or image.size == 0:

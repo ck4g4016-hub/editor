@@ -689,6 +689,23 @@ class Converter:
                     problem = ("逐格讀出來的擺在這裡了，有 %d 格讀不出來（?），"
                                "請對著上面的原圖把那幾格補起來"
                                % missing)
+                    # 讀不出來的那幾格，再問模型一次「如果一定是合法的字元，
+                    # 你覺得最像哪幾個」。這不是替人決定，是把範圍縮小給人看 ——
+                    # 十個數字瞇著眼睛挑，跟三個裡面挑一個，差很多。
+                    # 為什麼不直接填上去：見 recognise.digit_shapes 的說明。
+                    # all_cells 是把每一段的格子接起來的，只有剛好十格時
+                    # 位置才跟 partial 對得上；不對就乾脆不給線索，不要指錯格
+                    hints = []
+                    for index, char in enumerate(partial if len(all_cells) == 10
+                                                 else ""):
+                        if char != "?":
+                            continue
+                        likely = recognise.digit_shapes(all_cells[index], index)
+                        if likely:
+                            hints.append("第 %d 格最像 %s"
+                                         % (index + 1, "、".join(likely[:3])))
+                    if hints:
+                        problem = "%s。%s" % (problem, "；".join(hints))
                     if solved_problem:
                         problem = "%s（%s）" % (problem, solved_problem)
         elif any_grid and grid_raw and grid_raw != raw:
