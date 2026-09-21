@@ -150,6 +150,31 @@ def _cell_options(texts, position):
     return sorted(got), read
 
 
+def cell_shown(texts, position):
+    """診斷報告上「逐格」那一格要印什麼。
+
+    **為什麼不直接把讀到的字印出來。** 一格讀到「A」，但身分證第 2~10 碼
+    只可能是數字，所以那個 A 對解碼一點用都沒有 —— _cell_options 把它算成
+    「沒讀到」。報告上卻印一個看起來好好的 A，於是同一列會出現
+
+        逐格  A|9|9|9|9|?|9|?|A|A     說明  有 4 格完全沒讀到
+
+    數一數只有兩個「?」，看起來自相矛盾。承辦人 2026-09-21 那份報告的
+    F 表第 4 件就是這樣，**而且我自己也先被騙了一次**，以為報告算錯。
+    看不懂的報告比沒有報告糟，因為它會把人帶去錯的方向。
+
+    所以讀到、但不是這一位該有的字，後面加一個「?」：
+
+        逐格  A|9|9|9|9|?|9|?|A?|A?   說明  有 4 格沒讀出這一位該有的字
+
+    數得出來了。
+    """
+    if not texts:
+        return "?"
+    _choices, was_read = _cell_options(texts, position)
+    return texts[0] if was_read else "%s?" % texts[0]
+
+
 # 候選組合數的上限。超過就不算 —— 那代表讀到的東西太少，
 # 硬算出來的「唯一解」只是湊出一個通過檢查碼的號碼，不是讀出來的。
 MAX_ID_COMBOS = 300000
@@ -189,7 +214,9 @@ def solve_id(cells):
         if not was_read:
             blanks.append(index + 1)
     if len(blanks) > MAX_ID_BLANKS:
-        return None, "有 %d 格完全沒讀到，補回來的會比讀到的還多" % len(blanks)
+        # 「沒讀出這一位該有的字」比「完全沒讀到」精確：第 1 碼要英文字母、
+        # 第 2~10 碼要數字，讀到別的等於沒讀到。報告上那幾格會標「?」。
+        return None, "有 %d 格沒讀出這一位該有的字，補回來的會比讀到的還多" % len(blanks)
 
     total = 1
     for choices in options:

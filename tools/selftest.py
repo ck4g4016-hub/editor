@@ -927,6 +927,8 @@ def check():
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
     problems.extend(_grid_image_falls_back())
+    problems.extend(_grid_state_tells_the_truth())
+    problems.extend(_per_cell_display_matches_the_count())
     problems.extend(_sheet_quality_reported())
 
     for label, run, want in cases:
@@ -1399,6 +1401,147 @@ def _grid_image_falls_back():
     got = converter.grid_of("Z")
     if got is None or int(got.mean()) != 100:
         problems.append("有 grid.png 的時候沒有拿它來用")
+    return problems
+
+
+def _per_cell_display_matches_the_count():
+    """診斷報告上「逐格」印出來的東西，要跟旁邊那句「有幾格沒讀到」數得起來。
+
+    2026-09-21 F 表第 4 件：逐格印「A|9|9|9|9|?|9|?|A|A」，說明卻寫
+    「有 4 格完全沒讀到」—— 數得出來的「?」只有兩個。**我自己先被騙了一次**，
+    以為是報告算錯。真相是那兩格讀到的是對不回數字的字母，對解碼完全沒用，
+    所以算「沒讀到」，但印出來看起來好好的。
+
+    看不懂的報告比沒有報告糟，它會把人帶去錯的方向 —— 跟 2026-09-09
+    那次「（字字字）其實是（沒讀到）」是同一顆雷。
+
+    負向驗證在最後兩段：讀對的那幾格**不可以**被標上問號（每一格都標等於
+    沒標），而且標記不可以混進輸出的值裡。
+    """
+    from pipeline import validate
+
+    problems = []
+
+    def shown(cells):
+        return "|".join(validate.cell_shown(c, i) for i, c in enumerate(cells))
+
+    # 讀到的字對不回這一位該有的東西：印出來要標，數量要跟說明對得起來
+    cells = [["A"], ["1"], ["2"], ["3"], ["4"], [], ["5"], [], ["N"], ["王"]]
+    text = shown(cells)
+    _got, why = validate.solve_id(cells)
+    marks = text.count("?")
+    if marks != 4:
+        problems.append("逐格印「%s」，標出來的只有 %d 格" % (text, marks))
+    if not why or "4 格" not in why:
+        problems.append("說明沒有寫出幾格讀不出來：%s" % why)
+
+    # 負向驗證一：十格都讀對的時候，一個問號都不可以有
+    good = [["A"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"], ["8"], ["9"]]
+    text = shown(good)
+    if "?" in text:
+        problems.append("十格都讀對了卻還是標了問號：%s —— "
+                        "每一格都標等於沒標" % text)
+
+    # 負向驗證二：對得回數字的字母（A→4）算讀到了，不可以標
+    text = shown([["A"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"], ["A"], ["9"]])
+    if "A?" in text:
+        problems.append("「A」在數字位對得回 4，不該被標成讀不出來：%s" % text)
+
+    # 負向驗證三：標記不可以混進輸出的值。逐格那一欄是給人看的，
+    # 寫進 Excel 的身分證裡多一個「?」，RPA 就查不到人了。
+    source = open(os.path.join(resources_base(), "pipeline", "process.py"),
+                  encoding="utf-8").read()
+    if 'raw = how["逐格"]' in source:
+        problems.append("辨識原文是直接拿「逐格」那串顯示字串來用的，"
+                        "標記會跟著混進值裡")
+    if "plain_cells" not in source:
+        problems.append("process.py 沒有留一份乾淨的逐格結果給輸出用")
+    return problems
+
+
+def resources_base():
+    from pipeline import resources
+    return resources.base_dir()
+
+
+def _grid_state_tells_the_truth():
+    """診斷報告上「格線圖」那一欄，不可以叫人去做做不到的事。
+
+    **這條檢查是踩過坑才有的，而且代價是承辦人的一個禮拜。**
+    grid.png 只有「多份掃描件合成」那條路才會產生。原本報告只分兩種狀態，
+    於是用空白原稿建的 F、G 永遠顯示「沒有（底稿要重做一次）」——
+    承辦人照著重做了好幾次，檔案當然還是不會出現，因為那條路根本不做它。
+
+    給錯方向的診斷比沒有診斷還糟：沒有診斷只是不知道要修哪裡，
+    給錯方向是**讓人確信自己在修對的地方**。
+
+    負向驗證有三段：空白原稿建的不可以出現「要重做」這四個字；
+    多份合成建的、grid.png 真的不見了，就一定要叫人重做；
+    舊樣板沒記來源的時候不可以硬猜。
+    """
+    import json
+    import tempfile
+
+    import numpy as np
+
+    from pipeline import process, resources
+    from tools import newform
+
+    problems = []
+    store = tempfile.mkdtemp()
+
+    def make(code, source=None, with_grid=False):
+        folder = os.path.join(store, code)
+        os.makedirs(folder, exist_ok=True)
+        meta = {"code": code, "name": "測試", "pages": {}}
+        if source:
+            meta["base_source"] = source
+        with open(os.path.join(folder, "index.json"), "w", encoding="utf-8") as handle:
+            json.dump(meta, handle, ensure_ascii=False)
+        resources.imwrite(os.path.join(folder, "base.png"),
+                          np.full((80, 80, 3), 200, np.uint8))
+        if with_grid:
+            resources.imwrite(os.path.join(folder, "grid.png"),
+                              np.full((80, 80, 3), 100, np.uint8))
+
+    make("P", "blank")                      # 空白原稿，沒有也不該有 grid.png
+    make("Q", "scans")                      # 多份合成，但 grid.png 不見了
+    make("R", "scans", with_grid=True)      # 多份合成，做好了
+    make("S", None)                         # 舊樣板，沒記來源
+
+    converter = process.Converter(store)
+    say = {code: converter._grid_state(code) for code in "PQRS"}
+
+    if "不需要" not in say["P"]:
+        problems.append("空白原稿建的樣板應該說「不需要」，實際說「%s」" % say["P"])
+    # 負向驗證一：**絕對不可以**叫空白原稿那種去重做底稿
+    if "重做" in say["P"]:
+        problems.append("空白原稿建的樣板被叫去重做底稿（「%s」）—— "
+                        "那條路永遠不會產生 grid.png，重做幾次都一樣" % say["P"])
+    # 負向驗證二：多份合成而檔案真的不見了，就一定要叫人重做
+    if "重做" not in say["Q"]:
+        problems.append("多份合成建的樣板少了 grid.png，卻沒有叫人重做：「%s」" % say["Q"])
+    if say["R"] != "有":
+        problems.append("grid.png 明明在，卻說「%s」" % say["R"])
+    # 負向驗證三：舊樣板沒記來源就說不確定，不要硬猜
+    if "重做" in say["S"] or "不需要" in say["S"]:
+        problems.append("舊樣板沒記底圖來源，卻硬猜成「%s」" % say["S"])
+
+    # 接線檢查：建底圖的那兩條路真的會把來源記進 index.json。
+    # 上面全部測的是讀的那一端，寫的那一端斷掉的話一條都不會叫。
+    folder = os.path.join(store, "T")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "index.json"), "w", encoding="utf-8") as handle:
+        json.dump({"code": "T", "name": "測試", "pages": {}}, handle, ensure_ascii=False)
+    newform._note_base_source(store, "T", "blank")
+    if newform.base_source(store, "T") != "blank":
+        problems.append("_note_base_source 沒有把來源寫進 index.json")
+    source = open(os.path.join(resources.base_dir(), "tools", "newform.py"),
+                  encoding="utf-8").read()
+    for call, why in (('_note_base_source(store, code, "blank")', "空白原稿"),
+                      ('_note_base_source(store, code, "scans")', "多份合成")):
+        if call not in source:
+            problems.append("%s那條路沒有記下底圖來源，報告會分不出狀態" % why)
     return problems
 
 

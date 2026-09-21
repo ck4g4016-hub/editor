@@ -8,6 +8,7 @@
 複核介面靠這些資訊決定要把哪些格子標紅給人看。
 """
 
+import json
 import os
 import time
 
@@ -209,6 +210,37 @@ class Converter:
         journal.timing["辨識"] = time.time() - clock
         return records, unresolved
 
+    def _grid_state(self, code):
+        """診斷報告上「格線圖」那一欄要寫什麼。
+
+        有三種狀態，不是兩種。原本只分「有／沒有（底稿要重做一次）」，
+        於是用空白原稿建的樣板永遠被判成「沒有」，而那種樣板**重做幾次
+        都不會產生 grid.png** —— grid.png 只有「多份掃描件合成」那條路
+        才會做。承辦人 2026-09-21：「F、G 型表格在製作底稿時，不知道為
+        甚麼沒辦法跑出 grid.png 這個檔案。」花了一週在修一個不存在的問題。
+
+        **給錯方向的診斷比沒有診斷還糟。** 分不出來的時候就說分不出來。
+        """
+        if os.path.isfile(os.path.join(self.store, code, "grid.png")):
+            return "有"
+        source = self._base_source(code)
+        if source == "blank":
+            # 空白原稿的格線是印刷廠印的，乾淨得很，本來就不需要救
+            return "不需要（底稿是空白原稿）"
+        if source == "scans":
+            return "沒有（底稿要重做一次）"
+        # 舊樣板沒記來源。不要硬猜成「要重做」—— 猜錯就是叫人去做白工
+        return "沒有（不確定底稿怎麼做的，見下方說明）"
+
+    def _base_source(self, code):
+        """底圖是怎麼做的。blank／scans／None（舊樣板沒記）。"""
+        try:
+            with open(os.path.join(self.store, code, "index.json"),
+                      encoding="utf-8") as handle:
+                return json.load(handle).get("base_source")
+        except (OSError, ValueError):
+            return None
+
     def _survey(self, journal, paths):
         """把樣板與輸入檔的概況記下來。樣板沒建好是最常見的「它壞了」。"""
         for template in self.templates.templates:
@@ -221,12 +253,7 @@ class Converter:
                     "roles": 0,
                     "base": "有" if base is not None else "沒有",
                     "base_size": "%dx%d" % (base.shape[1], base.shape[0]) if base is not None else "-",
-                    # 有沒有專供找格線的那張。沒有就是還沒重做底稿 ——
-                    # 影印來文的細格線會被吃掉，一字一格的欄位會退回整行讀，
-                    # 而報告上只看得到「格數 0」，看不出是這個原因。
-                    "grid": ("有" if os.path.isfile(
-                        os.path.join(self.store, template.code, "grid.png"))
-                        else "沒有（底稿要重做一次）"),
+                    "grid": self._grid_state(template.code),
                     "field_count": len(definitions),
                     "fields": "、".join(
                         "%s/%s/%s" % (fieldmod.COLUMNS.get(d.column, d.column), d.kind, d.mode)
@@ -594,7 +621,11 @@ class Converter:
                 # 一格一個字等於把模型需要的上下文拿掉，實測差很多。
                 per_cell = recognise.read_grid(grid_source, all_spans, grid_band)
                 record.cells[definition.column] = list(all_cells)
-                how["逐格"] = "|".join(c[0] if c else "?" for c in per_cell)
+                # 顯示用的加了「讀到但用不上」的標記（見 validate.cell_shown），
+                # 底下要當辨識原文的那一份維持乾淨，不要把標記寫進輸出值
+                how["逐格"] = "|".join(validate.cell_shown(c, i)
+                                       for i, c in enumerate(per_cell))
+                plain_cells = "".join(c[0] if c else "?" for c in per_cell)
                 solved, solved_problem = validate.solve_id(per_cell)
 
             direct = ("".join(c[0] for c in per_cell)
@@ -602,7 +633,7 @@ class Converter:
 
             if solved:
                 value, problem = solved, solved_problem
-                raw = how["逐格"].replace("|", "")
+                raw = plain_cells
                 confidence = grid_confidence or confidence
             elif direct:
                 # 十格都讀到字了，只是湊不出通過檢查碼的組合。

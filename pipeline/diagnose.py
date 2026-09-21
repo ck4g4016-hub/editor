@@ -267,8 +267,15 @@ def build(journal, notes=None, version=None):
         out.append("")
         out.append("「格線圖」是專門用來找印刷格線的那張底稿（grid.png）。影印來文的")
         out.append("格線又細又淡，一般底稿在合成時會把它吃掉，一字一格的欄位就退回")
-        out.append("整行讀 —— 身分證十個字會讀成六碼、七碼。**顯示「沒有」就去重做一次")
-        out.append("底稿**，欄位框不用重框。")
+        out.append("整行讀 —— 身分證十個字會讀成六碼、七碼。")
+        out.append("")
+        out.append("  有                    好了，不用管")
+        out.append("  不需要（空白原稿）    **本來就不會有**。grid.png 只有「多份掃描件")
+        out.append("                        合成」那條路才會做，空白原稿的格線是印刷廠印")
+        out.append("                        的，乾淨得很，不必救。重做幾次都不會出現")
+        out.append("  沒有（要重做一次）      真的還沒做，去重做一次底稿，欄位框不用重框")
+        out.append("  沒有（不確定…）       舊樣板沒記底圖是怎麼做的。用空白原稿建的就")
+        out.append("                        不用管；用多份合成建的就重做一次")
     else:
         out.append("樣板資料夾是空的 —— 這樣什麼都認不出來。")
 

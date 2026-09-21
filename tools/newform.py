@@ -114,6 +114,41 @@ def create(store, code, name, pdf, front, back=None, rotate=0):
     return folder, notes
 
 
+def _note_base_source(store, code, source):
+    """把「底圖是怎麼做的」記進 index.json。
+
+    **為什麼要記**：診斷報告上「格線圖」那一欄原本只有兩種講法 ——
+    有 grid.png 就是「有」，沒有就是「沒有（底稿要重做一次）」。
+    但 grid.png 只有「多份掃描件合成」那條路才會產生，空白原稿那條路
+    永遠不會有，重做幾次都不會出現。承辦人 2026-09-21 回報 F、G
+    「不知道為甚麼沒辦法跑出 grid.png」—— 那兩種表格就是用空白原稿建的。
+
+    **給錯方向的診斷比沒有診斷還糟**，它會讓人一直修錯的地方。
+    所以把來源記下來，報告才分得出「還沒做」和「本來就不需要」。
+    """
+    path = os.path.join(store, code, "index.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            meta = json.load(handle)
+    except (OSError, ValueError):
+        return
+    meta["base_source"] = source
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(meta, handle, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def base_source(store, code):
+    """底圖是怎麼做的：blank（空白原稿）／scans（多份合成）／None（舊樣板沒記）。"""
+    try:
+        with open(os.path.join(store, code, "index.json"), encoding="utf-8") as handle:
+            return json.load(handle).get("base_source")
+    except (OSError, ValueError):
+        return None
+
+
 def base_from_blank(store, code, pdf, page=1, role="front", rotate=0):
     """空白原稿直接當底圖。存成彩色 —— 存成灰階的話紅色會變成灰色，
     後續要靠色彩判斷的東西就全毀了。
@@ -127,6 +162,9 @@ def base_from_blank(store, code, pdf, page=1, role="front", rotate=0):
     target = os.path.join(store, code, name)
     if not resources.imwrite(target, image):
         raise ValueError("寫不出底圖：%s" % target)
+    # 空白原稿的印刷格線本來就是乾淨的，不需要另外做一張找格線用的底圖
+    # （grid.png 是為了救「多份合成把細格線吃掉」那個問題，見 base_from_scans）
+    _note_base_source(store, code, "blank")
     return target, "%s底圖來源：空白原稿第 %d 頁" % (
         "" if role == "front" else "背面", page)
 
@@ -173,6 +211,7 @@ def base_from_scans(store, code, paths):
     if previous is not None:
         note += "。沿用原本底圖的座標系，欄位框不用重框"
     note += "。另存了一張 grid.png 專供找格線用（影印件的細格線靠它）"
+    _note_base_source(store, code, "scans")
     return target, note
 
 
