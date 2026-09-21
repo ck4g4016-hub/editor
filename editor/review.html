@@ -328,6 +328,14 @@ function render(){
         const v = input.value.trim().toUpperCase();
         if (!v){ box.className = 'chk idle'; box.textContent = '照著上面的原圖打，會即時驗檢查碼'; return; }
         if (v.length !== 10){ box.className = 'chk idle'; box.textContent = `${v.length} 碼，還要 ${10 - v.length} 碼`; return; }
+        // 「?」是程式明講「這一格我讀不出來」，不是打錯字。
+        // 對它說「有一碼打錯了」會讓人去找一個不存在的錯字。
+        const holes = (v.match(/\?/g) || []).length;
+        if (holes){
+          box.className = 'chk bad';
+          box.textContent = `還有 ${holes} 格是程式讀不出來的（?），請對著上面的原圖補上`;
+          return;
+        }
         const ok = idOK(v);
         box.className = 'chk ' + (ok ? 'good' : 'bad');
         box.textContent = ok ? '✓ 檢查碼正確' : '✗ 檢查碼不符，有一碼打錯了';

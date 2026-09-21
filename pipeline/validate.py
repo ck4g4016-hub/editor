@@ -175,6 +175,27 @@ def cell_shown(texts, position):
     return texts[0] if was_read else "%s?" % texts[0]
 
 
+def partial_id(cells):
+    """十格裡讀得出來的照寫，讀不出來的寫「?」。回傳 10 個字或 None。
+
+    **這是給人接手用的，不是給機器用的。** 檢查碼推不出唯一解的時候
+    （讀不出來的格子太多），原本會退回整行讀的結果 —— 而整行讀常常
+    連長度都不對（實測十個字讀成九個）。人拿到一串九碼的錯號碼，
+    只能整串重打，還得自己一格一格對位置。
+
+    改成把逐格的結果原樣交出去：位置對得起來，讀出來的那幾格多半是對的，
+    人只要補「?」那幾格。**「?」不是猜，是明講不知道** —— 它過不了
+    檢查碼，匯出前那一關也會擋，所以不可能被當成讀好的值送進 RPA。
+    """
+    if len(cells) != 10:
+        return None
+    out = []
+    for index in range(10):
+        choices, was_read = _cell_options(cells[index], index)
+        out.append(choices[0] if was_read and len(choices) == 1 else "?")
+    return "".join(out)
+
+
 # 候選組合數的上限。超過就不算 —— 那代表讀到的東西太少，
 # 硬算出來的「唯一解」只是湊出一個通過檢查碼的號碼，不是讀出來的。
 MAX_ID_COMBOS = 300000

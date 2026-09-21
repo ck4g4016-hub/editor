@@ -928,6 +928,7 @@ def check():
     problems.extend(_grid_survives_thin_lines())
     problems.extend(_grid_image_falls_back())
     problems.extend(_grid_state_tells_the_truth())
+    problems.extend(_partial_id_beats_a_wrong_one())
     problems.extend(_per_cell_display_matches_the_count())
     problems.extend(_sheet_quality_reported())
 
@@ -1462,6 +1463,68 @@ def _per_cell_display_matches_the_count():
 def resources_base():
     from pipeline import resources
     return resources.base_dir()
+
+
+def _partial_id_beats_a_wrong_one():
+    """檢查碼推不出唯一解的時候，交給人的要是「逐格結果 + ?」，不是一串錯號碼。
+
+    2026-09-21 F 表第 4 件：格子切出十格、逐格讀到六格，但有四格讀不出來，
+    檢查碼湊不出唯一解。程式退回整行讀的結果，那是一串**九碼**的東西 ——
+    長度都不對。承辦人拿到它只能整串重打，還得自己一格一格對位置。
+
+    逐格的位置是對的，讀出來的那幾格多半也是對的。把它原樣交出去，
+    人只要補「?」那幾格。
+
+    負向驗證有三段，每一段擋的都是「靜靜寫錯」：
+      一、「?」一定要過不了驗證，不可以被當成讀好的值送進 RPA
+      二、匯出前那一關一定要攔下來
+      三、十格全讀到、檢查碼也過的時候**不可以**變成問號串
+    """
+    from pipeline import validate
+    from tools import review
+
+    problems = []
+
+    # 六格讀到、四格讀不出來（第 4 件的形狀）
+    cells = [["A"], ["1"], ["2"], ["3"], ["4"], [], ["5"], [], ["N"], ["王"]]
+    partial = validate.partial_id(cells)
+    if partial != "A1234?5???":
+        problems.append("逐格結果應該是「A1234?5???」，實際是「%s」" % partial)
+    if len(partial) != 10:
+        problems.append("交給人的長度不是 10，位置就對不起來：「%s」" % partial)
+
+    # 負向驗證一：「?」一定要過不了驗證
+    _fixed, why = validate.id_number(partial)
+    if not why:
+        problems.append("「%s」竟然通過驗證 —— 那會被當成讀好的值送進 RPA" % partial)
+
+    # 負向驗證二：匯出前那一關要攔下來
+    row = {"district": "三峽區", "address": "民生街27巷26號16樓",
+           "id_number": partial, "doc_number": "1155699478", "name": "許三"}
+    if not any("身分證" in line for line in review.export_warnings([row])):
+        problems.append("匯出前的檢查沒有攔下帶「?」的身分證")
+
+    # 負向驗證三：十格全讀到就不可以變成問號串
+    good = [[c] for c in "A123456789"]
+    if "?" in (validate.partial_id(good) or "?"):
+        problems.append("十格都讀到了卻還是給問號串：%s" % validate.partial_id(good))
+
+    # 接線檢查：process.py 真的有把它交出去。上面全測的是函式本身，
+    # 接線斷掉的話一條都不會叫。
+    source = open(os.path.join(resources_base(), "pipeline", "process.py"),
+                  encoding="utf-8").read()
+    if "validate.partial_id(per_cell)" not in source:
+        problems.append("process.py 沒有把逐格的部分結果交給複核畫面")
+    if 'partial.count("?") < 10' not in source:
+        problems.append("一格都沒讀到的時候還是交出整串問號，那比整行讀的結果更沒用")
+
+    # 複核畫面要看得懂「?」。對著問號說「有一碼打錯了」，
+    # 人會去找一個不存在的錯字。
+    page = open(os.path.join(resources_base(), "editor", "review.html"),
+                encoding="utf-8").read()
+    if "const holes" not in page or "讀不出來的（?）" not in page:
+        problems.append("複核畫面把「?」當成打錯字，沒有講出那是程式讀不出來")
+    return problems
 
 
 def _grid_state_tells_the_truth():

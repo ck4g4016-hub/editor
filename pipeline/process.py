@@ -670,6 +670,27 @@ class Converter:
                     if candidate and value == validate.fix_id_positions(candidate):
                         raw, confidence = candidate, score
                         break
+
+                # 三種讀法都沒讀出一個合法的號碼，但格子有切出十格 ——
+                # 那就把逐格的結果原樣交出去，讀不出來的那幾格寫「?」。
+                #
+                # **為什麼比整行讀的結果有用**：整行讀連長度都常常不對
+                # （2026-09-21 F 表第 4 件就是十個字讀成九個），人拿到一串
+                # 九碼的錯號碼只能整串重打，還得自己一格一格對位置。逐格的
+                # 位置是對的，讀出來的那幾格多半也是對的，人補「?」就好。
+                #
+                # 「?」不是猜，是明講不知道：它過不了檢查碼，匯出前那一關
+                # 也會擋，所以不可能被當成讀好的值送進 RPA。
+                partial = validate.partial_id(per_cell) if problem else None
+                if partial and partial.count("?") < 10:
+                    missing = partial.count("?")
+                    value, raw = partial, partial
+                    confidence = grid_confidence or confidence
+                    problem = ("逐格讀出來的擺在這裡了，有 %d 格讀不出來（?），"
+                               "請對著上面的原圖把那幾格補起來"
+                               % missing)
+                    if solved_problem:
+                        problem = "%s（%s）" % (problem, solved_problem)
         elif any_grid and grid_raw and grid_raw != raw:
             # 這一欄有印好的格子。格線切出來的結果比整行讀可靠 ——
             # 一格一個字，不會把兩個字併成一個，也不會漏掉最後那一豎
