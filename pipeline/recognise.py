@@ -543,6 +543,27 @@ def read_grid(crop, spans, band=None, window=WINDOW):
             if len(text) == size:
                 for offset, char in enumerate(text):
                     note(start + offset, char)
+
+    # 還是完全沒讀到的格子，用**沒有緊裁**的那一版再問一次。
+    #
+    # trim() 在乾淨的字上比較好（見它自己的說明，那是量過的），但在難字上
+    # 會把字弄丟：承辦人 2026-09-22 實際作業收到的八格難字，緊裁版一格都
+    # 讀不出來，不裁直接讀反而讀對兩格（一個 H、一個 3）。
+    #
+    # **只補讀空的格子，不動已經讀到東西的。** 兩種都讀進候選試過了，
+    # 拿假號碼三十格量：真值在候選裡的比例一模一樣（28/30），卻害兩格從
+    # 「唯一決定」變成「兩種讀法互相矛盾、分不出來」，還多一倍運算 ——
+    # 空的格子沒有東西可以矛盾，所以只在那裡補。
+    for index, got in enumerate(picks):
+        if got:
+            continue
+        left, right = spans[index]
+        piece = crop[:, left:right]
+        if piece is None or not piece.size:
+            continue
+        text = "".join(ch for ch in read_only(piece) if ch.isalnum())
+        if len(text) == 1:
+            note(index, text)
     return picks
 
 

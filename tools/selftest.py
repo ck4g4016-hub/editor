@@ -932,6 +932,7 @@ def check():
     problems.extend(_partial_id_beats_a_wrong_one())
     problems.extend(_id_search_space_stays_wide())
     problems.extend(_hard_cells_are_safe_to_send())
+    problems.extend(_blank_cells_get_a_second_look())
     problems.extend(_per_cell_display_matches_the_count())
     problems.extend(_sheet_quality_reported())
 
@@ -1527,6 +1528,81 @@ def _partial_id_beats_a_wrong_one():
                 encoding="utf-8").read()
     if "const holes" not in page or "讀不出來的（?）" not in page:
         problems.append("複核畫面把「?」當成打錯字，沒有講出那是程式讀不出來")
+    return problems
+
+
+def _blank_cells_get_a_second_look():
+    """滑動視窗完全讀不到的格子，要用「沒有緊裁」的那一版再問一次。
+
+    trim() 在乾淨的字上比較好（那是量過的），但在難字上會把字弄丟 ——
+    承辦人 2026-09-22 從實際作業傳回來的八格難字，緊裁版一格都讀不出來，
+    不裁直接讀反而讀對兩格。
+
+    **只能補空的格子。** 兩種都讀進候選試過了：拿假號碼三十格量，真值在
+    候選裡的比例一模一樣（28/30），卻害兩格從「唯一決定」變成「兩種讀法
+    互相矛盾」，還多一倍運算。空的格子沒有東西可以矛盾，所以只在那裡補。
+
+    負向驗證在最後一段：已經讀到東西的格子**不可以**被再讀一次，
+    不然就是把那個退步原封不動加回來。
+    """
+    import numpy as np
+
+    from pipeline import recognise
+
+    problems = []
+    crop = np.full((40, 90), 255, np.uint8)
+    spans = [(0, 30), (30, 60), (60, 90)]
+
+    def run(fake):
+        real_read, real_trim = recognise.read_only, recognise.trim
+        calls = []
+        try:
+            recognise.read_only = fake
+            recognise.trim = lambda img, pad_ratio=0.25: ("TRIMMED", img)[0]
+            return recognise.read_grid(crop, spans, None), calls
+        finally:
+            recognise.read_only = real_read
+            recognise.trim = real_trim
+
+    # 緊裁版永遠讀不到，沒緊裁的讀得到 —— 補讀要接手
+    seen = []
+
+    def only_raw(image):
+        seen.append(image)
+        return "" if isinstance(image, str) else "7"
+
+    picks, _ = run(only_raw)
+    if [p for p in picks] != [["7"], ["7"], ["7"]]:
+        problems.append("緊裁版讀不到的時候，沒有用沒緊裁的那一版補回來：%s" % picks)
+
+    # 負向驗證：已經讀到東西的格子不可以再讀一次（那會把矛盾的候選加進來）
+    def always_reads(image):
+        # 三格視窗回三個字、一格回一個字；沒緊裁的會回別的字
+        if isinstance(image, str):
+            return "555"[:1] if False else "5"
+        return "9"
+
+    real_read, real_trim = recognise.read_only, recognise.trim
+    try:
+        counted = []
+        recognise.read_only = lambda img: (counted.append(img), "5")[1]
+        recognise.trim = lambda img, pad_ratio=0.25: "TRIMMED"
+        picks = recognise.read_grid(crop, spans, None)
+        if any(len(p) > 1 for p in picks):
+            problems.append("已經讀到東西的格子又被讀了一次，候選變成 %s —— "
+                            "那正是量出來會退步的那個做法" % picks)
+        if any(not isinstance(img, str) for img in counted):
+            problems.append("已經讀到東西了，卻還是去讀沒緊裁的那一版")
+    finally:
+        recognise.read_only = real_read
+        recognise.trim = real_trim
+
+    # 接線檢查：補讀那一段要真的被「空的才補」擋住
+    source = open(os.path.join(resources_base(), "pipeline", "recognise.py"),
+                  encoding="utf-8").read()
+    if "for index, got in enumerate(picks):" not in source or \
+       "        if got:\n            continue" not in source:
+        problems.append("補讀那一段沒有用「已經讀到就跳過」擋住")
     return problems
 
 
