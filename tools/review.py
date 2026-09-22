@@ -130,14 +130,20 @@ def make_handler(state, guard):
                 print("已產出: %s" % path)
             state["exported"] = True
 
-            # 公文文號現在是內網腳本 3、4 用來對應的鍵，撞號會有一筆被蓋掉。
-            # 檔還是照產（人已經複核完了，不該白做），但一定要講出來。
+            # 同一個公文文號出現好幾次是**正常的** —— 一份公文底下可以有
+            # 好幾個申請人（承辦人 2026-09-22：「有個 1155701234 這個文號
+            # 有 A、B、C 三個人申請」）。RPA 的檔名都已經加上身分證號，
+            # 不會互相蓋掉。
+            #
+            # 但它也可能是「同一件掃了兩次」，那一樣看得出來 ——
+            # 那種情形連身分證號都會一樣。所以照樣講，只是把話講準。
             warnings = export_warnings(rows, numbers)
             for value, count in output.duplicate_doc_numbers(rows):
                 warnings.append(
-                    "公文文號「%s」出現 %d 次。內網腳本是用這個號碼對應資料的，"
-                    "重複會有一筆被蓋掉，請確認是不是同一件掃了兩次。"
-                    % (value or "（空白）", count))
+                    "公文文號「%s」出現 %d 次。一個文號底下有好幾個申請人是正常的，"
+                    "RPA 的檔名會再加上身分證號區分；但如果那幾件的身分證號也一樣，"
+                    "就是同一件掃了兩次，請確認。"
+                    % (value or "（空白）",  count))
             for line in warnings:
                 print("注意：%s" % line)
 
