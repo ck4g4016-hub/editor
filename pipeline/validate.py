@@ -562,6 +562,23 @@ def address(text, roads=None):
             stem, rest = head, ""
 
         name, _score, note = lexicon.resolve_head_full(stem, roads)
+        if name is None and dropped and any(ch.isalpha() for ch in dropped):
+            # 對不上，而上面被當成「鄰」剝掉的那一段帶英文字母 ——
+            # 鄰別是數字，帶字母的不是鄰別，是**路名第一個字沒讀成中文字**
+            #（圈起來的、糊掉的字常常讀成 O、Q、C）。把它接回去再問一次：
+            # 位置本身就是答案，「O中街」是國中街、「中O街」是中湖街
+            #（見 lexicon._core_and_gaps）。只給字典看，value 不動 ——
+            # 讓那個字母跟到輸出的門牌上就糟了。
+            #
+            # 只在對不上的時候才重問，是為了不動到本來就好好的件：
+            # 「12中湖街5號」照樣走原本那條路，開頭那個 12 還是會被
+            # 當成鄰別提醒出來。
+            name, _score, note = lexicon.resolve_head_full(dropped + stem, roads)
+            if name:
+                # 那一團東西已經被當成路名的一部分用掉了，就別再說它是鄰別 ——
+                # 同一句話裡「它是路名的第一個字」跟「它是隔壁的鄰別」
+                # 兩種講法並排，複核的人只會更不知道該信哪一個。
+                dropped = None
         if name:
             # 地址一定以路街名開頭，前面黏著的行政區之類一律丟掉
             value = name + rest + tail

@@ -925,6 +925,8 @@ def check():
     problems.extend(_address_floor_always_chinese())
     problems.extend(_address_follows_the_rule())
     problems.extend(_road_shortlist_when_stuck())
+    problems.extend(_road_gap_tells_which_one())
+    problems.extend(_zhongxing_street_is_gone())
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
     problems.extend(_grid_image_falls_back())
@@ -2089,6 +2091,93 @@ def _road_shortlist_when_stuck():
                         % leaked[:3])
     if "6 條" not in masked:
         problems.append("診斷報告上看不出有幾條候選，開發者查不出問題：%s" % masked)
+    return problems
+
+
+def _road_gap_tells_which_one():
+    """讀不出來的那個字**卡在哪一格**，本身就是線索。
+
+    承辦人 2026-09-22 第 12 件：程式報「讀到中街」，他問「是 O中街 還是
+    中O街？」—— 因為鶯歌區這兩種是完全不同的兩條路（國中街、中湖街）。
+    程式其實一路都知道那一格有讀到東西、只是讀不成中文字，是比對前
+    「只留中文字」那一步把位置當雜訊丟掉了。現在留著它。
+
+    負向驗證有五段，每一段都是「不可以因此開始亂猜」：
+      一、真的只讀到「中街」（那一格什麼都沒有）就**不可以**挑一條，
+          但要在候選清單上畫出是哪一格空的，人才看得懂要去比什麼
+      二、位置對得上不只一條的（鳳O路 有六條），照樣不挑
+      三、開頭那段是**數字**的是隔壁的鄰別，不是讀壞的字，不可以拿來當位置
+      四、本來就對得上的件不受影響，開頭的鄰別照樣要提醒
+      五、那個讀壞的字絕對不可以跟到輸出的門牌上
+    """
+    from pipeline import lexicon, validate
+
+    problems = []
+    roads = lexicon.for_district(lexicon.builtin(), "鶯歌區")
+    if not roads or "國中街" not in roads or "中湖街" not in roads:
+        return ["鶯歌區字典裡沒有國中街／中湖街，這條檢查等於沒有驗過"]
+
+    for raw, want in (("O中街12號", "國中街12號"), ("中O街12號", "中湖街12號"),
+                      ("中Q街5巷3號", "中湖街5巷3號")):
+        value, note = validate.address(raw, roads)
+        if value != want:
+            problems.append("「%s」得到 %r，應該照位置判成 %r" % (raw, value, want))
+        if not note:
+            problems.append("「%s」是照位置猜出來的，卻沒有標記" % raw)
+
+    # 負向一：那一格真的什麼都沒讀到，就不准挑
+    value, note = validate.address("中街12號", roads)
+    if value != "中街12號":
+        problems.append("只讀到「中街」卻挑了一條：%r" % value)
+    if not note or "中□街" not in note or "□中街" not in note:
+        problems.append("候選清單沒有畫出是哪一格空的，人分不出要比什麼：%s" % note)
+
+    # 負向二：位置對得上的不只一條，照樣不挑
+    _value, note = validate.address("鳳O路12號", roads)
+    if not note or "挑一條" not in note:
+        problems.append("「鳳O路」有六條都對得上位置，卻沒有交給人挑：%s" % note)
+
+    # 負向三：開頭是數字的是鄰別，不是讀壞的字
+    value, note = validate.address("12中街5號", roads)
+    if value != "中街5號":
+        problems.append("開頭的鄰別數字被當成讀壞的字，挑了一條：%r" % value)
+
+    # 負向四：本來就對得上的件不受影響，鄰別照樣要提醒
+    value, note = validate.address("A大湖路5號", roads)
+    if value != "大湖路5號":
+        problems.append("「A大湖路5號」得到 %r" % value)
+    if not note or "鄰別" not in note:
+        problems.append("開頭的「A」被吃掉了，沒有提醒是鄰別：%s" % note)
+
+    # 負向五：讀壞的那個字不可以跟到輸出的門牌上
+    for raw in ("O中街12號", "中O街12號", "A大湖路5號"):
+        value, _note = validate.address(raw, roads)
+        if any(ch.isascii() and ch.isalpha() for ch in value):
+            problems.append("輸出的門牌裡還留著英文字母：%r" % value)
+    return problems
+
+
+def _zhongxing_street_is_gone():
+    """三峽的「中興街」拿掉了（承辦人 2026-09-22）。
+
+    它不在官方 115 年門牌清單裡，全三峽只有兩戶掛這個門牌，可是它會把
+    「中X街」這種少讀一個字的門牌整個吸走 —— 2026-09-22 報告第 7 件
+    就是這樣冒出來的。留著救兩戶，代價是別人的門牌被靜靜換成中興街。
+
+    負向驗證：同一個查法要找得到字典裡真的有的路，否則這條檢查是
+    「查法壞了所以永遠通過」，那比沒有檢查還糟。
+    """
+    from pipeline import lexicon
+
+    problems = []
+    roads = lexicon.for_district(lexicon.builtin(), "三峽區")
+    if not roads:
+        return ["讀不到三峽區的路名清單，這條檢查等於沒有驗過"]
+    if "中興街" in roads:
+        problems.append("三峽區字典裡還留著「中興街」")
+    if "中園街" not in roads:
+        problems.append("三峽區字典裡連「中園街」都找不到，這個查法有問題，"
+                        "上面那條「中興街拿掉了」等於沒驗")
     return problems
 
 

@@ -303,30 +303,75 @@ def canonical(text):
     return "".join(table.get(ch, ch) for ch in text or "")
 
 
-def _one_edit(read, name):
-    """read 改**一個字**能不能變成 name：換掉一個、少讀一個、或多讀一個。
+# _edit_at 回報的三種差別
+SWAPPED = "換"   # 那個字有讀到，只是讀錯了
+MISSING = "少"   # name 的那個字整個沒讀出來
+EXTRA = "多"     # read 的那個字是多出來的
+
+
+def _edit_at(read, name):
+    """read 改**一個字**能不能變成 name。回傳 (種類, 位置)，不行就回 None。
 
     只有「換掉一個」不夠。實測承辦人的件裡，「鳳」最常見的失敗不是被讀成
     別的字，而是**整個字沒被讀出來**：三個字的「鳳吉一街」讀成「吉一街」、
     兩個字的「鳳鳴路」讀成「鳴路」。長度不一樣就跳過的話，這一種全部救不到。
+
+    位置要回報，是因為它常常就是分辨兩條路的唯一線索：讀成「中街」的時候，
+    少的字在「中」前面就是「國中街」、在後面就是「中湖街」。
+    位置一律用**比較長的那一串**的座標（少讀的情形就是 name 的座標），
+    read 短的時候兩者剛好一樣 —— 少讀的字就插在 read 的第 n 個字前面。
     """
     read, name = canonical(read), canonical(name)
     if read == name:
-        return False
+        return None
     if len(read) == len(name):
-        return sum(1 for a, b in zip(read, name) if a != b) == 1
+        differ = [i for i, (a, b) in enumerate(zip(read, name)) if a != b]
+        return (SWAPPED, differ[0]) if len(differ) == 1 else None
     if abs(len(read) - len(name)) != 1:
-        return False
+        return None
     short, long = (read, name) if len(read) < len(name) else (name, read)
-    index, skipped = 0, False
-    for char in long:
+    index, skipped = 0, None
+    for position, char in enumerate(long):
         if index < len(short) and short[index] == char:
             index += 1
-        elif skipped:
-            return False
+        elif skipped is not None:
+            return None
         else:
-            skipped = True
-    return index == len(short)
+            skipped = position
+    if index != len(short) or skipped is None:
+        return None
+    return (MISSING if len(read) < len(name) else EXTRA), skipped
+
+
+def _one_edit(read, name):
+    """read 改一個字能不能變成 name。"""
+    return _edit_at(read, name) is not None
+
+
+def _core_and_gaps(head):
+    """把讀到的路名拆成「中文字」與「中間那些看不懂的東西在哪」。
+
+    比對只用中文字（圈、雜訊本來就不該拿去比），但**丟掉的位置要記下來**。
+    表格上的字沒讀成中文字，多半不是那裡沒有字，而是那個字認不出來 ——
+    「O中街」跟「中O街」在字典裡是兩條完全不同的路（國中街、中湖街），
+    只留「中街」的話這個分別就沒了，人只能自己翻原圖。
+
+    回傳 (中文字串, {位置})。位置是中文字串的索引，意思是「第 n 個字前面
+    讀到一團看不懂的東西」；位置等於長度就是黏在最後面。
+    """
+    core, gaps = [], set()
+    pending = False
+    for char in head or "":
+        if "\u4e00" <= char <= "\u9fff":
+            if pending:
+                gaps.add(len(core))
+            pending = False
+            core.append(char)
+        elif not char.isspace():
+            pending = True
+    if pending:
+        gaps.add(len(core))
+    return "".join(core), gaps
 
 
 def _score(candidate, name):
@@ -447,6 +492,36 @@ def resolve_head_full(head, names, threshold=THRESHOLD):
     return name, score, note
 
 
+def _mask(name, edit):
+    """把沒讀出來的那一格畫成「□」：國中街 → □中街、中湖街 → 中□街。"""
+    if not edit or edit[0] != MISSING:
+        return None
+    body, index = stem(name), edit[1]
+    if index >= len(body):
+        return None
+    return body[:index] + "□" + body[index + 1:] + name[len(body):]
+
+
+def _shortlist_text(shortlist, edits):
+    """候選清單要給人看的樣子。
+
+    只列「中湖街」「國中街」的話，人還得自己一條條比對是哪一格不一樣。
+    把沒讀出來的那一格畫成「□」，「□中街」跟「中□街」一眼就分得出來 ——
+    承辦人 2026-09-22 問的正是這個（「是 O中街 還是 中O街？」）。
+
+    候選路名一律放進「」裡，理由見呼叫處：診斷報告照引號遮罩，
+    報告上只會留下「有幾條對得起來」，不會把民眾的門牌縮小到幾條路裡。
+    """
+    names = sorted(shortlist)
+    pictures = [_mask(name, edits.get(name)) for name in names]
+    # 畫出來全長一樣就別畫了。「鳳路」的六條候選都是「鳳□路」，
+    # 那不是線索，只是把同一行字抄六遍。
+    if len(set(pictures)) < 2 or not all(pictures):
+        return "「%s」" % "」「".join(names)
+    return "、".join("「%s」＝「%s」" % (picture, name)
+                     for picture, name in zip(pictures, names))
+
+
 def _resolve_head(head, names, threshold=THRESHOLD):
     """同 resolve_head，但多回傳一句要給人看的說明（沒有就是 None）。
 
@@ -462,8 +537,9 @@ def _resolve_head(head, names, threshold=THRESHOLD):
     """
     if not head or not names:
         return None, 0.0, None
-    # 只留中文字去比對，把圈和雜訊丟掉
-    core = "".join(ch for ch in head if "\u4e00" <= ch <= "\u9fff")
+    # 只留中文字去比對，把圈和雜訊丟掉 —— 但要記住它們卡在哪一格，
+    # 那是「O中街」與「中O街」唯一的分別（見 _core_and_gaps）。
+    core, gaps = _core_and_gaps(head)
     if len(core) < 2:
         return None, 0.0, None
 
@@ -493,7 +569,7 @@ def _resolve_head(head, names, threshold=THRESHOLD):
             blocked = blocked or (
                 "分不出是「%s」裡的哪一條" % "」「".join(sorted(tied)))
 
-    shortlist = []
+    shortlist, edits = [], {}
     if blocked is None:
         # 只錯一個字、而且整份字典裡只有一個長得這麼像的，就修掉。
         #
@@ -505,7 +581,11 @@ def _resolve_head(head, names, threshold=THRESHOLD):
         # 不只一個候選就一定標起來，這一半才是重點：讀到的字剛好落在
         # 「一三五七」那一位時，四條路都只差一個字，挑一個就是猜。
         trimmed = stem(core)
-        hits = [name for name in names if _one_edit(trimmed, stem(name))]
+        for name in names:
+            found = _edit_at(trimmed, stem(name))
+            if found:
+                edits.setdefault(name, found)
+        hits = list(edits)
         shortlist = hits
         if len(hits) == 1:
             # **一定要標記。** 一字之差是「猜得有根據」，不是「讀出來的」——
@@ -516,18 +596,47 @@ def _resolve_head(head, names, threshold=THRESHOLD):
             return hits[0], highest, (
                 "路名有一個字跟「%s」對不上，這是猜的，請對著原圖確認"
                 % hits[0])
-        if len(hits) > 1 and read_suffix:
-            # 還是有好幾個，但讀到的結尾字只對得上其中一個。
-            # 例如「鳯一路」一字之差的有「鳳一路」與「甲一街」——
-            # 承辦人說得對：只有「鳳」會有一、三、五、七路，而甲一是「街」。
-            # 尾字平常不採信，但這時候它是唯一剩下的線索，用它、然後講出來。
-            picks = [name for name in hits if name.endswith(read_suffix)]
-            if len(picks) == 1:
+        if len(hits) > 1:
+            # 還剩好幾條的時候，把剩下的兩個線索**接著**套上去：
+            #
+            #   1. 沒讀出來的字卡在哪一格。承辦人 2026-09-22 指定：讀成
+            #      「O中街」要給「國中街」、讀成「中O街」要給「中湖街」。
+            #      這兩條路差的就是空的那一格在「中」前面還是後面，而那個
+            #      位置程式本來一路都知道 —— 是比對前「只留中文字」那一步
+            #      把它當雜訊丟掉了，人才會在報告上看到沒有下文的「讀成中街」。
+            #   2. 表格上讀到的「路」「街」。那個字平常不採信（印刷的，民眾
+            #      只是圈起來），但走到這裡它是最後剩下的線索。
+            #
+            # **接著套**是重點，各套各的不行：「中O街」用位置剩下「中山路」
+            # 「中湖街」、用尾字剩下「中湖街」「國中街」，各自都還是兩條，
+            # 接起來才剩「中湖街」一條。套完還剩不只一條就照樣不猜。
+            picks, positioned, suffixed = hits, False, False
+            if gaps:
+                narrowed = [name for name in picks
+                            if edits[name][0] == MISSING
+                            and edits[name][1] in gaps]
+                if narrowed:
+                    picks, positioned = narrowed, True
+            if read_suffix:
+                narrowed = [name for name in picks if name.endswith(read_suffix)]
+                if narrowed:
+                    picks, suffixed = narrowed, True
+            if len(picks) == 1 and (positioned or suffixed):
+                clues = []
+                if positioned:
+                    clues.append("原圖第 %d 個字讀到的是一團看不懂的東西，"
+                                 "沒讀出來的字就在那一格"
+                                 % (edits[picks[0]][1] + 1))
+                if suffixed:
+                    clues.append("表格上讀到的是「%s」" % read_suffix)
+                # **一定要標記。** 靠這些線索挑出來的是「猜得有根據」，
+                # 不是讀出來的 —— 猜錯的門牌會讓 RPA 去查別人的房子。
+                # 根據也一起寫出來，人才知道要去原圖看哪裡。
                 return picks[0], highest, (
-                    "路名有一個字沒讀準，「%s」都只差一個字，"
-                    "這裡是照表格上讀到的「%s」決定的，請確認"
-                    % ("」「".join(sorted(hits)), read_suffix))
-            shortlist = picks or hits
+                    "路名有一個字沒讀準，字典裡「%s」都只差一個字。"
+                    "這裡挑「%s」的根據是：%s。請對著原圖確認"
+                    % ("」「".join(sorted(hits)), picks[0], "；".join(clues)))
+            shortlist = picks
 
     # 對不上就是對不上，**不猜**。但「路街名不在字典裡」這句話是死路 ——
     # 人拿著它只能自己去翻清單。字典裡只差一個字的如果就那麼幾條，
@@ -545,6 +654,6 @@ def _resolve_head(head, names, threshold=THRESHOLD):
     # 六條路裡。畫面上人看到的是完整的清單，不受影響。
     if blocked is None and 1 < len(shortlist) <= 8:
         blocked = ("路街名讀成「%s」，字典裡有 %d 條都只差一個字，分不出是哪一條，"
-                   "請對著原圖挑一條：「%s」"
-                   % (core, len(shortlist), "」「".join(sorted(shortlist))))
+                   "請對著原圖挑一條：%s"
+                   % (core, len(shortlist), _shortlist_text(shortlist, edits)))
     return None, highest, blocked
