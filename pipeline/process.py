@@ -65,6 +65,9 @@ class Record:
         # 切出來的每一格影像。**含個資**，只給承辦人自己在本機看，
         # 不會進診斷報告。看圖才知道是「格子切歪了」還是「字真的認不出來」。
         self.cells = {}
+        # 每一格**讀到了什麼**，跟 cells 一一對應。給「難字回報」用：
+        # 人在複核畫面上改完之後，才知道哪一格程式讀錯了。
+        self.cell_text = {}
         # 每一面的底圖對位品質：{"front": {"減版面": True, "對位": 0.87}}。
         # 減不掉的時候欄位是從**沒減過的原圖**上裁的，印刷的「段巷弄號樓」
         # 會跟手寫混在一起被讀進來 —— 那種讀出來的東西看起來就像 OCR 很爛，
@@ -621,6 +624,7 @@ class Converter:
                 # 一格一個字等於把模型需要的上下文拿掉，實測差很多。
                 per_cell = recognise.read_grid(grid_source, all_spans, grid_band)
                 record.cells[definition.column] = list(all_cells)
+                record.cell_text[definition.column] = [list(c) for c in per_cell]
                 # 顯示用的加了「讀到但用不上」的標記（見 validate.cell_shown），
                 # 底下要當辨識原文的那一份維持乾淨，不要把標記寫進輸出值
                 how["逐格"] = "|".join(validate.cell_shown(c, i)
@@ -689,23 +693,6 @@ class Converter:
                     problem = ("逐格讀出來的擺在這裡了，有 %d 格讀不出來（?），"
                                "請對著上面的原圖把那幾格補起來"
                                % missing)
-                    # 讀不出來的那幾格，再問模型一次「如果一定是合法的字元，
-                    # 你覺得最像哪幾個」。這不是替人決定，是把範圍縮小給人看 ——
-                    # 十個數字瞇著眼睛挑，跟三個裡面挑一個，差很多。
-                    # 為什麼不直接填上去：見 recognise.digit_shapes 的說明。
-                    # all_cells 是把每一段的格子接起來的，只有剛好十格時
-                    # 位置才跟 partial 對得上；不對就乾脆不給線索，不要指錯格
-                    hints = []
-                    for index, char in enumerate(partial if len(all_cells) == 10
-                                                 else ""):
-                        if char != "?":
-                            continue
-                        likely = recognise.digit_shapes(all_cells[index], index)
-                        if likely:
-                            hints.append("第 %d 格最像 %s"
-                                         % (index + 1, "、".join(likely[:3])))
-                    if hints:
-                        problem = "%s。%s" % (problem, "；".join(hints))
                     if solved_problem:
                         problem = "%s（%s）" % (problem, solved_problem)
         elif any_grid and grid_raw and grid_raw != raw:
@@ -773,6 +760,123 @@ def dump_cells(records, folder):
                 name = "第%02d件-%s-第%02d格.png" % (index, label, number)
                 if _resources.imwrite(os.path.join(target, name), cell):
                     written += 1
+    return target, written
+
+
+HARD_CELLS = "難字回報（可以傳給開發者）"
+
+_HARD_README = """\
+這個資料夾裡是**程式讀錯或讀不出來的那幾個字**，一個字一張圖。
+
+檔名就是答案：
+
+    數字_真值8_程式讀成7_a3f9c2.png    程式把 8 讀成 7
+    數字_真值5_程式沒讀到_7b21de.png   程式那一格什麼都沒讀到
+    字母_真值F_程式讀成T_c4e810.png    第 1 碼（區域碼）讀錯
+
+「真值」是**你在複核畫面上改完、按下產生輸出檔的那個值**，所以是對的。
+程式就是靠這個才知道自己哪一格錯了。
+
+── 這個資料夾可以傳給開發者 ──
+
+跟「裁切圖（含個資，勿外傳）」不一樣，這裡是刻意做成可以外傳的：
+
+  * **只有讀錯的那幾格**，讀對的一律不收。一件十格通常只錯一兩格，
+    少了其他八格，湊不回任何人的身分證號。
+  * **不記第幾件、不記第幾格**，而且檔案順序是打亂的。哪幾個字屬於
+    同一個人，這個資料夾裡沒有這個資訊。
+  * 一個孤立的手寫數字不是個資 —— 它認不出是誰。
+
+話雖如此，**送出去之前請自己打開看一遍**。這是刻意的設計：
+「相信程式有把個資拿掉」不是資安，「自己看過、自己確認過」才是。
+看到不該在裡面的東西（例如整排連號、或是姓名的字），就不要送，跟開發者說。
+
+── 為什麼要這份東西 ──
+
+手寫辨識要變好，唯一的辦法是拿「圖 + 正確答案」去量。開發者手上沒有
+這種資料（真實件不能外傳），所以只能憑猜測改，改完也驗不出有沒有變好。
+有了這份，就能量出「改之前錯幾格、改之後錯幾格」。
+
+累積個幾百個字再一起傳比較有用，不必每天傳。
+"""
+
+
+def dump_hard_cells(records, rows, folder, numbers=None):
+    """把「程式讀錯的那幾格」存成一個字一張圖，檔名帶正確答案。
+
+    承辦人 2026-09-22：「診斷的部分你會加一份某字辨識不出來嗎？然後我再
+    修正給你之類的，現行狀況不知道你是哪個字看不懂。」
+
+    rows 是**人複核完、真的要輸出的那份值**，所以裡面的身分證是對的。
+    拿它跟程式逐格讀到的東西比，不一樣的就是程式讀錯的那一格。
+
+    **只收讀錯的。** 讀對的收進來有兩個壞處：一是開發者要的就是錯的那些，
+    二是十格全收等於把整個身分證號搬出去（雖然打亂了，但一天就那幾件，
+    憑筆跡拼得回來）。只收錯的那一兩格，缺了其他八格，湊不回任何人的號碼。
+
+    回傳 (資料夾, 寫出幾張)。
+    """
+    import random
+
+    from . import resources as _resources, validate as _validate
+
+    pairs = []
+    for position, row in enumerate(rows or ()):
+        index = None
+        if numbers and position < len(numbers):
+            try:
+                index = int(numbers[position]) - 1
+            except (TypeError, ValueError):
+                index = None
+        if index is None:
+            index = position
+        if not (0 <= index < len(records)):
+            continue
+        record = records[index]
+        truth = (row.get("id_number") or "").strip().upper()
+        cells = (record.cells or {}).get("id_number") or []
+        texts = (record.cell_text or {}).get("id_number") or []
+        if len(truth) != 10 or len(cells) != 10:
+            continue
+        for slot in range(10):
+            want = truth[slot]
+            if want == "?" or not want.isalnum():
+                continue
+            cell = cells[slot]
+            if cell is None or not getattr(cell, "size", 0):
+                continue
+            choices, was_read = _validate._cell_options(
+                texts[slot] if slot < len(texts) else [], slot)
+            if was_read and len(choices) == 1:
+                if choices[0] == want:
+                    continue        # 讀對了，不收
+                saw = "程式讀成%s" % choices[0]
+            elif was_read:
+                # 幾種讀法各說各話，程式沒辦法決定。這種一樣算失敗，
+                # 而且對開發者最有用 —— 看得出模型在哪兩個字之間猶豫。
+                saw = "程式分不出是%s" % "".join(choices)
+            else:
+                saw = "程式沒讀到"
+            pairs.append((want, saw, cell))
+
+    if not pairs:
+        return None, 0
+
+    # 打亂 —— 檔名裡沒有件號也沒有格號，順序是最後一個可能洩漏關聯的東西
+    random.shuffle(pairs)
+
+    target = os.path.join(folder, HARD_CELLS)
+    os.makedirs(target, exist_ok=True)
+    with open(os.path.join(target, "讀我.txt"), "w", encoding="utf-8") as handle:
+        handle.write(_HARD_README)
+
+    written = 0
+    for want, saw, cell in pairs:
+        kind = "字母" if want.isalpha() else "數字"
+        name = "%s_真值%s_%s_%06x.png" % (kind, want, saw,
+                                          random.getrandbits(24))
+        if _resources.imwrite(os.path.join(target, name), cell):
+            written += 1
     return target, written
 
 

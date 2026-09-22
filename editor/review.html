@@ -421,6 +421,7 @@ el('export').addEventListener('click', async () => {
       const warn = out.warnings || [];
       el('msg').textContent = '已產出：' + out.files.join('、')
           + (left ? `　（已排除 ${left} 件不輸出）` : '')
+          + (out.hard ? `　難字回報 ${out.hard.count} 張` : '')
           + (warn.length ? `　⚠ 有 ${warn.length} 件事要看` : '');
       el('msg').className = warn.length ? 'warn' : 'ok';
       // 提醒不能只塞在標題列。一行擠不下就看不到，而看不到的提醒等於沒有 ——
@@ -430,6 +431,8 @@ el('export').addEventListener('click', async () => {
         el('preview-text').textContent =
             '檔案已經產出來了，但下面這幾件請再看一眼：\n\n'
             + (left ? `（另外有 ${left} 件被你排除，沒有寫進輸出檔）\n\n` : '')
+            + (out.hard ? `（程式讀錯的 ${out.hard.count} 個字已經存到「難字回報」`
+                          + `資料夾，累積一陣子再一起傳給開發者就好）\n\n` : '')
             + warn.map(w => '• ' + w).join('\n')
             + '\n\n程式沒有改動任何一個值，改不改由你決定。'
             + '改完再按一次「產生輸出檔」就會覆蓋掉。';

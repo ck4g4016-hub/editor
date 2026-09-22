@@ -140,9 +140,25 @@ def make_handler(state, guard):
                     % (value or "（空白）", count))
             for line in warnings:
                 print("注意：%s" % line)
+
+            # 人已經把身分證改對了，這時候才知道程式哪一格讀錯 ——
+            # 把那幾格存下來，累積成「圖 + 正確答案」給開發者量準確率。
+            # 只收讀錯的那幾格，湊不回任何人的號碼（見 dump_hard_cells）。
+            hard = None
+            try:
+                folder, count = process.dump_hard_cells(
+                    state["records"], rows, state["out"], numbers)
+                if count:
+                    hard = {"path": folder, "count": count}
+                    print("難字回報：%d 張 → %s" % (count, folder))
+            except Exception as error:                              # noqa: BLE001
+                # 這是附加功能，壞了不可以連累輸出檔 —— 檔案已經產好了
+                print("難字回報寫不出來（不影響輸出檔）：%s" % error)
+
             self._json({"ok": True,
                         "files": [os.path.basename(p) for p in written],
-                        "warnings": warnings})
+                        "warnings": warnings,
+                        "hard": hard})
 
         def _diagnose(self, payload):
             journal = state.get("journal")

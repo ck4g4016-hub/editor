@@ -930,6 +930,7 @@ def check():
     problems.extend(_grid_state_tells_the_truth())
     problems.extend(_partial_id_beats_a_wrong_one())
     problems.extend(_id_search_space_stays_wide())
+    problems.extend(_hard_cells_are_safe_to_send())
     problems.extend(_per_cell_display_matches_the_count())
     problems.extend(_sheet_quality_reported())
 
@@ -1528,6 +1529,104 @@ def _partial_id_beats_a_wrong_one():
     return problems
 
 
+def _hard_cells_are_safe_to_send():
+    """「難字回報」只可以收程式讀錯的那幾格，而且不可以留下是哪一件的線索。
+
+    承辦人 2026-09-22：「診斷的部分你會加一份某字辨識不出來嗎？然後我再
+    修正給你之類的。」手寫辨識要變好只有一條路 —— 拿「圖 + 正確答案」去量。
+
+    **這份東西是刻意做成可以外傳的，所以每一條規矩都是資安規矩：**
+
+      只收讀錯的    一件十格通常只錯一兩格，缺了其他八格就湊不回號碼。
+                    十格全收等於把整個身分證號搬出去（就算打亂，一天就
+                    那幾件，憑筆跡拼得回來）。
+      檔名不帶件號  留了件號，同一件的那幾格就串得起來。
+      檔名不帶格號  留了格號，配上件號就是完整的位置資訊。
+      順序要打亂    檔名沒有關聯資訊的話，寫檔順序就是最後一個破口。
+
+    負向驗證在最後四段，每一段對應上面一條規矩。
+    """
+    import glob
+    import re
+    import tempfile
+
+    import numpy as np
+
+    from pipeline import process
+
+    problems = []
+
+    class Fake:
+        def __init__(self):
+            self.cells = {"id_number": [np.full((40, 30), 200, np.uint8)
+                                        for _ in range(10)]}
+            #           A  1  2  3  4  5  6  7  8  9   ← 真值
+            # 程式讀到： A  1  X  3  4  （空）6  7  8  9
+            self.cell_text = {"id_number": [["A"], ["1"], ["X"], ["3"], ["4"],
+                                            [], ["6"], ["7"], ["8"], ["9"]]}
+
+    work = tempfile.mkdtemp()
+    rows = [{"id_number": "A123456789"}]
+    folder, count = process.dump_hard_cells([Fake()], rows, work)
+    if count != 2:
+        problems.append("十格裡錯兩格，應該收兩張，實際收了 %d 張" % count)
+        return problems
+
+    names = [os.path.basename(f) for f in glob.glob(os.path.join(folder, "*.png"))]
+
+    # 正向：檔名要帶得出正確答案，開發者才知道該是什麼
+    if not any("真值2" in n for n in names):
+        problems.append("讀成別的字那一格沒有記下正確答案：%s" % names)
+    if not any("真值5" in n and "沒讀到" in n for n in names):
+        problems.append("完全沒讀到那一格沒有記下來：%s" % names)
+
+    # 負向驗證一：讀對的格子一張都不可以收
+    for right in ("真值1_", "真值3_", "真值4_", "真值6_", "真值7_",
+                  "真值8_", "真值9_", "真值A_"):
+        if any(right in n for n in names):
+            problems.append("讀對的格子也被收進去了（%s）—— "
+                            "十格全收就湊得回整個身分證號" % right)
+
+    # 負向驗證二、三：檔名不可以留下是哪一件、哪一格
+    for name in names:
+        if re.search(r"第\s*\d+\s*(件|格)", name) or "件" in name or "格" in name:
+            problems.append("檔名留下了件號或格號（%s）—— "
+                            "同一件的那幾格就串得起來了" % name)
+
+    # 負向驗證四：讀我.txt 一定要在，而且要講清楚為什麼可以外傳
+    readme = os.path.join(folder, "讀我.txt")
+    if not os.path.isfile(readme):
+        problems.append("沒有讀我.txt —— 承辦人不會知道這份能不能傳")
+    else:
+        text = open(readme, encoding="utf-8").read()
+        for need in ("只有讀錯", "自己打開看一遍"):
+            if need not in text:
+                problems.append("讀我.txt 沒有寫「%s」" % need)
+
+    # 一個字都沒錯的時候不可以憑空生出資料夾
+    folder2, count2 = process.dump_hard_cells(
+        [Fake()], [{"id_number": "A1X34X6789".replace("X", "2")}], work)
+    good = process.dump_hard_cells(
+        [type("F2", (), {"cells": {"id_number": [np.full((40, 30), 200, np.uint8)] * 10},
+                         "cell_text": {"id_number": [[c] for c in "A123456789"]}})()],
+        [{"id_number": "A123456789"}], work)
+    if good[1] != 0:
+        problems.append("十格全讀對，卻還是收了 %d 張" % good[1])
+
+    # 接線檢查：匯出的時候真的會呼叫它
+    source = open(os.path.join(resources_base(), "tools", "review.py"),
+                  encoding="utf-8").read()
+    where = source.find("process.dump_hard_cells(")
+    if where < 0:
+        problems.append("匯出時沒有產生難字回報，這份資料永遠不會累積起來")
+    else:
+        # 它是附加功能，壞掉不可以連累輸出檔 —— 檔案那時候已經產好了
+        block = source[max(0, where - 200):where + 600]
+        if "try:" not in block or "except Exception" not in block:
+            problems.append("難字回報沒有包住例外 —— 它壞掉會連累輸出檔")
+    return problems
+
+
 def _id_search_space_stays_wide():
     """讀不出來的格子一定要攤開全部十個數字，**不可以**縮到模型覺得最像的那幾個。
 
@@ -1577,16 +1676,22 @@ def _id_search_space_stays_wide():
     if len(wide) < 2:
         problems.append("攤開十個數字只剩一個解，這個案例示範不出差別")
 
-    # 接線檢查：形狀排名只可以出現在給人看的訊息裡，不可以進到解碼
+    # 「限定字元後排名」整個不採用了，理由與實測寫在 recognise.py 的
+    # 那一大段註解裡。**不要再把它加回來**：拿三十格有答案的實測，
+    # 它在「現在讀不出來或讀錯」的那九格只對 44~56%，擺在承辦人眼前
+    # 會把人帶往錯的方向。
     source = open(os.path.join(resources_base(), "pipeline", "process.py"),
                   encoding="utf-8").read()
-    # 註解裡也提到 digit_shapes，所以要找的是真的有呼叫它
-    if "recognise.digit_shapes(all_cells[index], index)" not in source:
-        problems.append("process.py 沒有真的去問形狀排名，人看不到縮小後的候選")
-    for forbidden in ("solve_id(per_cell, ", "partial_id(per_cell, "):
+    for forbidden in ("digit_shapes(", "solve_id(per_cell, ", "partial_id(per_cell, "):
         if forbidden in source:
-            problems.append("形狀排名被餵進解碼了（%s）—— "
-                            "真值一旦被排除，檢查碼會挑出一個錯的號碼" % forbidden)
+            problems.append("形狀排名又被接回去了（%s）—— "
+                            "它在真正需要的那幾格錯的比對的多，"
+                            "而且一旦餵進解碼，檢查碼會挑出一個錯的號碼" % forbidden)
+    note = open(os.path.join(resources_base(), "pipeline", "recognise.py"),
+                encoding="utf-8").read()
+    if "試過但**不採用**" not in note:
+        problems.append("recognise.py 沒有留下「這條路試過、為什麼不走」的紀錄，"
+                        "下一個人會再走一次")
     return problems
 
 
