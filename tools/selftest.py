@@ -923,6 +923,7 @@ def check():
     problems.extend(_review_page_can_add_manual())
     problems.extend(_address_drops_building_number())
     problems.extend(_address_floor_always_chinese())
+    problems.extend(_address_follows_the_rule())
     problems.extend(_road_shortlist_when_stuck())
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
@@ -1936,6 +1937,77 @@ def _road_shortlist_when_stuck():
                         % leaked[:3])
     if "6 條" not in masked:
         problems.append("診斷報告上看不出有幾條候選，開發者查不出問題：%s" % masked)
+    return problems
+
+
+def _address_follows_the_rule():
+    """門牌只能是「路/街＋段＋巷＋弄＋號＋樓」，除此之外不會有別的東西。
+
+    承辦人 2026-09-22 第二次講這條規則，因為那份報告上有兩件是**一個提醒
+    都沒有就通過**的：
+
+        4大觀123號9樓      路名前面多一個數字，而且「路」根本沒讀到
+        中正路123號十檀    「樓」被讀成長得像的字（他的原話：「路名怎麼會
+                           有檀，相似字型自動辨別成樓啦」）
+
+    以前只檢查「有沒有號」，所以這兩種都算合格。現在整串照文法核一次。
+
+    負向驗證有三段，每一段都是「不可以把對的改成錯的」：
+      一、路名整個沒讀到、開頭就是巷號的門牌（12巷5號），開頭那兩個數字
+          **不可以**被當成鄰別砍掉
+      二、本來就寫對的門牌，一個都不可以被新規則擋下來
+      三、「樓」本來就讀對的時候，不可以被那條修正動到
+    """
+    from pipeline import lexicon, validate
+
+    problems = []
+    roads = (lexicon.for_district(lexicon.builtin(), "三峽區")
+             + lexicon.for_district(lexicon.builtin(), "鶯歌區"))
+    if not roads:
+        return ["讀不到路名清單，這條檢查等於沒有驗過"]
+
+    # 正向一：開頭多一個數字、而且沒讀到「路」—— 砍掉之後字典要對得回來
+    value, note = validate.address("4大觀123號9樓", roads)
+    if value != "大觀路123號九樓":
+        problems.append("「4大觀123號9樓」應該救回「大觀路123號九樓」，實際是「%s」"
+                        % value)
+    if not note:
+        problems.append("開頭砍掉了一個字卻沒有標記 —— 萬一那是門牌的一部分，"
+                        "人看不到")
+
+    # 正向二：「號」後面讀到不是樓的字，要改成樓並且標記
+    for text, want in (("中正路123號十檀", "中正路123號十樓"),
+                       ("中正路123號十檀之3", "中正路123號十樓之3")):
+        value, note = validate.address(text, roads)
+        if value != want:
+            problems.append("「%s」應該改成「%s」，實際是「%s」" % (text, want, value))
+        elif not note or "樓" not in note:
+            problems.append("把「%s」改成樓卻沒有講出來：%s" % (text, note))
+
+    # 正向三：文法對不上就要擋下來
+    value, note = validate.address("12巷5號", roads)
+    if not note or "門牌的寫法" not in note:
+        problems.append("「12巷5號」沒有路名，卻沒有被文法擋下來：%s" % note)
+
+    # 負向驗證一：路名沒讀到時，開頭的巷號**不可以**被當成鄰別砍掉
+    if not value.startswith("12巷"):
+        problems.append("「12巷5號」開頭的巷號被當成鄰別砍掉了，變成「%s」—— "
+                        "那是把讀對的資料砍掉" % value)
+
+    # 負向驗證二：本來就寫對的門牌，一個都不可以被擋
+    good = ["中正路123巷5弄7號三樓", "中正路12號十二樓", "中山路12巷34號三樓之5",
+            "中正路二段15號", "大觀路15之3號", "中正路123號十六樓",
+            "三峽區中正路15號建號：01234-000"]
+    for text in good:
+        _value, note = validate.address(text, roads)
+        if note:
+            problems.append("本來就對的「%s」被新規則擋下來了：%s" % (text, note))
+
+    # 負向驗證三：「樓」讀對的時候不可以被那條修正動到
+    before = "中正路123號十樓"
+    value, _note = validate.address(before, roads)
+    if value != before:
+        problems.append("「樓」本來就對，卻被改成「%s」" % value)
     return problems
 
 
