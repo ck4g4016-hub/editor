@@ -1631,6 +1631,8 @@ def _hard_cells_are_safe_to_send():
 
     from pipeline import process
 
+    _ = (glob, np, tempfile)
+
     problems = []
 
     class Fake:
@@ -1689,6 +1691,43 @@ def _hard_cells_are_safe_to_send():
         [{"id_number": "A123456789"}], work)
     if good[1] != 0:
         problems.append("十格全讀對，卻還是收了 %d 張" % good[1])
+
+    # ── 門牌：只收路名那一格 ────────────────────────────────────
+    #
+    # 承辦人 2026-09-22 問門牌能不能也收。能，但**只能收路名**：
+    # 路名是公開的街道名稱，一條路上幾百戶，單獨一個指不向任何人；
+    # 門牌號、樓層一旦配上路名就是完整住址，那是實實在在的個資。
+    class WithRoad:
+        def __init__(self, read):
+            self.cells = {}
+            self.cell_text = {}
+            self.road_cell = (np.full((40, 60), 180, np.uint8), read)
+
+    folder, count = process.dump_hard_cells(
+        [WithRoad("4大觀"), WithRoad("大觀"), WithRoad("")],
+        [{"address": "大觀路147號九樓"}, {"address": "大觀路147號九樓"},
+         {"address": "鳳鳴路12巷5號十二樓"}],
+        tempfile.mkdtemp())
+    names = ([os.path.basename(f) for f in glob.glob(os.path.join(folder, "*.png"))]
+             if folder else [])
+    if count != 2:
+        problems.append("三件裡兩件路名讀錯，應該收兩張，實際 %d 張（%s）"
+                        % (count, names))
+    if not any("真值大觀" in n and "4大觀" in n for n in names):
+        problems.append("路名讀錯沒有記下正確答案與讀到的東西：%s" % names)
+    if any("真值大觀" in n and "程式讀成大觀" in n for n in names):
+        problems.append("路名讀對了也被收進去")
+
+    # 負向驗證：門牌號、樓、巷、弄**一個都不可以**出現在檔名裡。
+    # 那幾個配上路名就是完整住址，這份資料夾是要外傳的。
+    # 最後那段隨機碼不算（它本來就會有數字），所以先切掉再看。
+    for name in names:
+        body = name.rsplit("_", 1)[0]
+        for leak in ("147", "12", "號", "樓", "巷", "弄"):
+            if leak in body:
+                problems.append("檔名裡出現了「%s」（%s）—— "
+                                "門牌號或樓層配上路名就是完整住址" % (leak, name))
+                break
 
     # 接線檢查：匯出的時候真的會呼叫它
     source = open(os.path.join(resources_base(), "tools", "review.py"),

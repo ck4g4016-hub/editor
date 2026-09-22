@@ -9,6 +9,7 @@
 """
 
 import json
+import re
 import os
 import time
 
@@ -68,6 +69,10 @@ class Record:
         # 每一格**讀到了什麼**，跟 cells 一一對應。給「難字回報」用：
         # 人在複核畫面上改完之後，才知道哪一格程式讀錯了。
         self.cell_text = {}
+        # 門牌「路名」那一格的影像與讀到的字。只收路名 ——
+        # 路名是公開的街道名稱，單獨一個不指向任何人；
+        # 門牌號、樓層配上路名就是完整的住址了（見 dump_hard_cells）。
+        self.road_cell = None
         # 每一面的底圖對位品質：{"front": {"減版面": True, "對位": 0.87}}。
         # 減不掉的時候欄位是從**沒減過的原圖**上裁的，印刷的「段巷弄號樓」
         # 會跟手寫混在一起被讀進來 —— 那種讀出來的東西看起來就像 OCR 很爛，
@@ -538,6 +543,12 @@ class Converter:
             if crop is not None and crop.size:
                 crops.append(crop)
             text = (text or "").strip()
+            # 一格一框的門牌，第一格照慣例就是路名（後綴留空，路還是街
+            # 由字典決定，見 說明.txt）。留下來給難字回報用。
+            if (definition.column == "address" and definition.mode == fieldmod.FIXED
+                    and not suffix and record.road_cell is None
+                    and crop is not None and crop.size):
+                record.road_cell = (crop, text)
             if text:
                 pieces.append(text + suffix)
                 scores.append(confidence)
@@ -765,6 +776,9 @@ def dump_cells(records, folder):
 
 HARD_CELLS = "難字回報（可以傳給開發者）"
 
+# 門牌開頭的路街名。難字回報只拿它跟程式讀到的比對 —— 只收這一格。
+_ROAD_HEAD = re.compile(r"^([\u4e00-\u9fff]{1,8}(?:大道|[路街道]))")
+
 _HARD_README = """\
 這個資料夾裡是**程式讀錯或讀不出來的那幾個字**，一個字一張圖。
 
@@ -773,6 +787,7 @@ _HARD_README = """\
     數字_真值8_程式讀成7_a3f9c2.png    程式把 8 讀成 7
     數字_真值5_程式沒讀到_7b21de.png   程式那一格什麼都沒讀到
     字母_真值F_程式讀成T_c4e810.png    第 1 碼（區域碼）讀錯
+    路名_真值大觀_程式讀成4大觀_9f1a55.png  門牌的路名那一格讀錯
 
 「真值」是**你在複核畫面上改完、按下產生輸出檔的那個值**，所以是對的。
 程式就是靠這個才知道自己哪一格錯了。
@@ -783,6 +798,11 @@ _HARD_README = """\
 
   * **只有讀錯的那幾格**，讀對的一律不收。一件十格通常只錯一兩格，
     少了其他八格，湊不回任何人的身分證號。
+  * 門牌**只收路名那一格**。路名（「大觀」「鳳鳴」）是公開的街道名稱，
+    一條路上有幾百戶，單獨一個指不向任何人。門牌號、樓層、巷、弄一律
+    不收 —— 那些一旦配上路名就是完整住址了。
+    （不收號也沒損失：門牌號跟身分證是同一個人用同一支筆寫的數字，
+      身分證那邊已經在收了。）
   * **不記第幾件、不記第幾格**，而且檔案順序是打亂的。哪幾個字屬於
     同一個人，這個資料夾裡沒有這個資訊。
   * 一個孤立的手寫數字不是個資 —— 它認不出是誰。
@@ -798,6 +818,7 @@ _HARD_README = """\
 有了這份，就能量出「改之前錯幾格、改之後錯幾格」。
 
 累積個幾百個字再一起傳比較有用，不必每天傳。
+**傳完之後整個資料夾就可以刪掉**，下次跑會重新建。
 """
 
 
@@ -818,7 +839,8 @@ def dump_hard_cells(records, rows, folder, numbers=None):
     """
     import random
 
-    from . import resources as _resources, validate as _validate
+    from . import (lexicon as _lexicon, resources as _resources,
+                   validate as _validate)
 
     pairs = []
     for position, row in enumerate(rows or ()):
@@ -859,11 +881,52 @@ def dump_hard_cells(records, rows, folder, numbers=None):
                 saw = "程式沒讀到"
             pairs.append((want, saw, cell))
 
-    if not pairs:
+    # ── 門牌：只收「路名」那一格 ──────────────────────────────────
+    #
+    # 承辦人 2026-09-22：「門牌要不要也弄個難字回報？我發現門牌讀取
+    # 錯誤率還是很高。」要，但**只能收路名那一格**。
+    #
+    # 路名（「大觀」「鳳鳴」）是公開的街道名稱，單獨一個指不向任何人 ——
+    # 一條路上有幾百戶。但門牌號、樓層一旦配上路名就是完整住址了，
+    # 那是實實在在的個資。所以號、樓、巷、弄一律不收，一件也只收這一格。
+    #
+    # 不收號其實也沒損失：門牌號跟身分證是同一個人用同一支筆寫的數字，
+    # 上面身分證那一段已經在收了。
+    road_pairs = []
+    for position, row in enumerate(rows or ()):
+        index = None
+        if numbers and position < len(numbers):
+            try:
+                index = int(numbers[position]) - 1
+            except (TypeError, ValueError):
+                index = None
+        if index is None:
+            index = position
+        if not (0 <= index < len(records)):
+            continue
+        record = records[index]
+        # getattr：這一段是附加功能，遇到形狀不一樣的紀錄就跳過，
+        # 不要讓整個匯出掛掉（輸出檔那時候已經產好了）
+        road = getattr(record, "road_cell", None)
+        if not road:
+            continue
+        cell, saw = road
+        found = _ROAD_HEAD.match((row.get("address") or "").strip())
+        if not found:
+            continue
+        want = _lexicon.stem(found.group(1))
+        # 讀到的字裡本來就可能帶著印刷的「路／街」，比對前一起去掉
+        got = _lexicon.stem((saw or "").strip())
+        if not want or got == want:
+            continue                # 讀對了，不收
+        road_pairs.append((want, "程式讀成%s" % got if got else "程式沒讀到", cell))
+
+    if not pairs and not road_pairs:
         return None, 0
 
     # 打亂 —— 檔名裡沒有件號也沒有格號，順序是最後一個可能洩漏關聯的東西
     random.shuffle(pairs)
+    random.shuffle(road_pairs)
 
     target = os.path.join(folder, HARD_CELLS)
     os.makedirs(target, exist_ok=True)
@@ -875,6 +938,10 @@ def dump_hard_cells(records, rows, folder, numbers=None):
         kind = "字母" if want.isalpha() else "數字"
         name = "%s_真值%s_%s_%06x.png" % (kind, want, saw,
                                           random.getrandbits(24))
+        if _resources.imwrite(os.path.join(target, name), cell):
+            written += 1
+    for want, saw, cell in road_pairs:
+        name = "路名_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
         if _resources.imwrite(os.path.join(target, name), cell):
             written += 1
     return target, written
