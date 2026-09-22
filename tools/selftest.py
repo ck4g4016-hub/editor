@@ -1729,6 +1729,43 @@ def _hard_cells_are_safe_to_send():
                                 "門牌號或樓層配上路名就是完整住址" % (leak, name))
                 break
 
+    # ── 「路名那一格」不可以其實是整串住址 ────────────────────────
+    #
+    # **這是踩到才有的檢查，而且是我把承辦人的住址收出機關了。**
+    # 2026-09-22 他傳回第一批難字回報，裡面的「路名」那幾張是整串完整住址
+    # ——「程式讀成光明路75巷16號六樓之1」直接寫在檔名上。當時的條件只有
+    # 「第一段、後綴是空的」，而門牌只框一個大框的表格（E 表那種）就只有
+    # 一段，那一段當然是整串地址。
+    for text, segs, want, why in (
+            ("光明路75巷16號六樓之1", 1, False, "整串住址、門牌只有一個框"),
+            ("光明路75巷16號六樓之1", 4, False, "整串住址（框到了整排）"),
+            ("大觀", 4, True, "真的只有路名"),
+            ("中園街", 4, True, "路名帶街字"),
+            ("4大觀", 4, True, "路名前面多一個數字，還是路名"),
+            ("鳳吉一街", 4, True, "字典裡最長的路名"),
+            ("某某某某某某某", 4, False, "七個字，路名不會這麼長"),
+            ("中正路15號", 4, False, "帶了號"),
+            ("中正15樓", 4, False, "帶了樓"),
+            ("", 4, False, "什麼都沒讀到")):
+        got = process.only_the_road(text, segs)
+        if got != want:
+            problems.append("「%s」（%d 段，%s）應該%s，實際%s"
+                            % (text, segs, why,
+                               "收" if want else "不收", "收" if got else "不收"))
+
+    # 負向驗證：只有一個框的門牌**永遠**不可以收 —— 那一定是整串住址
+    for text in ("大觀", "中園街", "光明路75號"):
+        if process.only_the_road(text, 1):
+            problems.append("門牌只有一個框卻收了「%s」—— "
+                            "只有一個框就是整串住址，路名切不出來" % text)
+
+    # 接線檢查：_read_field 真的用這條規則擋，不是自己另外寫一套
+    code = open(os.path.join(resources_base(), "pipeline", "process.py"),
+                encoding="utf-8").read()
+    if "only_the_road(text, len(definition.segments()))" not in code:
+        problems.append("存路名那一格的時候沒有用 only_the_road 擋，"
+                        "整串住址會被當成路名送出機關")
+
     # 接線檢查：匯出的時候真的會呼叫它
     source = open(os.path.join(resources_base(), "tools", "review.py"),
                   encoding="utf-8").read()
@@ -2117,6 +2154,20 @@ def _address_follows_the_rule():
         _value, note = validate.address(text, roads)
         if note:
             problems.append("本來就對的「%s」被新規則擋下來了：%s" % (text, note))
+
+    # 郵遞區號那一刀後面一定要接著縣市或行政區。2026-09-22 報告第 2 件
+    # 路名整個沒讀到、只讀到「1234號」，那四個數字被當成郵遞區號吃掉，
+    # 只剩一個「號」字，然後拿「號」去查路名字典 —— 錯得莫名其妙。
+    value, note = validate.address("1234號", roads)
+    if not value.startswith("1234"):
+        problems.append("只讀到門牌號的時候，號碼被當成郵遞區號砍掉了：「%s」" % value)
+    if not note:
+        problems.append("「1234號」沒有路名，卻沒有被擋下來")
+    # 負向驗證：真的有郵遞區號的時候還是要砍掉
+    for text in ("237三峽區中正路15號", "23741三峽區中正路15號"):
+        value, _note = validate.address(text, roads)
+        if value != "中正路15號":
+            problems.append("「%s」的郵遞區號沒有砍乾淨，變成「%s」" % (text, value))
 
     # 負向驗證三：「樓」讀對的時候不可以被那條修正動到
     before = "中正路123號十樓"

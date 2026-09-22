@@ -46,6 +46,33 @@ OK = "ok"
 REVIEW = "review"
 
 
+# 門牌欄位裡，哪些字長得像「路名那一格」而不是整串住址。
+_NOT_A_ROAD = "段巷弄號樓之"
+
+# 路名最長幾個字。三峽、鶯歌最長的是「鳳吉一街」「中正一路」四個字，
+# 六個字已經寬鬆很多了。
+_ROAD_MAX = 6
+
+
+def only_the_road(text, segment_count):
+    """這一格看起來是「只有路名」，還是「整串住址」？
+
+    **這是資安判斷，不是方便判斷。** 難字回報會把這一格的影像送出機關，
+    而路名（公開的街道名稱）跟完整住址是完全不同等級的東西。
+
+    2026-09-22 承辦人傳回第一批難字回報，裡面的「路名」那幾張其實是
+    **整串完整住址** —— 檔名上就寫著「程式讀成光明路75巷16號六樓之1」。
+    當時的條件只有「第一段、後綴是空的」，而門牌只框一個大框的表格
+    （E 表那種）就只有一段，那一段當然是整串地址。
+
+    三條都要成立才算數，任何一條不成立就不收 ——
+    寧可少收資料，也不要把住址送出機關。
+    """
+    return (segment_count > 1                       # 真的一格一框
+            and 0 < len(text) <= _ROAD_MAX          # 路名不會這麼長
+            and not any(ch in text for ch in _NOT_A_ROAD))
+
+
 class Record:
     """一件申請案轉出來的一列資料。"""
 
@@ -545,9 +572,22 @@ class Converter:
             text = (text or "").strip()
             # 一格一框的門牌，第一格照慣例就是路名（後綴留空，路還是街
             # 由字典決定，見 說明.txt）。留下來給難字回報用。
+            #
+            # **這裡的條件是資安條件，不是方便條件。** 2026-09-22 承辦人傳回來
+            # 的第一批難字回報裡，「路名」那幾張其實是**整串完整住址**——
+            # 檔名上就寫著「程式讀成光明路75巷16號六樓之1」。原因是當時只檢查
+            # 「第一段而且後綴是空的」，而門牌只框一個大框的表格（E 表那種，
+            # 還有框法比較隨性的 F、G）就只有一段，那一段就是整串地址。
+            #
+            # 所以條件加成三條，全部都要成立才收：
+            #   一、門牌真的是一格一框（不只一段）—— 只有那種的第一段才是路名
+            #   二、讀到的東西裡不能有 段巷弄號樓之 —— 有就代表框到整串了
+            #   三、長度不超過 6 個字 —— 路名再長也不會超過
+            # 任何一條不成立就不收。寧可少收資料，也不要把住址送出機關。
             if (definition.column == "address" and definition.mode == fieldmod.FIXED
                     and not suffix and record.road_cell is None
-                    and crop is not None and crop.size):
+                    and crop is not None and crop.size
+                    and only_the_road(text, len(definition.segments()))):
                 record.road_cell = (crop, text)
             if text:
                 pieces.append(text + suffix)
