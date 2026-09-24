@@ -929,6 +929,7 @@ def check():
     problems.extend(_failed_field_still_shows_up())
     problems.extend(_unread_char_is_marked())
     problems.extend(_only_the_first_letter_leaves_the_office())
+    problems.extend(_missing_floor_word_is_filled_in())
     problems.extend(_zhongxing_street_is_gone())
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
@@ -2094,6 +2095,62 @@ def _road_shortlist_when_stuck():
                         % leaked[:3])
     if "6 條" not in masked:
         problems.append("診斷報告上看不出有幾條候選，開發者查不出問題：%s" % masked)
+    return problems
+
+
+def _missing_floor_word_is_filled_in():
+    """「號」後面只讀到樓層數字、沒讀到「樓」，就補一個「樓」並標記。
+
+    承辦人 2026-09-24 第 17、18 件：「樓讀不出來是怎樣?」「樓又錯了是怎樣??」
+    以前只有「樓被讀成別的字」有救，「整個沒讀到」沒有，那一欄就卡在
+    「不符合門牌的寫法」，人得自己補一個字。補的是單位不是數字，
+    樓層本身不會被改掉。
+
+    順便：診斷報告以前把簡體的「号」「楼」遮成「字」，看起來就像整個
+    沒讀到 —— **報告騙了人**。那兩個字跟「號」「樓」一樣是表格的格式，
+    不是誰的資料，要留著。
+
+    負向驗證有四段：
+      一、本來就完整的門牌不可以被動到，也不可以被標記
+      二、「號」後面是阿拉伯數字的**不准**補 —— 那可能是「之6」少了「之」，
+          分不出來就回報分不出來
+      三、補完一定要有提醒（補上去的是猜的）
+      四、姓名那種真的個資，遮罩照樣要把它變成「字」
+    """
+    from pipeline import diagnose, lexicon, validate
+
+    problems = []
+    roads = lexicon.for_district(lexicon.builtin(), "鶯歌區")
+    if not roads:
+        return ["讀不到鶯歌區的路名清單，這條檢查等於沒有驗過"]
+
+    value, note = validate.address("大湖路12號六", roads)
+    if value != "大湖路12號六樓":
+        problems.append("「號」後面少了「樓」沒有補：%r" % value)
+    if not note:
+        problems.append("補了「樓」卻沒有提醒")
+
+    # 負向一：本來就完整的不可以被動到
+    for raw in ("大湖路12號六樓", "大湖路12號", "大湖路12號之2"):
+        value, note = validate.address(raw, roads)
+        if value != raw:
+            problems.append("本來就對的「%s」被改成 %r" % (raw, value))
+        if note:
+            problems.append("本來就對的「%s」被標記了：%s" % (raw, note))
+
+    # 負向二：阿拉伯數字分不出是樓層還是「之N」，不准猜
+    value, note = validate.address("大湖路12號6", roads)
+    if value != "大湖路12號6":
+        problems.append("「號」後面是阿拉伯數字，分不出是樓層還是之N，卻猜了：%r" % value)
+    if not note:
+        problems.append("「大湖路12號6」分不出來卻放行了")
+
+    # 負向四：結構字留著，但真的個資照樣要遮掉
+    if diagnose.mask("大觀路12号六楼") != "字字路99号字楼":
+        problems.append("簡體的「号」「楼」被遮成「字」了，報告上看起來會像"
+                        "整個沒讀到：%s" % diagnose.mask("大觀路12号六楼"))
+    if diagnose.mask("王大明") != "字字字":
+        problems.append("姓名沒有被遮掉：%s" % diagnose.mask("王大明"))
     return problems
 
 
