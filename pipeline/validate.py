@@ -473,6 +473,31 @@ _ZHI_SYMBOLS = "-–—~/\\_.,、"
 _ROAD_LABEL = re.compile(r"[路街道]\s*[/／\\|、,，]?\s*[路街道]")
 
 
+def _mark_missing(text, position):
+    """在路名的第 position 個中文字前面插一個「?」，代表那一格沒讀出來。
+
+    只數中文字：讀到的圈、雜訊不算一格，但也不刪掉 —— 那是人對照原圖
+    時的線索。位置等於中文字的個數就補在最後面（路／街前面那一格）。
+    """
+    spots = [index for index, char in enumerate(text or "")
+             if "\u4e00" <= char <= "\u9fff"]
+    if position < len(spots):
+        cut = spots[position]
+    elif position == len(spots) and spots:
+        cut = spots[-1] + 1
+    elif position == len(spots):
+        return "?" + (text or "")
+    else:
+        return text
+    # 插入點前面那一團看不懂的東西（圈、雜訊）就是沒讀出來的那個字本身，
+    # 用「?」取代它，不要變成「·?七路」—— 同一格數成兩格只會讓人更難看。
+    # head 那一段本來就不含數字，所以這裡不會吃掉門牌號。
+    head = text[:cut]
+    while head and not ("\u4e00" <= head[-1] <= "\u9fff"):
+        head = head[:-1]
+    return head + "?" + text[cut:]
+
+
 def _units_to_chinese(value):
     """段與樓層一律中文數字：2段 → 二段、17樓 → 十七樓。
 
@@ -585,6 +610,13 @@ def address(text, roads=None):
             # 靠讀到的路／街決定的，一定要讓人看一眼 —— 那個字本來就不可信
             warning = note
         elif head:
+            # 對不上，但如果每一條候選都說「少的字在同一格」，就把那一格
+            # 標成「?」。承辦人 2026-09-24 第 9 件：不標的話，複核畫面上
+            # 「七路168號」跟程式有沒有試著讀第一個字看不出來。
+            # 位置不確定就什麼都不標 —— 標錯格比不標更難查。
+            hole = lexicon.missing_position(stem, roads)
+            if hole is not None:
+                value = _mark_missing(stem, hole) + rest + tail
             return (_units_to_chinese(value),
                     note or ("路街名不在字典裡（讀到「%s」）" % head))
 

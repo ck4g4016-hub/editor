@@ -926,6 +926,9 @@ def check():
     problems.extend(_address_follows_the_rule())
     problems.extend(_road_shortlist_when_stuck())
     problems.extend(_road_gap_tells_which_one())
+    problems.extend(_failed_field_still_shows_up())
+    problems.extend(_unread_char_is_marked())
+    problems.extend(_only_the_first_letter_leaves_the_office())
     problems.extend(_zhongxing_street_is_gone())
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
@@ -2091,6 +2094,183 @@ def _road_shortlist_when_stuck():
                         % leaked[:3])
     if "6 條" not in masked:
         problems.append("診斷報告上看不出有幾條候選，開發者查不出問題：%s" % masked)
+    return problems
+
+
+def _only_the_first_letter_leaves_the_office():
+    """門牌只框一個大框的表格，只有**最左邊那一個字**可以送出機關。
+
+    承辦人 2026-09-24 那一批 19 件裡有 4 件是同一種錯：鶯歌的「鳳X路」
+    與「龍X路」在三、五、七三組正面相撞，字典幫不上忙，只剩字形。要讓
+    程式學會分辨就得有標好答案的圖 —— 而那種表格（E 表）的門牌只框一個
+    大框，整格就是整串住址，整格絕對不能送。
+
+    所以只切最左邊那一格。單獨一個街道名稱用字（鳳、龍）是公開資訊。
+
+    負向驗證有五段，每一段都是「寧可切不出來，也不要切出住址」：
+      一、第一團墨黏成一大片（分不出是幾個字）就不切
+      二、整條墨團太少（不像一整串住址）就不切
+      三、本來就是單字的圖不是「一整條」，不切
+      四、切出來的東西一定要是整條的一小段，不可以幾乎整條
+      五、檔名裡只要出現號樓巷弄就不寫檔 —— 2026-09-22 外洩的那幾個
+          檔名拿來當樣本，必須全部被擋下來
+    """
+    import numpy as np
+
+    from pipeline import process
+
+    problems = []
+
+    def strip(widths, height=60, gap=8):
+        """照給定的寬度排出幾團墨，模擬一整條住址。"""
+        pieces = []
+        for width in widths:
+            pieces.append(np.zeros((height, width), np.uint8))
+            pieces.append(np.full((height, gap), 255, np.uint8))
+        return np.hstack([np.full((height, gap), 255, np.uint8)] + pieces)
+
+    # 正向：路名三個字＋號碼，最左邊切得出來，而且只佔一小段
+    whole = strip([40, 40, 40, 25, 25, 25, 40])
+    got = process.first_character(whole)
+    if got is None:
+        problems.append("整條住址切不出第一個字，鳳／龍就永遠沒有資料可以學")
+    elif got.shape[1] > whole.shape[1] * 0.2:
+        problems.append("切出來的佔了整條的 %.0f%%，那不是一個字"
+                        % (100.0 * got.shape[1] / whole.shape[1]))
+
+    # 底下每一段都**只**踩一道關卡，其他關卡都讓它過 ——
+    # 不然拿掉任何一道，檢查都還是綠的，等於沒有在守。
+
+    # 負向一：第一團黏成一大片（只踩「太寬」）
+    fat = strip([150] + [25] * 14)
+    if process.first_character(fat) is not None:
+        problems.append("第一團寬到分不出是幾個字，卻還是切了")
+
+    # 負向二：墨團太少，不像一整串住址（只踩「團數不夠」）
+    if process.first_character(strip([40, 400])) is not None:
+        problems.append("只有兩團墨也被當成一整條住址")
+
+    # 負向三：第一團的位置太靠右（只踩「太靠右」）
+    late = np.hstack([np.full((60, 300), 255, np.uint8), strip([40, 40, 40, 40])])
+    if process.first_character(late) is not None:
+        problems.append("第一團已經在整條的右半邊，卻還是當成第一個字切了")
+
+    # 負向四：本來就是單字的圖，不是「一整條」
+    if process.first_character(np.zeros((60, 55), np.uint8)) is not None:
+        problems.append("單字的圖被當成一整條住址切了")
+
+    # 負向五：真的外洩過的那幾個檔名，一個都不可以放行。
+    # 第一個只踩「檔名有號樓巷弄」，第二個只踩「中文字太多」。
+    for leaked in ("路名_真值鳳七_程式讀成·七路168號七楼_1d78fc.png",
+                   "路名_真值國中_程式讀成國中街82號七楼之3_89e89a.png",
+                   "路名_真值福昌_程式讀成福昌街199巷166姚_298e69.png",
+                   "路名_真值鳳_程式讀成七路5号_abcdef.png",
+                   "路名_真值鳳七一二三四五六_程式沒讀到_abcdef.png"):
+        if process.safe_hard_name(leaked):
+            problems.append("會把住址寫進檔名的寫法還是被放行了：%s" % leaked)
+    for fine in ("路名首字_真值鳳_程式沒讀到_ab12cd.png",
+                 "數字_真值7_程式讀成2_80a236.png",
+                 "路名_真值大觀_程式讀成4大觀_9f1a55.png"):
+        if not process.safe_hard_name(fine):
+            problems.append("該放行的檔名被擋掉了，等於這條線整個關掉：%s" % fine)
+    return problems
+
+
+def _unread_char_is_marked():
+    """路名有一格沒讀出來，就在那一格標「?」。
+
+    承辦人 2026-09-24 第 9 件：「那個字是龍，以後讀不到用?號好了，
+    這樣我都不知道你到底有沒有讀到龍。」複核畫面上只看到「七路168號」
+    的時候，人分不出程式是把「龍」讀錯了、還是根本沒讀到那一格。
+
+    這一批 19 件裡有 4 件是同一種：鶯歌的「鳳X路」與「龍X路」撞在一起
+    （三、五、七三組），第一個字沒讀出來就只剩「X路」。
+
+    負向驗證有四段：
+      一、候選各說各話（「中街」可能是國中街也可能是中湖街）就**不標**，
+          標錯格比不標更難查
+      二、本來就讀對的門牌一個「?」都不可以冒出來
+      三、只要值裡有「?」，就一定要同時有提醒（不可以安靜地送出去）
+      四、讀到的那團看不懂的東西要被「?」取代，不是多一格
+    """
+    from pipeline import lexicon, validate
+
+    problems = []
+    roads = lexicon.for_district(lexicon.builtin(), "鶯歌區")
+    if not roads or "龍七路" not in roads or "鳳七路" not in roads:
+        return ["鶯歌區字典裡沒有龍七路／鳳七路，這條檢查等於沒有驗過"]
+
+    for raw, want in (("七路168號七樓", "?七路168號七樓"),
+                      ("五路186號八樓", "?五路186號八樓"),
+                      # 負向四：「·」是那個沒讀出來的字本身，要被取代掉
+                      ("·七路168號七樓", "?七路168號七樓")):
+        value, note = validate.address(raw, roads)
+        if value != want:
+            problems.append("「%s」得到 %r，應該標成 %r" % (raw, value, want))
+        if not note:
+            problems.append("「%s」標了「?」卻沒有提醒" % raw)
+
+    # 負向一：候選指向不同格就不標
+    value, _note = validate.address("中街12號", roads)
+    if "?" in value:
+        problems.append("「中街」的候選各指各的格，卻還是標了「?」：%r" % value)
+
+    # 負向二、三：讀對的不可以冒出「?」；有「?」就一定有提醒
+    for name in roads:
+        if not name.endswith(("路", "街", "道")):
+            continue
+        value, note = validate.address(name + "12號", roads)
+        if "?" in value:
+            problems.append("讀對的「%s」冒出了「?」：%r" % (name, value))
+        if "?" in value and not note:
+            problems.append("值裡有「?」卻沒有提醒：%r" % value)
+    return problems
+
+
+def _failed_field_still_shows_up():
+    """完全讀不到的欄位，診斷報告上**還是要有那一列**。
+
+    承辦人 2026-09-24：「抓不到文號是怎麼回事? 有兩件這樣了，解決這個
+    問題。」—— 那兩件的公文文號整頁上沒找到，於是 record.values 裡
+    根本沒有這個鍵，_describe 只走 values，那一列就從報告上蒸發了。
+    報告上看不到「找不到」，連「有這一欄」都看不到，人只能問開發者。
+    失敗的欄位比成功的欄位更需要出現在報告上。
+
+    負向驗證有兩段：
+      一、把 _describe 退回只走 values 的寫法，這條檢查要叫
+      二、失敗那一列要帶得出**原因**（整頁找那一格的說明），
+          只列一行空白等於還是查不出來
+    """
+    from pipeline import process
+
+    class _Stub(process.Converter.__mro__[0]):          # 只借 _describe
+        def __init__(self):
+            pass
+
+        def fields_of(self, code):
+            return []
+
+    problems = []
+    record = process.Record("E", "x.pdf", 0)
+    record.values["chinese"] = "王大明"
+    # 公文文號整頁上找不到：有問題、有讀法，就是沒有值
+    record.problems["doc_number"] = "整頁上找不到十碼的公文文號"
+    record.how["doc_number"] = {"整頁找": {"值": "", "說明": "找不到：整頁上找不到十碼的公文文號"},
+                                "格數": 0}
+
+    stub = _Stub()
+    stub.journal = __import__("pipeline.diagnose", fromlist=["diagnose"]).Journal()
+    described = process.Converter._describe(stub, record, 0)
+    columns = [entry["column"] for entry in described["fields"]]
+    if "doc_number" not in columns:
+        problems.append("公文文號完全讀不到，診斷報告上就整列不見了")
+        return problems
+
+    entry = next(e for e in described["fields"] if e["column"] == "doc_number")
+    if not entry["problem"]:
+        problems.append("報告上有公文文號那一列，卻沒說為什麼失敗")
+    if "整頁找" not in (entry["readings"] or {}):
+        problems.append("報告上看不到整頁找的結果，查不出是沒找到還是找錯")
     return problems
 
 

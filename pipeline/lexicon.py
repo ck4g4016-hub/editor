@@ -464,6 +464,31 @@ def choose(text, names, threshold=THRESHOLD, margin=MARGIN):
     return None, score
 
 
+def missing_position(head, names):
+    """路名少讀一個字、而且候選**全部指向同一格**時，回那一格的位置。
+
+    承辦人 2026-09-24 第 9 件：「那個字是龍，以後讀不到用?號好了，
+    這樣我都不知道你到底有沒有讀到龍。」他說得對 —— 複核畫面上只看到
+    「七路168號七樓」的時候，人分不出程式是把「龍」讀錯了、還是根本
+    沒讀到那一格。補一個「?」上去就一目瞭然，而且改起來也快。
+
+    位置是**讀到的主體**的索引（0 ＝ 第一個字前面）。候選各指各的、
+    或者根本沒有候選，就回 None —— 位置不確定的時候不要亂標。
+    """
+    if not head or not names:
+        return None
+    core, _gaps = _core_and_gaps(head)
+    if len(core) < 2:
+        return None
+    trimmed = stem(core)
+    spots = set()
+    for name in names:
+        found = _edit_at(trimmed, stem(name))
+        if found and found[0] == MISSING:
+            spots.add(found[1])
+    return spots.pop() if len(spots) == 1 else None
+
+
 def resolve_head(head, names, threshold=THRESHOLD):
     """從地址開頭那段文字裡認出路街名。回傳 (路街名, 相似度)。"""
     name, score, _note = resolve_head_full(head, names, threshold)

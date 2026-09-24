@@ -54,6 +54,71 @@ _NOT_A_ROAD = "段巷弄號樓之"
 _ROAD_MAX = 6
 
 
+# 整串住址那一格，最左邊那一個字可以單獨切出來嗎？
+#
+# 這幾個數字是資安門檻，不是調參數。切出來的東西要送出機關，所以寧可
+# 切不出來（什麼都不收），也不要切出一塊「其實還連著門牌號」的圖。
+_FIRST_MIN_GROUPS = 4      # 整串住址至少這麼多團墨（路名＋路＋號碼＋號）
+_FIRST_MAX_RATIO = 1.6     # 一個中文字再寬也不會超過高度的 1.6 倍
+_FIRST_MIN_RATIO = 0.45    # 太扁的是碎片或標點，不是字
+_FIRST_MAX_REACH = 0.35    # 切出來的右邊界不可以超過整條的這個比例
+
+
+def first_character(crop):
+    """從「整串住址」那一格裡，只切出**最左邊那一個字**。
+
+    為什麼要這樣做：鶯歌的「鳳X路」與「龍X路」三、五、七三組正面相撞，
+    字典幫不上忙，只剩字形。要讓程式學會分辨就得有標好答案的圖，而那種
+    表格（E 表）的門牌只框一個大框 —— 整格就是整串住址，不能送出機關。
+
+    但**單獨一個「鳳」或「龍」不是個資**：那是公開的街道名稱用字，
+    跟一個孤立的手寫數字同一個等級，指不向任何人。所以只切第一個字。
+
+    切不出來就回 None —— 條件一條不過就什麼都不收。切錯的代價是把民眾的
+    門牌號送出機關，而那從檔名上看不出來（檔名只寫真值那一個字）。
+
+    為什麼值得做：拿承辦人 2026-09-24 傳回來的 13 張圖量過，「鳳」在這個
+    掃描解析度下筆畫整個糊成一團、「龍」還看得出左右兩塊，兩個形狀特徵
+    分得開（中間直條的空白比例 鳳 0.07–0.25、龍 0.42–0.57；封閉白區個數
+    鳳 3–7、龍 12–16，13 張裡 12 張分得開）。但 13 張裡「龍」只有 4 張，
+    **這個數量不足以拿來自動改門牌**，所以現在只收資料，不做判斷。
+
+    回傳裁好的影像，或 None。
+    """
+    if crop is None or not getattr(crop, "size", 0):
+        return None
+    grey = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    ink = (grey < 128).astype(np.uint8)
+    height, width = ink.shape
+    if height < 8 or width < height * 2:
+        return None                      # 本來就不是一整條住址
+
+    column = ink.sum(axis=0)
+    groups, start = [], None
+    for x in range(width):
+        if column[x] > 0 and start is None:
+            start = x
+        elif column[x] == 0 and start is not None:
+            groups.append((start, x))
+            start = None
+    if start is not None:
+        groups.append((start, width))
+    if len(groups) < _FIRST_MIN_GROUPS:
+        return None
+
+    # 最左邊常常是裁切邊緣切到隔壁欄的碎片，太窄的跳過
+    for left, right in groups:
+        span = right - left
+        if span < height * _FIRST_MIN_RATIO:
+            continue
+        if span > height * _FIRST_MAX_RATIO:
+            return None                  # 第一團就黏成一片，分不出是幾個字
+        if right > width * _FIRST_MAX_REACH:
+            return None                  # 位置太靠右，不敢當成第一個字
+        return crop[:, left:right]
+    return None
+
+
 def only_the_road(text, segment_count):
     """這一格看起來是「只有路名」，還是「整串住址」？
 
@@ -100,6 +165,9 @@ class Record:
         # 路名是公開的街道名稱，單獨一個不指向任何人；
         # 門牌號、樓層配上路名就是完整的住址了（見 dump_hard_cells）。
         self.road_cell = None
+        # 門牌只框一個大框（E 表）時的整格影像與讀到的字。**整格含完整住址，
+        # 絕對不會被送出去**；難字回報只從裡面切出最左邊那一個字。
+        self.address_cell = None
         # 每一面的底圖對位品質：{"front": {"減版面": True, "對位": 0.87}}。
         # 減不掉的時候欄位是從**沒減過的原圖**上裁的，印刷的「段巷弄號樓」
         # 會跟手寫混在一起被讀進來 —— 那種讀出來的東西看起來就像 OCR 很爛，
@@ -313,7 +381,18 @@ class Converter:
         """把一件的辨識結果整理成診斷用的資料。內容全部遮罩。"""
         definitions = {d.column: d for d in self.fields_of(record.code)}
         entries = []
-        for column, value in record.values.items():
+        # **完全失敗的欄位也要進報告。** 以前這裡只走 record.values，
+        # 而一個欄位如果什麼都沒讀到，values 裡根本不會有它 ——
+        # 於是報告上那一列整個消失，連「找不到」都看不到。
+        # 承辦人 2026-09-24：「抓不到文號是怎麼回事? 有兩件這樣了」——
+        # 那兩件的公文文號就是這樣從報告上蒸發的，而它是必要欄位。
+        # 失敗的欄位比成功的欄位更需要出現在診斷報告上。
+        columns = list(record.values)
+        for column in list(record.problems) + list(record.how):
+            if column not in columns:
+                columns.append(column)
+        for column in columns:
+            value = record.values.get(column, "")
             definition = definitions.get(column)
             how = record.how.get(column) or {}
             entries.append({
@@ -589,6 +668,15 @@ class Converter:
                     and crop is not None and crop.size
                     and only_the_road(text, len(definition.segments()))):
                 record.road_cell = (crop, text)
+            # 門牌只框一個大框的表格（E 表）走另一條路：整格是整串住址，
+            # **整格絕對不能送出去**，但最左邊那一個字可以（見 first_character）。
+            # 那一個字正是鶯歌「鳳X路／龍X路」分不出來的關鍵，而且單獨一個
+            # 街道名稱用字指不向任何人。
+            if (definition.column == "address" and definition.mode == fieldmod.FIXED
+                    and not suffix and record.address_cell is None
+                    and crop is not None and crop.size
+                    and len(definition.segments()) == 1):
+                record.address_cell = (crop, text)
             if text:
                 pieces.append(text + suffix)
                 scores.append(confidence)
@@ -819,6 +907,39 @@ HARD_CELLS = "難字回報（可以傳給開發者）"
 # 門牌開頭的路街名。難字回報只拿它跟程式讀到的比對 —— 只收這一格。
 _ROAD_HEAD = re.compile(r"^([\u4e00-\u9fff]{1,8}(?:大道|[路街道]))")
 
+# 民眾在門牌那個大框裡先寫了行政區的話，最左邊那個字就不是路名的第一個字。
+_LEAD_IN_BOX = re.compile(r"^.{1,4}?[縣市區鄉鎮村里]")
+
+# 難字回報檔名裡**絕對不可以**出現的字。檔名寫的是「真值」，而真值是人
+# 複核完的門牌 —— 只要裡面混進門牌號、樓、巷、弄，那就是完整住址被寫進
+# 一個標著「可以傳給開發者」的檔名裡。2026-09-22 真的發生過一次。
+# 簡體的「号」「楼」也要擋 —— 辨識模型吐出來的常常是簡體字，
+# 2026-09-22 那批外洩的檔名裡就是寫「七楼」。
+_NEVER_IN_NAME = "號樓巷弄之段号楼"
+
+# 檔名裡最多幾個中文字。路名首字只會有一個，整段路名最多四個（鳳吉一街）。
+_NAME_MAX_CHINESE = 6
+
+
+def safe_hard_name(name):
+    """這個難字回報的檔名安全嗎？不安全就不要寫出去。
+
+    **這是最後一道關卡，不是備援。** 前面每一條判斷都可能有沒想到的表格
+    長相（2026-09-22 就是這樣外洩的：條件寫得好好的，但 E 表只框一個大框，
+    整串住址照樣滿足條件）。所以出口再擋一次，用的是跟前面完全不同的依據：
+    **看檔名本身**。檔名裡有「號」「樓」「巷」「弄」就一定不對，
+    因為真值那一段應該只有路名，路名不會有這些字。
+    """
+    if any(char in name for char in _NEVER_IN_NAME):
+        return False
+    # 「真值」「程式讀成」「程式沒讀到」「程式分不出是」「路名」「首字」
+    # 這些是固定的字樣，扣掉之後才是資料
+    for word in ("路名首字", "路名", "字母", "數字", "真值",
+                 "程式讀成", "程式沒讀到", "程式分不出是"):
+        name = name.replace(word, "")
+    chinese = sum(1 for char in name if "\u4e00" <= char <= "\u9fff")
+    return chinese <= _NAME_MAX_CHINESE
+
 _HARD_README = """\
 這個資料夾裡是**程式讀錯或讀不出來的那幾個字**，一個字一張圖。
 
@@ -828,6 +949,7 @@ _HARD_README = """\
     數字_真值5_程式沒讀到_7b21de.png   程式那一格什麼都沒讀到
     字母_真值F_程式讀成T_c4e810.png    第 1 碼（區域碼）讀錯
     路名_真值大觀_程式讀成4大觀_9f1a55.png  門牌的路名那一格讀錯
+    路名首字_真值鳳_程式沒讀到_ab12cd.png   路名第一個字沒讀出來
 
 「真值」是**你在複核畫面上改完、按下產生輸出檔的那個值**，所以是對的。
 程式就是靠這個才知道自己哪一格錯了。
@@ -838,18 +960,24 @@ _HARD_README = """\
 
   * **只有讀錯的那幾格**，讀對的一律不收。一件十格通常只錯一兩格，
     少了其他八格，湊不回任何人的身分證號。
-  * 門牌**只收路名那一格**。路名（「大觀」「鳳鳴」）是公開的街道名稱，
-    一條路上有幾百戶，單獨一個指不向任何人。門牌號、樓層、巷、弄一律
-    不收 —— 那些一旦配上路名就是完整住址了。
+  * 門牌**只收路名**，而且只收讀錯的那一格。路名（「大觀」「鳳鳴」）
+    是公開的街道名稱，一條路上有幾百戶，單獨一個指不向任何人。
+    門牌號、樓層、巷、弄一律不收 —— 那些一旦配上路名就是完整住址了。
     （不收號也沒損失：門牌號跟身分證是同一個人用同一支筆寫的數字，
       身分證那邊已經在收了。）
+  * 門牌只框一個大框的表格（E 表那種），整格就是整串住址，所以**整格
+    不收**，只從最左邊切出一個字（檔名開頭是「路名首字」）。
+    鶯歌的「鳳七路」跟「龍七路」分不出來，差的就是那一個字。
+  * 檔名寫出去之前再擋一次：只要檔名裡出現「號」「樓」「巷」「弄」，
+    那一張就不寫。2026-09-22 真的外洩過一次整串住址，這一關是那次加的。
   * **不記第幾件、不記第幾格**，而且檔案順序是打亂的。哪幾個字屬於
     同一個人，這個資料夾裡沒有這個資訊。
   * 一個孤立的手寫數字不是個資 —— 它認不出是誰。
 
 話雖如此，**送出去之前請自己打開看一遍**。這是刻意的設計：
 「相信程式有把個資拿掉」不是資安，「自己看過、自己確認過」才是。
-看到不該在裡面的東西（例如整排連號、或是姓名的字），就不要送，跟開發者說。
+看到不該在裡面的東西（例如整排連號、姓名的字，或是**看得到門牌號碼的
+整條住址**），就不要送，跟開發者說。
 
 ── 為什麼要這份東西 ──
 
@@ -961,12 +1089,62 @@ def dump_hard_cells(records, rows, folder, numbers=None):
             continue                # 讀對了，不收
         road_pairs.append((want, "程式讀成%s" % got if got else "程式沒讀到", cell))
 
-    if not pairs and not road_pairs:
+    # ── 門牌只框一個大框的表格：只切最左邊那一個字 ─────────────────
+    #
+    # 承辦人 2026-09-24 那一批 19 件裡有 4 件是同一種錯：鶯歌的「鳳X路」
+    # 與「龍X路」三、五、七三組正面相撞，字典幫不上忙，只剩字形。要讓
+    # 程式學會分辨就得有標好答案的圖，而那種表格（E 表）的門牌只框一個
+    # 大框 —— 整格就是整串住址。
+    #
+    # 所以整格不收，只切最左邊那一個字。單獨一個街道名稱用字（鳳、龍）
+    # 是公開資訊，指不向任何人；門牌號、樓層一個都不會進到圖裡。
+    head_pairs = []
+    for position, row in enumerate(rows or ()):
+        index = None
+        if numbers and position < len(numbers):
+            try:
+                index = int(numbers[position]) - 1
+            except (TypeError, ValueError):
+                index = None
+        if index is None:
+            index = position
+        if not (0 <= index < len(records)):
+            continue
+        record = records[index]
+        cell = getattr(record, "address_cell", None)
+        if not cell:
+            continue
+        crop, saw = cell
+        # 民眾在框裡先寫了「新北市鶯歌區」的話，最左邊那個字就不是路名的
+        # 第一個字了 —— 標錯答案的資料比沒有資料還糟，不如不收。
+        if _LEAD_IN_BOX.match((saw or "").strip()):
+            continue
+        found = _ROAD_HEAD.match((row.get("address") or "").strip())
+        want = _lexicon.stem(found.group(1)) if found else ""
+        read = _ROAD_HEAD.match((saw or "").strip())
+        got = _lexicon.stem(read.group(1)) if read else ""
+        if not want:
+            continue
+        if len(got) == len(want):
+            if got[0] == want[0]:
+                continue                       # 第一個字讀對了，不收
+            note = "程式讀成%s" % got[0]
+        elif len(got) == len(want) - 1 and want.endswith(got):
+            note = "程式沒讀到"                # 第一個字整個沒讀出來
+        else:
+            continue                           # 對不上就別亂標
+        piece = first_character(crop)
+        if piece is None:
+            continue
+        head_pairs.append((want[0], note, piece))
+
+    if not pairs and not road_pairs and not head_pairs:
         return None, 0
 
     # 打亂 —— 檔名裡沒有件號也沒有格號，順序是最後一個可能洩漏關聯的東西
     random.shuffle(pairs)
     random.shuffle(road_pairs)
+    random.shuffle(head_pairs)
 
     target = os.path.join(folder, HARD_CELLS)
     os.makedirs(target, exist_ok=True)
@@ -982,7 +1160,13 @@ def dump_hard_cells(records, rows, folder, numbers=None):
             written += 1
     for want, saw, cell in road_pairs:
         name = "路名_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
-        if _resources.imwrite(os.path.join(target, name), cell):
+        if safe_hard_name(name) and _resources.imwrite(
+                os.path.join(target, name), cell):
+            written += 1
+    for want, saw, cell in head_pairs:
+        name = "路名首字_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
+        if safe_hard_name(name) and _resources.imwrite(
+                os.path.join(target, name), cell):
             written += 1
     return target, written
 
