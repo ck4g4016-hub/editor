@@ -36,9 +36,10 @@ def workspace():
 def version():
     """程式版本。
 
-    打包時 workflow 會寫一個 version.txt 進資源目錄，裡面是 commit 編號 —— 
-    診斷報告要靠它才知道使用者手上跑的是哪一版程式碼。
-    直接跑原始碼時就現場問 git。
+    打包時 workflow 會寫一個 version.txt 進資源目錄，內容像
+    「1150929-1版（b2879e2）」：前面是承辦人看得懂的日期版號（跟下載的
+    壓縮檔檔名一樣），括號裡是 commit 編號 —— 診斷報告要靠後者才對得回
+    是哪一份程式碼。直接跑原始碼時就現場問 git。
     """
     marker = path("version.txt")
     if os.path.isfile(marker):
@@ -51,6 +52,16 @@ def version():
             stderr=subprocess.DEVNULL, text=True).strip() + "（原始碼）"
     except Exception:                                               # noqa: BLE001
         return "不明"
+
+
+def short_version():
+    """給人看的版本號，例如「1150929-1版」。
+
+    承辦人 2026-09-29：「我都不知道我到底是下載哪一版的。」主畫面上顯示
+    這一段，跟下載的壓縮檔檔名（paper2excel_1150929-1.zip）對得起來。
+    commit 編號對承辦人沒有意義，只留在診斷報告裡。
+    """
+    return version().split("（")[0].strip() or "不明"
 
 
 def imread(path, flags=None):

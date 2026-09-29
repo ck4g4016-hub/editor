@@ -930,6 +930,7 @@ def check():
     problems.extend(_unread_char_is_marked())
     problems.extend(_only_the_first_letter_leaves_the_office())
     problems.extend(_missing_floor_word_is_filled_in())
+    problems.extend(_version_number_follows_the_rule())
     problems.extend(_zhongxing_street_is_gone())
     problems.extend(_report_keeps_its_own_words())
     problems.extend(_grid_survives_thin_lines())
@@ -2095,6 +2096,79 @@ def _road_shortlist_when_stuck():
                         % leaked[:3])
     if "6 條" not in masked:
         problems.append("診斷報告上看不出有幾條候選，開發者查不出問題：%s" % masked)
+    return problems
+
+
+def _version_number_follows_the_rule():
+    """壓縮檔檔名上的版本號：當天第一版 1150929，第二版 1150929-1……
+
+    承辦人 2026-09-29：「我都不知道我到底是下載哪一版的。」規則是他定的。
+    編號看 Release 上現在掛的檔名算（見 tools/release_version.py）。
+
+    負向驗證有五段：
+      一、「-10」不可以排在「-9」前面（當字串比就會）
+      二、昨天的版本不可以讓今天的號碼接著往下編
+      三、改版前的 paper2excel.zip、或長得像但不是的檔名，不可以算進去
+      四、日期要用台灣時間 —— 台灣早上七點（UTC 前一天 23 點）建的版本，
+          用 UTC 取日期會變成昨天
+      五、沒帶時區的時間不知道是哪裡的時間，要拒絕，不可以猜
+    """
+    import datetime
+
+    from pipeline import resources
+    from tools import release_version as rv
+
+    problems = []
+    today = "1150929"
+    for existing, want in (
+            ([], "1150929"),
+            (["paper2excel_1150929.zip"], "1150929-1"),
+            (["paper2excel_1150929-1.zip"], "1150929-2"),
+            # 負向一：當數字比
+            (["paper2excel_1150929-9.zip", "paper2excel_1150929-10.zip"], "1150929-11"),
+            # 負向二：昨天的不算
+            (["paper2excel_1150928-3.zip"], "1150929"),
+            # 負向三：舊檔名、長得像的不算
+            (["paper2excel.zip"], "1150929"),
+            (["paper2excel_1150929.zip.bak", "xpaper2excel_1150929.zip",
+              "paper2excel_115092.zip"], "1150929")):
+        got = rv.next_version(existing, today)
+        if got != want:
+            problems.append("Release 上有 %s 時，這一版應該是 %s，算出來是 %s"
+                            % (existing, want, got))
+
+    # 負向四：台灣時間。UTC 9/28 23:30 在台灣已經是 9/29 早上 7:30
+    utc = datetime.datetime(2026, 9, 28, 23, 30, tzinfo=datetime.timezone.utc)
+    if rv.roc_today(utc) != "1150929":
+        problems.append("日期沒有用台灣時間：UTC 9/28 23:30 算成 %s，應該是 1150929"
+                        % rv.roc_today(utc))
+
+    # 負向五：沒時區的時間要拒絕
+    try:
+        rv.roc_today(datetime.datetime(2026, 9, 29, 7, 30))
+        problems.append("沒帶時區的時間也照算了 —— 猜錯時區就差一天")
+    except ValueError:
+        pass
+
+    # 附件檔名只能是英數（GitHub 會把非 ASCII 濾掉）
+    name = rv.asset_name("1150929-1")
+    if name != "paper2excel_1150929-1.zip" or not name.isascii():
+        problems.append("附件檔名不對：%r" % name)
+    # 算出來的號碼要能被自己認回來，不然下一版會從頭編
+    if rv.next_version([name], today) != "1150929-2":
+        problems.append("自己產的檔名 %s 認不回來，下一版會重複編號" % name)
+
+    # 主畫面顯示的版本號：只要前面那段，不要 commit 編號
+    original = resources.version
+    try:
+        resources.version = lambda: "1150929-1版（b2879e2）"
+        if resources.short_version() != "1150929-1版":
+            problems.append("主畫面的版本號不對：%r" % resources.short_version())
+        resources.version = lambda: "b2879e2（原始碼）"
+        if resources.short_version() != "b2879e2":
+            problems.append("直接跑原始碼時版本號不對：%r" % resources.short_version())
+    finally:
+        resources.version = original
     return problems
 
 

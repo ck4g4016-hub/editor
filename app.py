@@ -546,11 +546,14 @@ def menu():
 
     choice = {"value": None}
     root = tkinter.Tk()
-    root.title("紙本轉 Excel")
-    root.geometry("400x375")
+    # 版本號放在標題列和畫面上：承辦人要能一眼對得上自己下載的是哪一個
+    # 壓縮檔（paper2excel_1150929-1.zip ↔ 1150929-1版）。
+    root.title("紙本轉 Excel　%s" % resources.short_version())
+    root.geometry("400x395")
     root.resizable(False, False)
 
     tkinter.Label(root, text="紙本轉 Excel", font=("", 15, "bold")).pack(pady=(20, 2))
+    tkinter.Label(root, text=resources.short_version(), fg="#666").pack(pady=(0, 2))
     tkinter.Label(root, text="全程在本機處理，不連任何網路",
                   fg="#666").pack(pady=(0, 4))
     tkinter.Label(root, text="工作資料夾：%s" % WORKSPACE,

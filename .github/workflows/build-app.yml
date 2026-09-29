@@ -61,16 +61,43 @@ jobs:
           $env:PYTHONWARNINGS = 'error::SyntaxWarning'
           python tools/selftest.py
 
+      - name: 決定版本號
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONIOENCODING = 'utf-8'
+          # 承辦人 2026-09-29：「我都不知道我到底是下載哪一版的。」
+          # 版本號照他定的規則：當天第一版 1150929，第二版 1150929-1……
+          # 當天第幾版是看 Release 上現在掛的檔名算的（見 tools/release_version.py）。
+          # Release 還不存在（第一次建置）時 gh 會失敗，那就當作什麼都沒有。
+          $names = @(gh release view app-latest --repo $env:GITHUB_REPOSITORY `
+                       --json assets -q '.assets[].name' 2>$null)
+          if ($LASTEXITCODE -ne 0) { $names = @() }
+          $global:LASTEXITCODE = 0
+          $version = (python tools/release_version.py @names).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "算不出版本號" }
+          # 格式不對就停 —— 壞掉的版本號會變成壞掉的檔名，承辦人更分不清楚
+          if ($version -notmatch '^\d{7}(-\d+)?$') { throw "版本號格式不對：$version" }
+          Write-Host "Release 上現有：$($names -join ', ')"
+          Write-Host "這一版：$version"
+          "APP_VERSION=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: 打包
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          # 版本編號要跟著程式走 —— 診斷報告靠它才知道使用者手上跑的是哪一版
-          "$env:GITHUB_SHA".Substring(0,7) | Out-File -Encoding utf8 -NoNewline version.txt
-          # 把 commit 編號填進版本資訊，然後帶進執行檔。
+          $sha = "$env:GITHUB_SHA".Substring(0,7)
+          # 版本編號要跟著程式走。前面是承辦人看得懂的日期版號（主畫面上顯示，
+          # 跟壓縮檔檔名對得起來），括號裡是 commit 編號（診斷報告靠它對回
+          # 是哪一份程式碼）。
+          "$($env:APP_VERSION)版（$sha）" | Out-File -Encoding utf8 -NoNewline version.txt
+          # 把版本號填進 exe 的版本資訊。這個檔只能放 ASCII（見 tools/version_info.txt），
+          # 所以不放「版」字。
           # 沒有中介資料的 exe 是啟發式判定的扣分項（詳見 tools/version_info.txt）。
-          (Get-Content tools\version_info.txt -Raw) -replace '__SHA__', "$env:GITHUB_SHA".Substring(0,7) |
+          (Get-Content tools\version_info.txt -Raw) -replace '__SHA__', "$($env:APP_VERSION) ($sha)" |
               Out-File -Encoding ascii version_info.txt
           pyinstaller --onedir --name 紙本轉excel `
             --version-file version_info.txt `
@@ -120,7 +147,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path release | Out-Null
           # 檔名用純英數 —— GitHub 的 Release 附件會把非 ASCII 濾掉，
           # 「紙本轉excel.zip」上傳後會變成「excel.zip」，看起來像壞掉的檔案。
-          Compress-Archive -Path dist\紙本轉excel -DestinationPath release\paper2excel.zip
+          # 檔名帶版本號（paper2excel_1150929-1.zip），承辦人下載下來就知道是哪一版。
+          #
+          # **裡面那一層資料夾的名稱不帶版本號。** 樣板和輸出是放在執行檔旁邊的
+          # （見 pipeline/resources.workspace），資料夾名稱每版不一樣的話，
+          # 每更新一次樣板就「不見」一次。
+          $zip = "release\paper2excel_$($env:APP_VERSION).zip"
+          Compress-Archive -Path dist\紙本轉excel -DestinationPath $zip
           Get-ChildItem release | ForEach-Object {
               Write-Host ("{0}  {1:N0} MB" -f $_.Name, ($_.Length/1MB)) }
           # SHA-256 印在建置紀錄裡，而建置紀錄是公開的。
@@ -128,8 +161,9 @@ jobs:
           # 「我下載到的就是這份公開原始碼建出來的東西」—— 雜湊值對得上就是同一份。
           Write-Host ""
           Write-Host "=== SHA-256（拿去跟下載到的檔案核對）==="
-          (Get-FileHash release\paper2excel.zip -Algorithm SHA256).Hash |
+          (Get-FileHash $zip -Algorithm SHA256).Hash |
               ForEach-Object { Write-Host "zip      $_" }
+          Write-Host "版本     $($env:APP_VERSION)"
           (Get-FileHash "dist\紙本轉excel\紙本轉excel.exe" -Algorithm SHA256).Hash |
               ForEach-Object { Write-Host "exe      $_" }
           Write-Host "原始碼   $env:GITHUB_SHA"
@@ -145,23 +179,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = "paper2excel_$($env:APP_VERSION).zip"
+          $zip = "release\$asset"
+          $title = "紙本轉 Excel $($env:APP_VERSION)版"
           # 原本是先 delete 再 create。那中間有一段時間 Release 不存在，
           # 使用者剛好在那時候點下載連結就是 404 —— 看起來像「又沒有連結」。
           # 改成就地覆蓋附件，連結任何時候都指得到東西。
-          $exists = gh release view app-latest --repo $env:GITHUB_REPOSITORY 2>$null
+          gh release view app-latest --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -ne 0) {
-              gh release create app-latest release\paper2excel.zip `
+              $global:LASTEXITCODE = 0
+              gh release create app-latest $zip `
                 --repo $env:GITHUB_REPOSITORY `
                 --target $env:GITHUB_SHA `
-                --title "紙本轉 Excel" `
+                --title $title `
                 --notes-file 說明.txt
+              if ($LASTEXITCODE -ne 0) { throw "建立 Release 失敗" }
           } else {
-              gh release upload app-latest release\paper2excel.zip --clobber `
-                --repo $env:GITHUB_REPOSITORY
+              # 先上傳新的、再刪舊的：順序反過來的話，中間有一段時間
+              # Release 上一個檔案都沒有。
+              gh release upload app-latest $zip --clobber --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) { throw "上傳附件失敗" }
               gh release edit app-latest --repo $env:GITHUB_REPOSITORY `
                 --target $env:GITHUB_SHA `
-                --title "紙本轉 Excel" `
+                --title $title `
                 --notes-file 說明.txt
+              if ($LASTEXITCODE -ne 0) { throw "更新 Release 失敗" }
+          }
+
+          # 舊版的附件全部拿掉，只留這一版。留著的話 Release 頁面上會有好幾個
+          # 檔案，承辦人又要猜該下載哪一個 —— 那正是這個功能要解決的事。
+          # 改版前的 paper2excel.zip 也一起拿掉。
+          $names = @(gh release view app-latest --repo $env:GITHUB_REPOSITORY `
+                       --json assets -q '.assets[].name')
+          foreach ($old in $names) {
+              if ($old -ne $asset) {
+                  gh release delete-asset app-latest $old --yes --repo $env:GITHUB_REPOSITORY
+                  if ($LASTEXITCODE -ne 0) { throw "刪不掉舊附件 $old" }
+                  Write-Host "已移除舊附件 $old"
+              }
           }
 
           # 確認發布出去的真的是這一版，不是上一版留下來的
@@ -169,4 +225,10 @@ jobs:
           if ($head -ne $env:GITHUB_SHA) {
               throw "Release 指向 $head，不是這次的 $env:GITHUB_SHA"
           }
+          $left = @(gh release view app-latest --repo $env:GITHUB_REPOSITORY `
+                      --json assets -q '.assets[].name')
+          if ($left.Count -ne 1 -or $left[0] -ne $asset) {
+              throw "Release 上的附件應該只有 $asset，實際是：$($left -join ', ')"
+          }
           Write-Host "Release 已更新到 $head"
+          Write-Host "下載連結：https://github.com/$env:GITHUB_REPOSITORY/releases/download/app-latest/$asset"
