@@ -12,9 +12,12 @@ orig = open(sys.argv[1], "rb").read().decode("utf-8")
 new = open(sys.argv[2], "rb").read().decode("utf-8")
 problems = []
 
-# 1. 行尾一律 CRLF，沒有單獨的 LF
-if re.search(r"(?<!\r)\n", new):
-    problems.append("有單獨的 LF 行尾")
+# 1. 行尾跟原本那份一樣（承辦人跑過的版本有 CRLF 也有 LF），不可以混著用
+NL = "\r\n" if "\r\n" in orig else "\n"
+if NL == "\r\n" and re.search(r"(?<!\r)\n", new):
+    problems.append("原本是 CRLF，新的混進了單獨的 LF")
+if NL == "\n" and "\r" in new:
+    problems.append("原本是 LF，新的混進了 CR")
 
 # 2. 控制項／影像庫那一段（含截圖）一個位元組都不能動
 mark = "# [ControlRepository][PowerAutomateDesktop]"
@@ -24,7 +27,7 @@ code = new[:new.index(mark)]
 
 # 3. 每一段 JavaScript 都要能解析；新加的兩段要跟測過的一模一樣
 found = {}
-for name, raw, line in blocks(code.replace("\r\n", "\n")):
+for name, raw, line in blocks(code.replace(NL, "\n")):
     ok, err = check(unescape(raw))
     if not ok:
         problems.append("第 %d 行的 JavaScript（%s）語法錯：%s" % (line, name, err))
@@ -40,7 +43,7 @@ def statements(text):
     """逐字掃：$''' 進入字串，字串裡反斜線跳脫下一個字，''' 離開字串。
     只回傳「開頭不在字串裡」的那些行。"""
     inside = False
-    for line in text.split("\r\n"):
+    for line in text.split(NL):
         if not inside:
             yield line.strip()
         i = 0
@@ -77,7 +80,8 @@ for label, text in (("原本", orig[:orig.index(mark)]), ("新的", code)):
 
 # 5. 舊的、會造成錯開的東西都拿掉了
 for gone in ("ASNAME", "CountForLOOP", "DataFromWebPage_領件區", "TextAsNumber_YEAR",
-             "LoopIndex_download", "_土地建物查詢資料"):
+             "LoopIndex_download", "_土地建物查詢資料", "DocNumbers", "IdNumbers", "SeqIndex",
+             "SubmitCount", "依然下載"):
     if gone in code:
         problems.append("還留著 %s" % gone)
 
@@ -93,7 +97,7 @@ for var, setter in (("TimesText", "SET TimesText TO"), ("SentCount", "SET SentCo
     if first_set < 0 or first_use < first_set - 400:
         problems.append("%s 可能在設定之前就被用到" % var)
 
-print("JavaScript 段數：原本 %d、新的 %d" % (len(blocks(orig[:orig.index(mark)].replace("\r\n", "\n"))),
-                                       len(blocks(code.replace("\r\n", "\n")))))
+print("JavaScript 段數：原本 %d、新的 %d" % (len(blocks(orig[:orig.index(mark)].replace(NL, "\n"))),
+                                       len(blocks(code.replace(NL, "\n")))))
 print("\n".join(problems) if problems else "全部通過")
 sys.exit(1 if problems else 0)
