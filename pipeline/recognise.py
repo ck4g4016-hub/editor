@@ -153,6 +153,51 @@ def rows(items):
             for g in groups]
 
 
+def strip_printed_top(crop):
+    """欄位框上緣如果壓到上一行的印刷字，把那一條切掉再讀。
+
+    承辦人 2026-10-21 傳回來的難字回報：C 表路名那一格的裁切圖，**每一張**
+    最上面都有一整條印刷字（上一行的說明文字），底圖沒減掉，辨識模型把它跟
+    手寫的路名當成同一行一起讀 ——「中正一」讀成「悦戒1」、「行政」讀成「纤政」。
+    切掉之後這兩張都讀對了，其他幾張沒有變差（拿那批實際的圖量過）。
+
+    只在這幾件事**全部**成立時才切，任何一條不成立就原樣不動：
+      一、最上面三列就有墨（真的是貼著上緣的東西）
+      二、切點在上面 30% 以內（壓到的是扁扁的一行，不是半個欄位）
+      三、切點以上的那一條橫跨六成寬度以上（實測那一行印刷字佔 70～71%）
+      四、切點那一列幾乎是空的（最多 3% 寬度有墨）
+      五、切點以下還留著像樣的墨（至少是上面那條的四分之一）——
+          不然就是「手寫的字寫得很高、下面整片空白」，切下去會把手寫切掉
+    切點不是「第一段空白」而是上半部「墨最少的那一列」：實測「高職西」的「職」
+    最上面一筆會穿過印刷字下緣，用第一段空白去切會連手寫一起切掉。
+
+    門檻是照那批實際的圖量出來的，不是憑感覺：一開始寫成八成寬，結果四張
+    一張都沒切到（印刷字只佔 70%）；改成「切點以下的墨要比上面多」，讀對的
+    那兩張又被擋掉（手寫比印刷字稀疏，只有上面的 0.6～0.8 倍）。
+    """
+    if crop is None or not getattr(crop, "size", 0):
+        return crop
+    grey = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    ink = grey < 128
+    height, width = ink.shape
+    if height < 12 or not ink[:3].any():
+        return crop
+    per_row = ink.sum(axis=1)
+    low, high = 4, int(height * 0.45)
+    if high <= low:
+        return crop
+    cut = low + int(np.argmin(per_row[low:high]))
+    if cut > height * 0.30:
+        return crop
+    if ink[:cut].any(axis=0).sum() < width * 0.6:
+        return crop
+    if per_row[cut] > max(2, width * 0.03):
+        return crop
+    if ink[cut:].sum() < ink[:cut].sum() * 0.25:
+        return crop
+    return crop[cut:]
+
+
 def read(crop):
     """辨識一個欄位，回傳 (文字, 信心)。
 

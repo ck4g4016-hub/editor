@@ -528,7 +528,7 @@ def _join_notes(*notes):
     return "；".join(kept) if kept else None
 
 
-def address(text, roads=None):
+def address(text, roads=None, info=None):
     """門牌正規化。
 
     只留 路(街) → 巷 → 弄 → 號 → 樓，其餘一律不寫：
@@ -612,6 +612,11 @@ def address(text, roads=None):
                 # 同一句話裡「它是路名的第一個字」跟「它是隔壁的鄰別」
                 # 兩種講法並排，複核的人只會更不知道該信哪一個。
                 dropped = None
+        if info is not None:
+            # 給行政區對照用（見 process._reconcile_district）：這一區的字典裡，
+            # 路名是一個字都不用改就對上，還是改過才對上的
+            info["road"] = name
+            info["road_note"] = note
         if name:
             # 地址一定以路街名開頭，前面黏著的行政區之類一律丟掉
             value = name + rest + tail
@@ -695,10 +700,26 @@ def district(text, known=None):
     for option in options:
         if option == value or option.rstrip("區") == value.rstrip("區"):
             return option, None
-    best = max(options, key=lambda o: _overlap(value, o))
-    if _overlap(value, best) >= 1:
-        return best, None
+    # 只算「分得出是哪一區」的那幾個字。以前連「區」也算進去，而每個選項都有
+    # 「區」—— 讀成「新北市X區」、X 認不出來的時候，每一區都同分，max() 就
+    # 安安靜靜地挑了清單上的第一個（三峽區），一個提醒都沒有。
+    # 承辦人 2026-10-21 第 5 件：鶯歌區的「中正一路」被改成三峽區的「中正路」，
+    # 就是這樣來的 —— 行政區被這樣猜成三峽，路名再拿三峽的字典去「修正」。
+    scores = {option: len(distinct_chars(option, options) & set(value)) for option in options}
+    best = max(scores.values())
+    winners = [option for option in options if scores[option] == best]
+    if best >= 1 and len(winners) == 1:
+        return winners[0], None
     return value, "認不出是哪一區"
+
+
+def distinct_chars(name, options):
+    """這個區名裡，別的區名沒有的字。三峽區 → {三, 峽}；鶯歌區 → {鶯, 歌}。"""
+    others = set()
+    for option in options:
+        if option != name:
+            others |= set(option)
+    return set(name) - others - {"區"}
 
 
 def _overlap(a, b):

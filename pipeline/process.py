@@ -23,6 +23,9 @@ from . import (baseimage, diagnose, fields as fieldmod, layout, lexicon,
 # 驗證不通過就一定要人工確認，不管信心值多高。
 CRITICAL = ("id_number", "address", "doc_number")
 
+# 整行讀的手寫文字欄位。這些才會先切掉壓到的印刷字（見 _read_field）。
+TEXT_KINDS = ("address", "district", "chinese", "section")
+
 # 樣板編輯器裡「一定要設定才存得起來」的欄位。**公文文號不在裡面。**
 #
 # 它跟上面那三欄是兩件事：CRITICAL 講的是「輸出上這一欄不能空、不能錯」，
@@ -406,6 +409,9 @@ class Converter:
                 "value": diagnose.mask(value),
                 "problem": diagnose.mask_problem(record.problems.get(column, "")),
                 "cells": how.get("格數", 0),
+                # 只有數字（每格幾個像素寬），不含內容，可以外傳
+                "cell_widths": [int(w) for w in how.get("格寬", []) or []],
+                "box_width": int(how.get("框寬", 0) or 0),
                 # **白名單，不是黑名單。** 只有列在這裡的讀法才會進報告 ——
                 # 新增一種讀法時如果忘了加，報告會少一欄（看得出來），
                 # 而不是把沒遮罩過的東西漏出去（看不出來）。
@@ -535,11 +541,69 @@ class Converter:
         # 三個輸出檔的案號欄全空，還不會有任何提示。
         # 它是必要欄位，每一種表格都有收文戳，就不要讓它取決於設定。
         self._read_stamp(record, document)
+        self._reconcile_district(record)
 
         for column in CRITICAL:
             if not record.values.get(column):
                 record.problems.setdefault(column, "沒有讀到內容")
         return record
+
+    def _reconcile_district(self, record):
+        """行政區跟路名互相印證：行政區讀不出來，就從路名推回來。
+
+        承辦人 2026-10-21：「行政區的部分不能從路名反推嗎?」—— 可以，而且
+        三峽、鶯歌的路名大多只在其中一區有。做法是拿讀到的門牌，在每一區的
+        字典裡各對一次，看哪幾區是「一個字都不用改就對上」：
+
+          行政區沒讀出來、路名只在一區有   → 行政區補成那一區，標記
+          行政區讀得很勉強（只對到一個字）、→ 改成路名那一區，門牌也照那一區
+          但路名只在另一區一字不差           重新對，兩欄都標記
+          行政區讀得很清楚、路名卻在別區     → 不改，但在門牌的提醒裡講出來
+          路名兩區都有（例如中山路）         → 推不回來，什麼都不動
+
+        **只認「一字不差」的對上。** 改過字才對上的路名本身就是猜的，
+        不能再拿它去改另一欄 —— 那是拿一個猜測去證明另一個猜測。
+        """
+        raw = record.raw.get("address")
+        if not raw or "district" not in record.values or not self.roads:
+            return
+        districts = [d for d in self.districts if d in self.roads]
+        if len(districts) < 2:
+            return
+        exact = {}
+        for name in districts:
+            info = {}
+            value, note = validate.address(raw, roads=lexicon.for_district(self.roads, name),
+                                           info=info)
+            if info.get("road") and info.get("road_note") is None:
+                exact[name] = (value, note, info["road"])
+        if len(exact) != 1:
+            return
+        (place, (value, note, road)), = exact.items()
+        current = record.values.get("district") or ""
+        if current == place:
+            return
+        heard = validate.to_traditional(record.raw.get("district") or "")
+        if current in districts:
+            strength = len(validate.distinct_chars(current, districts) & set(heard))
+            if strength >= 2:
+                # 行政區讀得很清楚：兩欄裡至少有一欄錯了，分不出是哪一欄，不改。
+                # 但一定要講出來 —— 不講的話，門牌已經照這一區「修正」過了。
+                record.problems["address"] = validate._join_notes(
+                    record.problems.get("address"),
+                    "路名「%s」一字不差的話是%s的路，%s沒有這條；"
+                    "請確認行政區跟門牌哪一個讀錯了" % (road, place, current))
+                return
+        record.values["district"] = place
+        record.problems["district"] = (
+            "行政區%s，路名「%s」只有%s有，已經照路名改成%s，請確認"
+            % ("沒讀出來" if current not in districts else "讀到的是「%s」" % current,
+               road, place, place))
+        record.values["address"] = value
+        if note:
+            record.problems["address"] = note
+        else:
+            record.problems.pop("address", None)
 
     def _read_stamp(self, record, document):
         """在整頁上找收文戳的公文文號，不靠框選。
@@ -639,13 +703,23 @@ class Converter:
         pieces, crops, scores = [], [], []
         grid_pieces, grid_scores, any_grid = [], [], False
         cell_count = 0
+        # 每一格切出來多寬、整個框多寬 —— 只有數字，不含任何內容。
+        # C 表身分證一直切成 8 格（該 10 格），報告上只有「格數 8」看不出是
+        # 兩格黏在一起，還是整排格子沒框到。有寬度就分得出來。
+        span_widths, box_width = [], 0
         all_cells = []
         all_spans = []
         grid_source = None
         grid_band = None
         for box, suffix in definition.segments():
             crop = recognise.crop_field(sheet, box)
-            text, confidence = recognise.read(crop)
+            # 一般文字欄位：框的上緣壓到上一行的印刷字時，先切掉那一條再讀
+            # （見 recognise.strip_printed_top）。身分證、地號那種一字一格的
+            # 不動。切過的那一份**另外放**、只拿來整行讀：底下照格線讀的那一段
+            # 是拿 crop 跟「照整個框裁的格線圖」對齊的，crop 變矮就對不上了。
+            seen = (recognise.strip_printed_top(crop)
+                    if definition.kind in TEXT_KINDS else crop)
+            text, confidence = recognise.read(seen)
             if crop is not None and crop.size:
                 crops.append(crop)
             text = (text or "").strip()
@@ -667,7 +741,7 @@ class Converter:
                     and not suffix and record.road_cell is None
                     and crop is not None and crop.size
                     and only_the_road(text, len(definition.segments()))):
-                record.road_cell = (crop, text)
+                record.road_cell = (seen, text)
             # 門牌只框一個大框的表格（E 表）走另一條路：整格是整串住址，
             # **整格絕對不能送出去**，但最左邊那一個字可以（見 first_character）。
             # 那一個字正是鶯歌「鳳X路／龍X路」分不出來的關鍵，而且單獨一個
@@ -676,7 +750,7 @@ class Converter:
                     and not suffix and record.address_cell is None
                     and crop is not None and crop.size
                     and len(definition.segments()) == 1):
-                record.address_cell = (crop, text)
+                record.address_cell = (seen, text)
             if text:
                 pieces.append(text + suffix)
                 scores.append(confidence)
@@ -694,6 +768,9 @@ class Converter:
             printed = recognise.crop_field(grid, box) if grid is not None else crop
             spans = recognise.grid_spans(printed, crop)
             cells = [crop[:, a:b] for a, b in spans]
+            span_widths.extend(int(b - a) for a, b in spans)
+            if crop is not None and getattr(crop, "size", 0):
+                box_width += int(crop.shape[1])
             if spans and grid_source is None:
                 # 滑動視窗要在同一張影像上跨格取，所以記住是哪一張，
                 # 順便記住那排格子在垂直方向的位置 —— 欄位框通常畫得比
@@ -740,7 +817,8 @@ class Converter:
         # 每一欄「是怎麼讀出來的」要留下來。上一版把照格線逐格辨識做進去之後，
         # 診斷報告上完全看不出它有沒有觸發過 —— 結果一次都沒觸發，
         # 而我看著報告看不出來，又照著錯誤的假設猜了一輪。
-        how = {"格數": cell_count, "整行": raw, "照格子": grid_raw if any_grid else ""}
+        how = {"格數": cell_count, "整行": raw, "照格子": grid_raw if any_grid else "",
+               "格寬": span_widths, "框寬": box_width}
         record.how[definition.column] = how
 
         extra = self._dictionaries(definition, record)
@@ -1084,7 +1162,9 @@ def dump_hard_cells(records, rows, folder, numbers=None):
             continue
         want = _lexicon.stem(found.group(1))
         # 讀到的字裡本來就可能帶著印刷的「路／街」，比對前一起去掉
-        got = _lexicon.stem((saw or "").strip())
+        # 先換成繁體再比：辨識模型偶爾吐簡體字（「爱」），但門牌那一欄本來就會
+        # 照簡繁對照表換回來，輸出是對的 —— 那不算讀錯，收進來只會害開發者白查。
+        got = _lexicon.stem(_validate.to_traditional((saw or "").strip()))
         if not want or got == want:
             continue                # 讀對了，不收
         road_pairs.append((want, "程式讀成%s" % got if got else "程式沒讀到", cell))
@@ -1121,7 +1201,7 @@ def dump_hard_cells(records, rows, folder, numbers=None):
             continue
         found = _ROAD_HEAD.match((row.get("address") or "").strip())
         want = _lexicon.stem(found.group(1)) if found else ""
-        read = _ROAD_HEAD.match((saw or "").strip())
+        read = _ROAD_HEAD.match(_validate.to_traditional((saw or "").strip()))
         got = _lexicon.stem(read.group(1)) if read else ""
         if not want:
             continue

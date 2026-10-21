@@ -206,6 +206,22 @@ def _table(header, rows):
     return out
 
 
+def grid_hint(column, widths, box_width):
+    """看格子寬度猜是哪一種切錯。只用在身分證（固定 10 格）。"""
+    if column != "id_number" or not widths:
+        return ""
+    if len(widths) == 10:
+        return "格數對"
+    ordered = sorted(widths)
+    median = ordered[len(ordered) // 2]
+    widest = ordered[-1]
+    if median and widest >= median * 1.6:
+        return "有一格約 %.1f 倍寬，像是兩格黏在一起" % (float(widest) / median)
+    if box_width and sum(widths) < box_width * 0.75:
+        return "格子只佔框寬的 %d%%，框可能框到了格子以外的東西" % (100 * sum(widths) // box_width)
+    return "%d 格、寬度都差不多 —— 框可能沒框到整排格子" % len(widths)
+
+
 def build(journal, notes=None, version=None):
     """產生報告全文。notes 是承辦人自己寫的意見。"""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -386,6 +402,28 @@ def build(journal, notes=None, version=None):
                            "關鍵字", "整頁找", "採用"], rows))
     else:
         out.append("沒有資料。")
+
+    section("一字一格的欄位：格子切成怎樣")
+    out.append("每一格切出來幾個像素寬。身分證應該是 10 格、寬度差不多。")
+    out.append("格數不對的時候，看寬度就知道是哪一種：")
+    out.append("  有一格特別寬        兩格黏成一格 —— 中間那條格線沒找到")
+    out.append("  每格一樣寬但格數少  框沒框到整排格子，或框到了別的東西的直線")
+    out.append("")
+    rows = []
+    for record in journal.records:
+        for field in record["fields"]:
+            widths = field.get("cell_widths") or []
+            if not widths:
+                continue
+            rows.append([record["index"] + 1,
+                         fieldmod.COLUMNS.get(field["column"], field["column"]),
+                         len(widths), field.get("box_width", 0),
+                         " ".join(str(w) for w in widths),
+                         grid_hint(field["column"], widths, field.get("box_width", 0))])
+    if rows:
+        out.extend(_table(["件", "欄位", "格數", "框寬", "每格寬度", "看起來像"], rows))
+    else:
+        out.append("這一批沒有照格子切的欄位。")
 
     section("欄位統計")
     stats = {}

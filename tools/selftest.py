@@ -928,6 +928,10 @@ def check():
     problems.extend(_road_gap_tells_which_one())
     problems.extend(_failed_field_still_shows_up())
     problems.extend(_unread_char_is_marked())
+    problems.extend(_district_follows_the_road())
+    problems.extend(_grid_widths_in_report())
+    problems.extend(_printed_strip_is_cut_off())
+    problems.extend(_hard_cells_ignore_simplified())
     problems.extend(_only_the_first_letter_leaves_the_office())
     problems.extend(_missing_floor_word_is_filled_in())
     problems.extend(_version_number_follows_the_rule())
@@ -2304,6 +2308,275 @@ def _only_the_first_letter_leaves_the_office():
                  "路名_真值大觀_程式讀成4大觀_9f1a55.png"):
         if not process.safe_hard_name(fine):
             problems.append("該放行的檔名被擋掉了，等於這條線整個關掉：%s" % fine)
+    return problems
+
+
+def _printed_strip_is_cut_off():
+    """框的上緣壓到上一行的印刷字：切掉那一條；手寫的字不可以被切到。
+
+    承辦人 2026-10-21 的難字回報：C 表路名那一格每一張最上面都有一行印刷字，
+    辨識模型跟手寫的路名一起讀成「悦戒1」「纤政」。切掉之後那兩張讀對了。
+
+    門檻是照那批實際的圖量的（印刷字佔寬度 70～71%、切點在高度 13～15%）。
+    這裡用畫出來的圖檢查每一道關卡，負向驗證有四段 —— 每一段都是
+    「這種情形切下去會切到手寫」：
+      一、手寫寫得很高、下面整片空白（切點在 30% 以內）
+      二、手寫寫得很高、下面整片空白（切點超過 30%）
+      三、貼著上緣的只是窄窄一小塊（手寫的一筆，不是一行印刷字）
+      四、整行手寫從上到下都是字，上半部找不到空的那一列
+      五、印刷字跟手寫黏在一起，中間沒有空的一列
+    """
+    import numpy as np
+
+    from pipeline import recognise
+
+    problems = []
+    H, W = 164, 273
+
+    def blank():
+        return np.full((H, W), 255, np.uint8)
+
+    def printed_line(img, bottom=20, right=0.7):
+        # 一行印刷字：照實測，從左邊連續涵蓋到七成寬，裡面是細細的橫筆
+        img[0:bottom:3, 2:int(W * right)] = 0
+        img[0:bottom, 2:int(W * right):5] = 0
+
+    def handwriting(img, top=40, bottom=140, left=0.1, right=0.6):
+        # 手寫：幾個粗筆畫
+        x0, x1 = int(W * left), int(W * right)
+        for x in range(x0, x1, 30):
+            img[top:bottom, x:x + 4] = 0
+            img[(top + bottom) // 2:(top + bottom) // 2 + 4, x:x + 20] = 0
+
+    # 正向：上緣一行印刷字、下面隔一段空白才是手寫 → 切掉，手寫一筆都不少
+    img = blank(); printed_line(img); handwriting(img)
+    out = recognise.strip_printed_top(img)
+    cut = H - out.shape[0]
+    if not 20 <= cut <= 40:
+        problems.append("上緣那一行印刷字沒有切掉（切了 %d px）" % cut)
+    body = (img[40:] < 128).sum()
+    if (out < 128).sum() < body:
+        problems.append("切印刷字的時候把手寫也切掉了")
+
+    # 正向：手寫最上面一筆穿過印刷字下緣（實測「高職西」）→ 還是切在空的那一列，手寫保住
+    img = blank(); printed_line(img); handwriting(img)
+    img[12:45, 120:122] = 0
+    out = recognise.strip_printed_top(img)
+    if H - out.shape[0] < 20 or (out[:, 120:122] < 128).sum() < (img[40:, 120:122] < 128).sum():
+        problems.append("手寫有一筆穿過印刷字下緣時，切錯了位置")
+
+    # 負向一、二：手寫寫得很高、下面空白 → 一刀都不可以切
+    for bottom in (35, 60):
+        img = blank(); handwriting(img, top=0, bottom=bottom, left=0.02, right=0.98)
+        img[0:bottom, 2:int(W * 0.95)][::6, :] = 0
+        out = recognise.strip_printed_top(img)
+        if out.shape[0] != H:
+            problems.append("手寫寫在上面 %d px、下面空白，卻被切掉了 %d px —— 手寫整個不見"
+                            % (bottom, H - out.shape[0]))
+
+    # 負向三：貼著上緣的只是窄窄一小塊
+    img = blank(); printed_line(img, right=0.3); handwriting(img)
+    if recognise.strip_printed_top(img).shape[0] != H:
+        problems.append("上緣只有窄窄一小塊（像手寫的一筆），卻被當成印刷字切掉")
+
+    # 負向四：整行手寫從上到下都是字
+    img = blank(); handwriting(img, top=0, bottom=H, left=0.02, right=0.98)
+    img[:, 2:int(W * 0.95)][:, ::7] = 0
+    if recognise.strip_printed_top(img).shape[0] != H:
+        problems.append("整行都是手寫，卻被切掉了一截")
+
+    # 負向五：印刷字跟手寫黏在一起、中間沒有空的一列 → 怎麼切都會切到手寫，不切
+    img = blank(); printed_line(img)
+    img[15:140, int(W * 0.1):int(W * 0.9):4] = 0
+    if recognise.strip_printed_top(img).shape[0] != H:
+        problems.append("印刷字跟手寫黏在一起，卻還是切了 —— 切下去一定切到手寫")
+
+    # 上緣什麼都沒有
+    img = blank(); handwriting(img)
+    if recognise.strip_printed_top(img).shape[0] != H:
+        problems.append("上緣沒有東西，卻還是切了")
+
+    # 只用在整行讀的文字欄位；身分證、地號走格線，不可以動
+    from pipeline import process
+    if "id_number" in process.TEXT_KINDS or "land_number" in process.TEXT_KINDS:
+        problems.append("身分證／地號也會被切上緣 —— 它們的格線是照整個框對齊的")
+    if "address" not in process.TEXT_KINDS:
+        problems.append("門牌沒有切上緣 —— C 表路名就是在這裡出事的")
+    return problems
+
+
+def _hard_cells_ignore_simplified():
+    """難字回報不收「只是簡體字」的：門牌那一欄本來就會換回繁體，輸出是對的。
+
+    承辦人 2026-10-21 那一批裡有一張「路名首字_真值愛_程式讀成爱」——
+    簡繁對照表裡早就有「爱 → 愛」，門牌是對的，收進來只會害開發者白查。
+
+    負向驗證：真的讀錯的（「國中」讀成「动肿」）照樣要收。
+    """
+    import glob
+    import tempfile
+
+    import numpy as np
+
+    from pipeline import process
+
+    problems = []
+
+    class Road(object):
+        def __init__(self, saw):
+            self.cells, self.cell_text = {}, {}
+            self.road_cell = (np.zeros((60, 120), np.uint8), saw)
+            self.address_cell = None
+
+    work = tempfile.mkdtemp()
+    _folder, count = process.dump_hard_cells(
+        [Road("爱國")], [{"address": "愛國路5號"}], work)
+    if count:
+        problems.append("「爱國」換成繁體就是「愛國」，卻被當成讀錯收進難字回報")
+    _folder, count = process.dump_hard_cells(
+        [Road("动肿")], [{"address": "國中街5號"}], work)
+    if count != 1:
+        problems.append("「國中」讀成「动肿」是真的讀錯，難字回報卻沒收（%d 張）" % count)
+    _ = glob
+    return problems
+
+
+def _grid_widths_in_report():
+    """診斷報告要列出每一格切多寬，而且那一段**只有數字**。
+
+    C 表身分證一直切成 8 格，報告上只有「格數 8」，看不出是兩格黏在一起
+    還是框沒框好；裁切圖又含個資不能傳。寬度是純數字，可以外傳。
+
+    負向驗證：欄位內容（身分證號）不可以跑進這一段。
+    """
+    import re
+
+    from pipeline import diagnose
+
+    problems = []
+    journal = diagnose.Journal()
+    journal.records.append({
+        "index": 0, "code": "C", "file": "檔01", "page": 1, "sheets": {},
+        "fields": [{"column": "id_number", "kind": "id_number", "confidence": 0.5,
+                    "raw": "A999999999", "value": "A999999999", "problem": "",
+                    "cells": 8, "readings": {},
+                    "cell_widths": [30, 30, 61, 30, 30, 29, 31, 30], "box_width": 300}],
+    })
+    report = diagnose.build(journal)
+    if "格子切成怎樣" not in report:
+        return ["診斷報告沒有「格子切成怎樣」那一段"]
+    part = report.split("格子切成怎樣", 1)[1].split("【", 1)[0]
+    if "30 30 61 30" not in part:
+        problems.append("診斷報告沒有列出每一格的寬度")
+    if "黏在一起" not in part:
+        problems.append("有一格兩倍寬，報告卻沒說像是兩格黏在一起")
+    data_rows = [line for line in part.splitlines() if re.match(r"^\d+\s", line)]
+    for line in data_rows:
+        if re.search(r"[A-Za-z]\d{9}", line):
+            problems.append("格子寬度那一段漏出了身分證號：%s" % line)
+    return problems
+
+
+def _district_follows_the_road():
+    """行政區讀不出來就從路名推回來；讀得勉強、跟路名打架就照路名。
+
+    承辦人 2026-10-21：「行政區的部分不能從路名反推嗎?」第 5 件是反過來
+    出事：鶯歌區的「中正一路」被改成三峽區的「中正路」—— 行政區被猜成三峽
+    （讀成「新北市X區」、X 認不出來時，舊的比對每一區同分，安靜地挑了第一個），
+    路名再拿三峽的字典去「修正」。
+
+    負向驗證有五段：
+      一、「新北市X區」這種分不出來的，不可以再安靜地變成三峽區
+      二、路名兩區都有（中山路）的，推不回來就不推
+      三、改過字才對上的路名，不可以拿來改行政區（拿一個猜測證明另一個猜測）
+      四、行政區讀得很清楚、跟路名打架時不改，但一定要講出來
+      五、本來就一致的，一個字、一個提醒都不可以多
+    """
+    from pipeline import lexicon, process, validate
+
+    problems = []
+    groups = lexicon.builtin()
+    districts = ["三峽區", "鶯歌區"]
+
+    class _Stub(object):
+        pass
+
+    stub = _Stub()
+    stub.roads = groups
+    stub.districts = districts
+
+    def run(district_raw, address_raw):
+        record = process.Record("E", "x.pdf", 0)
+        value, problem = validate.district(district_raw, districts)
+        record.raw["district"] = district_raw
+        record.values["district"] = value
+        if problem:
+            record.problems["district"] = problem
+        roads = lexicon.for_district(groups, value)
+        avalue, aproblem = validate.address(address_raw, roads=roads)
+        record.raw["address"] = address_raw
+        record.values["address"] = avalue
+        if aproblem:
+            record.problems["address"] = aproblem
+        process.Converter._reconcile_district(stub, record)
+        return (record.values["district"], record.problems.get("district"),
+                record.values["address"], record.problems.get("address"))
+
+    # 負向一：分不出來就說分不出來
+    value, problem = validate.district("新北市X區", districts)
+    if not problem:
+        problems.append("「新北市X區」分不出是哪一區，卻安靜地判成了 %s" % value)
+
+    # 行政區沒讀出來 → 從路名推回來，而且要標記
+    for district_raw, address_raw, want, road in (
+            ("", "中正一路12號", "鶯歌區", "中正一路12號"),
+            ("新北市X區", "明圓街5號", "鶯歌區", "明圓街5號"),
+            ("", "中華路14號", "三峽區", "中華路14號")):
+        d, dnote, a, _anote = run(district_raw, address_raw)
+        if d != want or a != road:
+            problems.append("行政區「%s」＋門牌「%s」：應該推成 %s／%s，實際 %s／%s"
+                            % (district_raw, address_raw, want, road, d, a))
+        if not dnote:
+            problems.append("行政區是從路名推回來的（%s），卻沒有標記" % address_raw)
+
+    # 行政區讀得勉強（「峡區」只對到一個字）、路名只在另一區 → 照路名改，兩欄都要標記
+    d, dnote, a, _anote = run("峡區", "中正一路12號")
+    if d != "鶯歌區" or a != "中正一路12號" or not dnote:
+        problems.append("行政區讀得勉強時沒有照路名改：%s／%s／%s" % (d, a, dnote))
+
+    # 負向二：兩區都有的路名推不回來
+    d, dnote, _a, _anote = run("", "中山路12號")
+    if d:
+        problems.append("「中山路」兩區都有，卻推成了 %s" % d)
+
+    # 負向三：改過字才對上的路名，不可以拿來改行政區。
+    # （「鳳鳴街」→「鳳鳴路」不算改字：路／街是表格上印好、民眾圈的，字典本來
+    #   就不採信那個字，主體「鳳鳴」一字不差，所以可以拿來推；「高識西」→
+    #   「高職西」是真的改了一個字，不行。）
+    d, dnote, _a, _anote = run("", "鳳鳴街5號")
+    if d != "鶯歌區":
+        problems.append("「鳳鳴街」主體一字不差、只在鶯歌，卻沒有推回鶯歌區：%s" % d)
+    d, dnote, _a, _anote = run("", "高識西街5號")
+    if d:
+        problems.append("「高識西」是改成「高職西」才對上的，卻拿它推出了行政區 %s" % d)
+
+    # 負向四：行政區讀得清楚、跟路名打架 → 不改，但門牌要講出來
+    d, _dnote, _a, anote = run("新北市三峽區", "中正一路12號")
+    if d != "三峽區":
+        problems.append("行政區讀得很清楚，卻被路名改掉了：%s" % d)
+    if not anote or "鶯歌區" not in anote:
+        problems.append("行政區跟路名打架，門牌的提醒卻沒講出來：%s" % anote)
+
+    # 接線：上面都是直接叫 _reconcile_district，萬一轉換流程根本沒呼叫它，
+    # 上面全過、實際上一點用都沒有。
+    import inspect
+    if "self._reconcile_district(record)" not in inspect.getsource(process.Converter.read_document):
+        problems.append("轉換流程沒有呼叫 _reconcile_district，行政區永遠不會從路名推回來")
+
+    # 負向五：本來就一致的不可以多任何東西
+    d, dnote, a, anote = run("新北市鶯歌區", "中正一路12號")
+    if (d, dnote, a, anote) != ("鶯歌區", None, "中正一路12號", None):
+        problems.append("行政區跟路名本來就一致，卻被動到了：%r" % ((d, dnote, a, anote),))
     return problems
 
 
