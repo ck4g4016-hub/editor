@@ -122,6 +122,52 @@ def first_character(crop):
     return None
 
 
+def split_glyphs(crop, count):
+    """把一格裡的手寫數字拆成一個字一張。拆出來剛好 count 個才算數，否則回 None。
+
+    承辦人 2026-11-02：「我只要修改門牌的部分，就要把錯誤的字型變成難認字
+    輸出給你。」門牌號、巷、弄、樓以前一律不收，因為整格（例如「38」配上
+    路名）就是住址。**拆成單一個數字就不是了** —— 一個孤立的手寫「4」，
+    跟身分證的一格一樣，指不向任何人。
+
+    拆不準就不收：數字黏在一起、多了一點雜訊，拆出來的個數就會跟正確答案
+    的位數不一樣，那時候硬配會把「4」標成「1」，標錯的資料比沒有資料還糟。
+    """
+    if crop is None or not getattr(crop, "size", 0) or count < 1:
+        return None
+    grey = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    ink = grey < 128
+    height = ink.shape[0]
+    column = ink.sum(axis=0)
+    groups, start = [], None
+    for x, value in enumerate(column):
+        if value and start is None:
+            start = x
+        elif not value and start is not None:
+            groups.append((start, x))
+            start = None
+    if start is not None:
+        groups.append((start, len(column)))
+    # 很小的一點是雜訊（框線殘渣、墨點），不算一個字
+    glyphs = []
+    for left, right in groups:
+        piece = ink[:, left:right]
+        rows = np.where(piece.any(axis=1))[0]
+        tall = rows[-1] - rows[0] + 1 if len(rows) else 0
+        if tall < height * 0.25 and piece.sum() < height:
+            continue
+        glyphs.append((left, right, rows[0], rows[-1] + 1, tall))
+    if len(glyphs) != count:
+        return None
+    out = []
+    for left, right, top, bottom, tall in glyphs:
+        # 一個字不會比自己的高度寬太多；太寬就是兩個字黏在一起
+        if right - left > max(tall, 1) * 1.6:
+            return None
+        out.append(crop[top:bottom, left:right])
+    return out
+
+
 def only_the_road(text, segment_count):
     """這一格看起來是「只有路名」，還是「整串住址」？
 
@@ -171,6 +217,10 @@ class Record:
         # 門牌只框一個大框（E 表）時的整格影像與讀到的字。**整格含完整住址，
         # 絕對不會被送出去**；難字回報只從裡面切出最左邊那一個字。
         self.address_cell = None
+        # 門牌一格一框的表格（C、F、G）：每一格的 (影像, 讀到的字, 後綴)。
+        # **整格絕對不會被送出去** —— 難字回報只把巷、弄、號、樓那幾格
+        # 拆成「一個數字一張圖」才收（見 split_glyphs 與 dump_hard_cells）。
+        self.address_parts = []
         # 每一面的底圖對位品質：{"front": {"減版面": True, "對位": 0.87}}。
         # 減不掉的時候欄位是從**沒減過的原圖**上裁的，印刷的「段巷弄號樓」
         # 會跟手寫混在一起被讀進來 —— 那種讀出來的東西看起來就像 OCR 很爛，
@@ -751,6 +801,10 @@ class Converter:
                     and crop is not None and crop.size
                     and len(definition.segments()) == 1):
                 record.address_cell = (seen, text)
+            if (definition.column == "address" and definition.mode == fieldmod.FIXED
+                    and len(definition.segments()) > 1
+                    and seen is not None and getattr(seen, "size", 0)):
+                record.address_parts.append((seen, text, suffix))
             if text:
                 pieces.append(text + suffix)
                 scores.append(confidence)
@@ -985,6 +1039,37 @@ HARD_CELLS = "難字回報（可以傳給開發者）"
 # 門牌開頭的路街名。難字回報只拿它跟程式讀到的比對 —— 只收這一格。
 _ROAD_HEAD = re.compile(r"^([\u4e00-\u9fff]{1,8}(?:大道|[路街道]))")
 
+# 人複核完的門牌照文法拆成幾段，好跟一格一框的那幾格對起來。
+# 輸出的門牌一定長這樣（validate._ADDRESS_SHAPE），拆不開就不收。
+_ADDRESS_PARTS = re.compile(
+    r"^(?P<road>[\u4e00-\u9fff]{1,8}(?:大道|[路街道]))"
+    r"(?:(?P<sec>[一二三四五六七八九十]+)段)?"
+    r"(?:(?P<lane>\d+)巷)?"
+    r"(?:(?P<alley>\d+)弄)?"
+    r"(?P<no>\d+(?:之\d+)?)號"
+    r"(?:(?P<floor>[一二三四五六七八九十百]+)樓)?"
+    r"(?P<floorsub>之\d+)?$")
+
+# 一格一框的後綴 → 上面拆出來的哪一段。段名不收：段多半寫國字，
+# 一個國字跟一個阿拉伯數字的個數對不起來，標錯答案的機會太大。
+_SUFFIX_PART = {"巷": "lane", "弄": "alley", "號": "no", "樓": "floor"}
+
+_CHINESE_DIGIT = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+                  "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _floor_digits(text):
+    """十七 → "17"、二十 → "20"、五 → "5"。一百以上或看不懂就回空字串。"""
+    if not text or "百" in text:
+        return ""
+    if "十" not in text:
+        return str(_CHINESE_DIGIT[text]) if text in _CHINESE_DIGIT else ""
+    tens, _, ones = text.partition("十")
+    if (tens and tens not in _CHINESE_DIGIT) or (ones and ones not in _CHINESE_DIGIT):
+        return ""
+    return str((_CHINESE_DIGIT[tens] if tens else 1) * 10 + (_CHINESE_DIGIT[ones] if ones else 0))
+
+
 # 民眾在門牌那個大框裡先寫了行政區的話，最左邊那個字就不是路名的第一個字。
 _LEAD_IN_BOX = re.compile(r"^.{1,4}?[縣市區鄉鎮村里]")
 
@@ -1012,8 +1097,8 @@ def safe_hard_name(name):
         return False
     # 「真值」「程式讀成」「程式沒讀到」「程式分不出是」「路名」「首字」
     # 這些是固定的字樣，扣掉之後才是資料
-    for word in ("路名首字", "路名", "字母", "數字", "真值",
-                 "程式讀成", "程式沒讀到", "程式分不出是"):
+    for word in ("路名首字", "路名", "門牌數字", "字母", "數字", "真值",
+                 "程式讀成", "程式沒讀到", "程式分不出是", "整格沒讀對"):
         name = name.replace(word, "")
     chinese = sum(1 for char in name if "\u4e00" <= char <= "\u9fff")
     return chinese <= _NAME_MAX_CHINESE
@@ -1028,6 +1113,7 @@ _HARD_README = """\
     字母_真值F_程式讀成T_c4e810.png    第 1 碼（區域碼）讀錯
     路名_真值大觀_程式讀成4大觀_9f1a55.png  門牌的路名那一格讀錯
     路名首字_真值鳳_程式沒讀到_ab12cd.png   路名第一個字沒讀出來
+    門牌數字_真值4_程式讀成7_5e61f0.png    門牌的巷、弄、號、樓裡讀錯的那個數字
 
 「真值」是**你在複核畫面上改完、按下產生輸出檔的那個值**，所以是對的。
 程式就是靠這個才知道自己哪一格錯了。
@@ -1046,6 +1132,10 @@ _HARD_README = """\
   * 門牌只框一個大框的表格（E 表那種），整格就是整串住址，所以**整格
     不收**，只從最左邊切出一個字（檔名開頭是「路名首字」）。
     鶯歌的「鳳七路」跟「龍七路」分不出來，差的就是那一個字。
+  * 門牌的巷、弄、號、樓（一格一框的表格）**拆成一個數字一張**才收，
+    整格不收，也只收讀錯的那幾個位數。整格的「38」配上路名就是住址；
+    單獨一個「3」跟身分證的一格一樣，指不向任何人。數字黏在一起拆不準、
+    或寫了「之」的，整格不收 —— 寧可少收，也不要標錯答案。
   * 檔名寫出去之前再擋一次：只要檔名裡出現「號」「樓」「巷」「弄」，
     那一張就不寫。2026-09-22 真的外洩過一次整串住址，這一關是那次加的。
   * **不記第幾件、不記第幾格**，而且檔案順序是打亂的。哪幾個字屬於
@@ -1218,13 +1308,72 @@ def dump_hard_cells(records, rows, folder, numbers=None):
             continue
         head_pairs.append((want[0], note, piece))
 
-    if not pairs and not road_pairs and not head_pairs:
+    # ── 門牌一格一框：巷、弄、號、樓那幾格，拆成一個數字一張 ──────────
+    #
+    # 承辦人 2026-11-02：「我只要修改門牌的部分，就要把錯誤的字型變成難認字
+    # 輸出給你，不然每次手寫的部分都會錯一大堆。」
+    #
+    # **整格不收，只收拆開的單一個數字。** 整格「38」配上同一件的路名就是
+    # 住址；單獨一個「3」跟身分證的一格一樣，指不向任何人。而且跟身分證一樣
+    # 只收讀錯的那幾個位數、檔名不帶件號、順序打亂。
+    number_pairs = []
+    for position, row in enumerate(rows or ()):
+        index = None
+        if numbers and position < len(numbers):
+            try:
+                index = int(numbers[position]) - 1
+            except (TypeError, ValueError):
+                index = None
+        if index is None:
+            index = position
+        if not (0 <= index < len(records)):
+            continue
+        boxes = getattr(records[index], "address_parts", None) or []
+        if not boxes:
+            continue
+        found = _ADDRESS_PARTS.match((row.get("address") or "").strip())
+        if not found:
+            continue                   # 人改完的門牌拆不開，就不知道哪一格該是什麼
+        for crop, saw, suffix in boxes:
+            part = _SUFFIX_PART.get(suffix)
+            if not part or not found.group(part):
+                continue
+            want = found.group(part)
+            # 讀到的字照門牌那一欄的規則先整理過：全形換半形、像數字的英文字母
+            # 換成數字。整理完就對的，輸出本來就是對的，不算讀錯。
+            plain = "".join(_validate._LETTER_TO_DIGIT.get(ch, ch)
+                            for ch in _validate.to_halfwidth(saw or ""))
+            got = "".join(ch for ch in plain if ch.isdigit())
+            if part == "floor":
+                # 輸出的樓層是國字，手寫多半是阿拉伯數字。只有程式真的讀到
+                # 阿拉伯數字時才照數字拆；寫國字的話個數對不起來，不收。
+                if not got:
+                    continue
+                want = _floor_digits(want)
+                if found.group("floorsub"):
+                    continue           # 「十七樓之3」的之3 寫在哪一格不一定，不收
+            if not want.isdigit():
+                continue               # 「14之6」這種：之 寫成什麼樣子不一定，不收
+            if got == want:
+                continue               # 讀對了，不收
+            glyphs = split_glyphs(crop, len(want))
+            if glyphs is None:
+                continue               # 拆不準就不收
+            if len(got) == len(want):
+                wrong = [(i, "程式讀成%s" % got[i]) for i in range(len(want)) if got[i] != want[i]]
+            else:
+                wrong = [(i, "程式沒讀到" if not got else "整格沒讀對") for i in range(len(want))]
+            for i, note in wrong:
+                number_pairs.append((want[i], note, glyphs[i]))
+
+    if not pairs and not road_pairs and not head_pairs and not number_pairs:
         return None, 0
 
     # 打亂 —— 檔名裡沒有件號也沒有格號，順序是最後一個可能洩漏關聯的東西
     random.shuffle(pairs)
     random.shuffle(road_pairs)
     random.shuffle(head_pairs)
+    random.shuffle(number_pairs)
 
     target = os.path.join(folder, HARD_CELLS)
     os.makedirs(target, exist_ok=True)
@@ -1245,6 +1394,16 @@ def dump_hard_cells(records, rows, folder, numbers=None):
             written += 1
     for want, saw, cell in head_pairs:
         name = "路名首字_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
+        if safe_hard_name(name) and _resources.imwrite(
+                os.path.join(target, name), cell):
+            written += 1
+    for want, saw, cell in number_pairs:
+        # 最後再擋一次：真值只能是一個數字、圖只能是一個字的寬度。
+        # 任何一條不對就不寫 —— 這裡寫出去的是門牌的一部分。
+        height, width = cell.shape[:2]
+        if len(want) != 1 or not want.isdigit() or width > height * 1.6:
+            continue
+        name = "門牌數字_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
         if safe_hard_name(name) and _resources.imwrite(
                 os.path.join(target, name), cell):
             written += 1

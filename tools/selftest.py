@@ -930,6 +930,7 @@ def check():
     problems.extend(_unread_char_is_marked())
     problems.extend(_district_follows_the_road())
     problems.extend(_grid_widths_in_report())
+    problems.extend(_house_numbers_go_out_as_single_digits())
     problems.extend(_printed_strip_is_cut_off())
     problems.extend(_hard_cells_ignore_simplified())
     problems.extend(_only_the_first_letter_leaves_the_office())
@@ -2438,6 +2439,133 @@ def _hard_cells_ignore_simplified():
     if count != 1:
         problems.append("「國中」讀成「动肿」是真的讀錯，難字回報卻沒收（%d 張）" % count)
     _ = glob
+    return problems
+
+
+def _house_numbers_go_out_as_single_digits():
+    """門牌的巷、弄、號、樓讀錯了，拆成一個數字一張收進難字回報；整格不收。
+
+    承辦人 2026-11-02：「我只要修改門牌的部分，就要把錯誤的字型變成難認字
+    輸出給你，不然每次手寫的部分都會錯一大堆。」
+
+    以前這幾格一律不收，因為整格（「38」）配上同一件的路名就是住址。
+    拆成單一個數字就跟身分證的一格一樣，指不向任何人。
+
+    負向驗證有六段，每一段都是「寧可不收，也不要收錯或收到住址」：
+      一、讀對的不收
+      二、數字黏在一起、拆出來的個數跟答案位數不同 → 整格不收（硬配會標錯）
+      三、「14之6」這種帶「之」的不收
+      四、樓層寫國字（程式沒讀到阿拉伯數字）不收 —— 個數對不起來
+      五、檔名裡不可以有 號樓巷弄之段，真值只能是一個數字
+      六、圖不可以是整格（寬度超過一個字）
+    """
+    import glob
+    import os
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    from pipeline import process
+
+    problems = []
+    rng = np.random.RandomState(7)
+
+    def box(digits, gap=14, touching=False):
+        """畫一格手寫風格的數字：草寫字型、隨機粗細與傾斜。"""
+        pieces = []
+        for ch in digits:
+            img = np.full((80, 60), 255, np.uint8)
+            cv2.putText(img, ch, (8, 62), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX, 2.0, 0,
+                        int(rng.randint(3, 6)), cv2.LINE_AA)
+            shear = np.float32([[1, rng.uniform(-0.2, 0.2), 0], [0, 1, 0]])
+            img = cv2.warpAffine(img, shear, (60, 80), borderValue=255)
+            cols = np.where((img < 128).any(axis=0))[0]
+            pieces.append(img[:, cols[0]:cols[-1] + 1])
+        spacer = np.full((80, 0 if touching else gap), 255, np.uint8)
+        joined = [np.full((80, 10), 255, np.uint8)]
+        for piece in pieces:
+            joined += [piece, spacer]
+        if touching:
+            joined = [np.full((80, 10), 255, np.uint8),
+                      np.hstack([pieces[0][:, :-3], pieces[1]]) if len(pieces) == 2
+                      else np.hstack(pieces)]
+            cv2.line(joined[1], (pieces[0].shape[1] - 8, 40), (pieces[0].shape[1] + 6, 40), 0, 4)
+        return np.hstack(joined + [np.full((80, 10), 255, np.uint8)])
+
+    # split_glyphs 本身：拆得開的要拆對個數，拆不準的回 None
+    for digits in ("14", "38", "2", "105", "1217"):
+        got = process.split_glyphs(box(digits), len(digits))
+        if got is None or len(got) != len(digits):
+            problems.append("「%s」拆不成 %d 個字" % (digits, len(digits)))
+    if process.split_glyphs(box("14", touching=True), 2) is not None:
+        problems.append("兩個數字黏在一起，卻還是硬拆成兩個")
+    if process.split_glyphs(box("14"), 3) is not None:
+        problems.append("只有兩個字，卻配成三個 —— 會把答案標錯")
+
+    class Fake(object):
+        def __init__(self, parts):
+            self.cells, self.cell_text = {}, {}
+            self.road_cell = None
+            self.address_cell = None
+            self.address_parts = parts
+
+    def dump(parts, address):
+        work = tempfile.mkdtemp()
+        folder, count = process.dump_hard_cells([Fake(parts)], [{"address": address}], work)
+        names = [os.path.basename(f) for f in glob.glob(os.path.join(folder or work, "*.png"))]
+        return count, names, folder
+
+    # 正向：號那一格「14」讀成「17」→ 只收讀錯的那個「4」
+    count, names, _folder = dump([(box("14"), "17", "號")], "中正一路14號")
+    if count != 1 or not any("真值4_程式讀成7" in n for n in names):
+        problems.append("號「14」讀成「17」，應該只收「4」那一張：%s" % names)
+
+    # 正向：整格沒讀到 → 兩個數字都收，標「程式沒讀到」
+    count, names, _folder = dump([(box("38"), "", "巷")], "中正一路38巷14號")
+    if count != 2 or not all("程式沒讀到" in n for n in names):
+        problems.append("巷「38」完全沒讀到，應該收兩張：%s" % names)
+
+    # 正向：樓層讀到阿拉伯數字（輸出是國字「十七」）→ 照 17 拆
+    count, names, _folder = dump([(box("17"), "11", "樓")], "中正一路14號十七樓")
+    if count != 1 or not any("真值7_程式讀成1" in n for n in names):
+        problems.append("樓「17」讀成「11」，應該只收「7」那一張：%s" % names)
+
+    # 負向一：讀對的不收（I4 照門牌規則就是 14）
+    count, _names, _folder = dump([(box("14"), "I4", "號")], "中正一路14號")
+    if count:
+        problems.append("「I4」照門牌的規則就是 14，輸出是對的，卻被收進難字回報")
+
+    # 負向二：黏在一起拆不準 → 整格不收
+    count, names, _folder = dump([(box("14", touching=True), "1", "號")], "中正一路14號")
+    if count:
+        problems.append("數字黏在一起拆不準，卻還是收了：%s" % names)
+
+    # 負向三：帶「之」的不收
+    # （畫成「14-6」四個字形：沒有這一關的話會拆成四個、照「14之6」逐字配下去）
+    count, _names, _folder = dump([(box("14-6"), "1", "號")], "中正一路14之6號")
+    if count:
+        problems.append("「14之6」帶「之」，卻收了")
+
+    # 負向四：樓層寫國字（沒讀到阿拉伯數字）不收
+    count, _names, _folder = dump([(box("17"), "十七", "樓")], "中正一路14號十七樓")
+    if count:
+        problems.append("樓層看起來是寫國字，個數對不起來，卻收了")
+
+    # 負向五、六：所有收進去的檔名與圖都要過關
+    count, names, folder = dump([(box("38"), "", "巷"), (box("2"), "", "弄"),
+                                 (box("14"), "", "號")], "中正一路38巷2弄14號")
+    for name in names:
+        if any(ch in name for ch in "號樓巷弄之段"):
+            problems.append("檔名裡出現了門牌的結構字：%s" % name)
+        truth = name.split("_")[1].replace("真值", "")
+        if name.startswith("門牌數字") and (len(truth) != 1 or not truth.isdigit()):
+            problems.append("門牌數字的真值不是一個數字：%s" % name)
+        img = cv2.imread(os.path.join(folder, name), cv2.IMREAD_GRAYSCALE) if folder else None
+        if img is not None and img.shape[1] > img.shape[0] * 1.6:
+            problems.append("收進去的圖比一個字寬，可能是整格：%s" % name)
+    if count != 5:
+        problems.append("三格（巷38、弄2、號14）都沒讀到，應該收 5 張，實際 %d 張" % count)
     return problems
 
 
