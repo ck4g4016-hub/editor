@@ -250,6 +250,23 @@ def build(journal, notes=None, version=None):
         out.append("")
         out.append("排除不輸出：第 %s 件（人在複核畫面上按的，值沒有被程式改過）"
                    % "、".join(str(n) for n in excluded))
+    # 手動輸入的件不在下面任何一張表裡（沒有原圖、沒有辨識），而且可以插在
+    # 中間 —— 插了之後畫面上的件號會往後推，跟下面表格的件號對不起來。
+    # 寫明白，開發者看到「第 5 件」才知道是哪一個 5。
+    manual = []
+    for item in notes.get("manual") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            spot = str(int(item.get("number")))
+        except (TypeError, ValueError):
+            spot = "?"
+        manual.append((spot, (item.get("text") or "").strip()))
+    if manual:
+        out.append("")
+        out.append("手動輸入：畫面上第 %s 件（沒有原圖，不在下面的表格裡）。"
+                   "這份報告裡其他的件號都是辨識時的順序，不算手動輸入的件。"
+                   % "、".join(spot for spot, _text in manual))
     per_record = notes.get("records") or {}
     if per_record:
         out.append("")
@@ -270,6 +287,9 @@ def build(journal, notes=None, version=None):
                 out.append("第 %d 件：%s" % (int(key) + 1, text))
             except (TypeError, ValueError):
                 out.append("%s：%s" % (mask(str(key)), text))
+    for spot, text in manual:
+        if text:
+            out.append("手動輸入（畫面第 %s 件）：%s" % (spot, text))
 
     section("環境")
     out.append("程式版本    %s" % (version or "不明"))

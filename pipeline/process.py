@@ -562,26 +562,31 @@ class Converter:
                         definition.column, "這一件沒有掃到背面，讀不到這一欄")
                 continue
 
-            ordered = sorted(wanted, key=lambda d: 0 if d.kind == "district" else 1)
-            by_label = [d for d in ordered if d.mode == fieldmod.LABEL]
-            by_box = [d for d in ordered if d.mode != fieldmod.LABEL]
-
-            if by_label:
-                # 關鍵字欄位讀的是原始頁面，不是減掉版面之後的影像 ——
-                # 要找的就是印刷的標籤，減掉版面等於把要找的東西擦掉。
-                lines, rules = pagetext.read_page(
-                    page.source, page.index, front.rotation)
-                for definition in by_label:
+            # 整頁的文字和減掉版面的影像都很花時間，用到才做、只做一次。
+            # 以前是「關鍵字欄位全部讀完，再讀框選欄位」，於是 B 表那種門牌
+            # 用關鍵字、行政區用框選的，讀門牌的時候還不知道是哪一區，只好
+            # 拿兩區合起來的字典去對 —— 三峽的「國際一街」和鶯歌的「國際一路」
+            # 就撞在一起，跳出「字典裡兩條都有」的提醒（承辦人 2026-11-03：
+            # 「三峽才有國際一街，國際一路在鶯歌。」）。行政區不管用哪一種方式
+            # 讀，一律最先讀，見 reading_order。
+            lines = rules = None
+            sheet = grid = None
+            for definition in reading_order(wanted):
+                if definition.mode == fieldmod.LABEL:
+                    if lines is None:
+                        # 關鍵字欄位讀的是原始頁面，不是減掉版面之後的影像 ——
+                        # 要找的就是印刷的標籤，減掉版面等於把要找的東西擦掉。
+                        lines, rules = pagetext.read_page(
+                            page.source, page.index, front.rotation)
                     self._read_label_field(record, definition, lines, rules)
-
-            if by_box:
-                _, sheet, base, quality = self.sheet_of(
-                    code, page, role, front.rotation)
-                record.sheets[role] = quality
-                # 找格線用加粗過的那張（沒有就自動退回 base）。它只拿來找
-                # 格線，切字讀字用的還是 sheet —— 相減那一步完全沒動到。
-                grid = self.grid_of(code, role) if base is not None else None
-                for definition in by_box:
+                else:
+                    if sheet is None:
+                        _, sheet, base, quality = self.sheet_of(
+                            code, page, role, front.rotation)
+                        record.sheets[role] = quality
+                        # 找格線用加粗過的那張（沒有就自動退回 base）。它只拿來找
+                        # 格線，切字讀字用的還是 sheet —— 相減那一步完全沒動到。
+                        grid = self.grid_of(code, role) if base is not None else None
                     self._read_field(record, sheet, definition, keep_crops, grid)
 
         # 公文文號**一律**整頁找，不管樣板有沒有定義這一欄。
@@ -1158,7 +1163,45 @@ _HARD_README = """\
 """
 
 
-def dump_hard_cells(records, rows, folder, numbers=None):
+def reading_order(definitions):
+    """同一面的欄位要照什麼順序讀。
+
+    行政區一定最先，**不管它是框選還是關鍵字**：門牌的路名字典、地段的
+    字典都是分區的，不知道哪一區就只能拿兩區合起來的去對，三峽的
+    「國際一街」跟鶯歌的「國際一路」、三峽的「仁愛街」跟鶯歌的「仁愛路」
+    就分不出來。其餘的照樣板裡的順序（sorted 是穩定排序）。
+    """
+    return sorted(definitions, key=lambda d: 0 if d.kind == "district" else 1)
+
+
+def _row_source(records, position, numbers=None, origins=None):
+    """匯出的第 position 列是 records 裡的哪一件；找不到就回 None。
+
+    有 origins 就只信它：手動輸入的件可以插在中間，插了之後畫面序號減一
+    就不再是清單位置。拿序號去找，會把人改好的身分證拿去跟**別件**的原圖
+    比，存出一堆「真值」是錯的圖 —— 那比沒存更糟。所以 origins 裡是 None
+    （手動輸入）或不是整數的，一律跳過，不猜。
+
+    沒給 origins 是舊版畫面送來的，才退回用序號推。
+    """
+    if origins is not None:
+        origin = origins[position] if position < len(origins) else None
+        if isinstance(origin, bool) or not isinstance(origin, int):
+            return None
+        index = origin
+    else:
+        index = None
+        if numbers and position < len(numbers):
+            try:
+                index = int(numbers[position]) - 1
+            except (TypeError, ValueError):
+                index = None
+        if index is None:
+            index = position
+    return index if 0 <= index < len(records) else None
+
+
+def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
     """把「程式讀錯的那幾格」存成一個字一張圖，檔名帶正確答案。
 
     承辦人 2026-09-22：「診斷的部分你會加一份某字辨識不出來嗎？然後我再
@@ -1171,6 +1214,8 @@ def dump_hard_cells(records, rows, folder, numbers=None):
     二是十格全收等於把整個身分證號搬出去（雖然打亂了，但一天就那幾件，
     憑筆跡拼得回來）。只收錯的那一兩格，缺了其他八格，湊不回任何人的號碼。
 
+    origins 是每一列對應 records 的哪一件（手動輸入的是 None），見 _row_source。
+
     回傳 (資料夾, 寫出幾張)。
     """
     import random
@@ -1180,15 +1225,8 @@ def dump_hard_cells(records, rows, folder, numbers=None):
 
     pairs = []
     for position, row in enumerate(rows or ()):
-        index = None
-        if numbers and position < len(numbers):
-            try:
-                index = int(numbers[position]) - 1
-            except (TypeError, ValueError):
-                index = None
+        index = _row_source(records, position, numbers, origins)
         if index is None:
-            index = position
-        if not (0 <= index < len(records)):
             continue
         record = records[index]
         truth = (row.get("id_number") or "").strip().upper()
@@ -1230,15 +1268,8 @@ def dump_hard_cells(records, rows, folder, numbers=None):
     # 上面身分證那一段已經在收了。
     road_pairs = []
     for position, row in enumerate(rows or ()):
-        index = None
-        if numbers and position < len(numbers):
-            try:
-                index = int(numbers[position]) - 1
-            except (TypeError, ValueError):
-                index = None
+        index = _row_source(records, position, numbers, origins)
         if index is None:
-            index = position
-        if not (0 <= index < len(records)):
             continue
         record = records[index]
         # getattr：這一段是附加功能，遇到形狀不一樣的紀錄就跳過，
@@ -1270,15 +1301,8 @@ def dump_hard_cells(records, rows, folder, numbers=None):
     # 是公開資訊，指不向任何人；門牌號、樓層一個都不會進到圖裡。
     head_pairs = []
     for position, row in enumerate(rows or ()):
-        index = None
-        if numbers and position < len(numbers):
-            try:
-                index = int(numbers[position]) - 1
-            except (TypeError, ValueError):
-                index = None
+        index = _row_source(records, position, numbers, origins)
         if index is None:
-            index = position
-        if not (0 <= index < len(records)):
             continue
         record = records[index]
         cell = getattr(record, "address_cell", None)
@@ -1318,15 +1342,8 @@ def dump_hard_cells(records, rows, folder, numbers=None):
     # 只收讀錯的那幾個位數、檔名不帶件號、順序打亂。
     number_pairs = []
     for position, row in enumerate(rows or ()):
-        index = None
-        if numbers and position < len(numbers):
-            try:
-                index = int(numbers[position]) - 1
-            except (TypeError, ValueError):
-                index = None
+        index = _row_source(records, position, numbers, origins)
         if index is None:
-            index = position
-        if not (0 <= index < len(records)):
             continue
         boxes = getattr(records[index], "address_parts", None) or []
         if not boxes:

@@ -31,8 +31,7 @@
   .badge.review{background:#f6e6e6;color:var(--accent)}
   .badge.hand{background:#eae6f2;color:#5b4a86}
   .rec.hand > .head{background:#f6f4fa}
-  /* 排除掉的件不刪除、只變灰 —— 序號要維持不動（原圖是照序號跟後端要的），
-     而且人要看得到自己排除了哪一件，隨時能反悔。 */
+  /* 排除掉的件不刪除、只變灰 —— 人要看得到自己排除了哪一件，隨時能反悔。 */
   .rec.out{opacity:.55}
   .rec.out > .head{background:#f1efe9}
   .badge.out{background:#eceae4;color:var(--soft)}
@@ -40,6 +39,26 @@
   .outbar{grid-column:1/-1;padding:9px 14px;background:#f1efe9;font-size:12.5px;
           color:var(--soft);border-bottom:1px solid #f0ece2}
   .rec > .head .grow{flex:1}
+  /* 手動那一件可以拖到任何位置。只有握把可以拖 —— 整張卡片都能拖的話，
+     人在輸入框裡選字會變成把整件拖走。 */
+  .grip{cursor:grab;user-select:none;padding:2px 8px;border:1px dashed #b9a9d6;
+        border-radius:5px;color:#5b4a86;font-size:12.5px;background:#fff}
+  .grip:active{cursor:grabbing}
+  .rec > .head select{font:inherit;font-size:12.5px;padding:3px 4px;border:1px solid var(--line);
+        border-radius:5px;background:#fff}
+  .rec > .head button.ins{border-style:dashed;color:var(--soft)}
+  .peek{display:none;color:var(--soft);font-size:12.5px}
+  /* 拖曳的時候每一件只留標題列，一頁看得到整批，才拖得到遠處去。
+     卡片原本很高（有原圖），不收起來的話要拖過二十張卡片才到得了。 */
+  body.dragging .rec .fields{display:none}
+  body.dragging .rec{margin-bottom:6px}
+  /* 收起來之後頁面變短，靠近底部的件捲不回游標底下；墊一整個畫面高的空白 */
+  body.dragging main{padding-bottom:100vh}
+  body.dragging .peek{display:inline}
+  body.dragging .rec.moving{outline:2px dashed #5b4a86}
+  .rec.drop-before{box-shadow:0 -4px 0 0 #5b4a86}
+  .rec.drop-after{box-shadow:0 4px 0 0 #5b4a86}
+  .rec.moved{outline:3px solid #b9a9d6;transition:outline-color 1.5s}
   .rec > .head button{padding:4px 10px;font-size:12.5px}
   .fields{display:grid;grid-template-columns:1fr 1fr;gap:0}
   .fld{padding:11px 14px;border-bottom:1px solid #f0ece2;border-right:1px solid #f0ece2}
@@ -141,7 +160,10 @@ const el = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let data = null;
-const notes = {};   // 每一件的意見，鍵是件的序號
+/* 每一件的意見。鍵是那一件**自己的代號**（uid），不是畫面上的位置 ——
+   手動的件可以拖到中間，位置一動，照位置存的意見就會貼到別人身上。 */
+const notes = {};
+let manualSeq = 0;
 
 /* 這幾欄整列放大顯示。手寫的字機器讀不準，人要看著原圖打。 */
 const WIDE = new Set(['id_number', 'address']);
@@ -156,6 +178,9 @@ const DEAD = '複核程式已經不在了，所以這一頁失效了。\n\n'
 
 async function load(){
   data = await (await fetch(api('api/records'))).json();
+  // origin 是這一件在後端清單裡的位置，原圖要照它去要（api/crop?record=N），
+  // 跟它現在排在畫面第幾件無關。手動的件插到前面之後，兩者就不一樣了。
+  data.records.forEach((r, i) => { r.origin = i; r.uid = 'r' + i; });
   render();
 }
 
@@ -165,22 +190,66 @@ async function load(){
    一年遇到兩三次的表格，為它建樣板、湊三份底稿、框十個欄位，划不來 ——
    直接照著紙本打進來，跟辨識出來的一起輸出，是比較實際的做法。
 
-   手動的件放在最後面，所以辨識出來那幾件的序號不會被推移 ——
-   每一件的意見（notes）是照序號存的，序號一動，意見就會貼到別人身上。 */
-function addManual(){
-  data.records.push({
+   以前手動的件一律排在最後面，因為原圖和意見都是照位置對的，插在中間
+   會讓後面每一件錯開。承辦人 2026-11-03：「手動加一件的部分我要改成可以
+   拖曳插入任一順序，這樣比較不會讓整體順序亂掉。」—— 輸出檔的順序就是
+   畫面的順序，手動那件被擠到最後，跟紙本那疊的順序就對不起來了。
+
+   現在每一件都帶著自己的代號：原圖照 origin 要、意見照 uid 存，
+   所以手動的件放在哪裡都不會動到別件。 */
+function newManual(){
+  manualSeq += 1;
+  return {
     source: '手動輸入（沒有原圖可以對照）',
     values: {}, raw: {}, flags: {}, crops: [], manual: true,
-  });
-  render();
-  const last = el('list').lastElementChild;
-  if (last){
-    last.scrollIntoView({behavior: 'smooth', block: 'center'});
-    const first = last.querySelector('input');
-    if (first) first.focus();
-  }
-  el('msg').textContent = '已加一件空白的，照著紙本填進去就好';
+    origin: null, uid: 'm' + manualSeq,
+  };
+}
+
+function addManual(){
+  insertManual(data.records.length);
+  el('msg').textContent = '已在最後面加一件空白的。要換位置就按住「⠿ 拖曳」拖過去，'
+      + '或用「移到第幾件」選';
   el('msg').className = '';
+}
+
+/* 在 position 這個位置插一件空白的手動輸入（0 是最前面）。 */
+function insertManual(position){
+  const record = newManual();
+  data.records.splice(position, 0, record);
+  render();
+  focusRecord(record.uid, true);
+  el('msg').textContent = `已在第 ${position + 1} 件插一件空白的，照著紙本填進去就好`;
+  el('msg').className = '';
+}
+
+/* 把第 from 件移到第 to 件（都從 0 起算，to 是移完之後它所在的位置）。
+   只有手動的件可以移：辨識出來的件是照檔名、頁碼排的，那就是紙本的順序，
+   讓它們也能拖，多的只是不小心拖亂的機會。 */
+function moveRecord(from, to){
+  const record = data.records[from];
+  if (!record || !record.manual) return;
+  to = Math.max(0, Math.min(data.records.length - 1, to));
+  if (to === from) return;
+  data.records.splice(from, 1);
+  data.records.splice(to, 0, record);
+  render();
+  focusRecord(record.uid, false);
+  el('msg').textContent = `手動輸入的那一件已經移到第 ${to + 1} 件`;
+  el('msg').className = '';
+}
+
+/* 移動或插入之後把那一件捲到眼前，閃一下框，不然人不知道它跑去哪了。 */
+function focusRecord(uid, typeInto){
+  const card = el('list').querySelector(`.rec[data-uid="${uid}"]`);
+  if (!card) return;
+  card.scrollIntoView({behavior: 'smooth', block: 'center'});
+  card.classList.add('moved');
+  setTimeout(() => card.classList.remove('moved'), 1500);
+  if (typeInto){
+    const first = card.querySelector('input');
+    if (first) first.focus({preventScroll: true});
+  }
 }
 
 /* 辨識出來的件：**排除，不刪除**。
@@ -189,10 +258,10 @@ function addManual(){
    然後我覺得應該要加一個刪除功能來應對這種狀況。」掃錯的紙、重複掃到的
    同一件，留在輸出檔裡就會被 RPA 拿去查調，確實要能拿掉。
 
-   但是**不能真的從清單裡刪掉**，原因有兩個，都是踩過的：
-     一、原圖是用序號跟後端要的（api/crop?record=N），前面少一件，
-         後面每一件的原圖就全部對到別人身上。
-     二、意見也是照序號存的，序號一動，寫給第 5 件的意見會貼到第 6 件。
+   但是**不從清單裡刪掉**。現在原圖和意見都改成照每一件自己的代號對，
+   刪掉也不會錯開了；留著是因為人要看得到自己排除了哪一件 ——
+   以前原圖是照位置要的，前面少一件，後面每一件的原圖就全部對到
+   別人身上，那時候不刪是不得已，現在不刪是為了看得到。
 
    所以改成標記起來：件還在原位、序號不動，只是不寫進輸出檔，
    畫面上灰掉並且寫明白，隨時可以按「放回去」反悔。
@@ -204,15 +273,12 @@ function toggleDrop(index){
   render();
 }
 
-/* 只有手動加的可以真的刪掉 —— 它沒有原圖，而且一律排在最後面，
-   所以刪掉不會動到辨識出來那幾件的序號。 */
+/* 只有手動加的可以真的刪掉 —— 它沒有原圖，是人自己打的，刪了重打就好。
+   意見照代號存，所以後面那幾件的意見不用跟著搬。 */
 function dropManual(index){
   if (!data.records[index] || !data.records[index].manual) return;
-  data.records.splice(index, 1);
-  delete notes[index];
-  for (let k = index + 1; k <= data.records.length; k++){
-    if (k in notes){ notes[k - 1] = notes[k]; delete notes[k]; }
-  }
+  const [gone] = data.records.splice(index, 1);
+  delete notes[gone.uid];
   render();
 }
 
@@ -251,7 +317,7 @@ function render(){
     const cells = data.columns.map(c => {
       const flag = r.flags[c.key];
       const crop = !r.manual && r.crops.includes(c.key)
-        ? `<img src="${api(`api/crop?record=${i}&column=${c.key}`)}" alt=""
+        ? `<img src="${api(`api/crop?record=${r.origin}&column=${c.key}`)}" alt=""
                 data-zoom="${esc(c.name)}">
            <div class="zoomhint">點圖片可放大</div>` : '';
       const raw = (r.raw[c.key] && r.raw[c.key] !== r.values[c.key])
@@ -275,10 +341,27 @@ function render(){
       : r.manual
       ? '<span class="badge hand">手動輸入</span>'
       : `<span class="badge ${bad ? 'review' : 'ok'}">${bad ? bad + ' 個欄位要看' : '通過'}</span>`;
+    const total = data.records.length;
+    const place = r.manual
+      ? `<span class="grip" draggable="true" data-grip="${i}"
+              title="按住拖到要的位置，放開就插進去">⠿ 拖曳</span>
+         <select data-move="${i}" title="直接選要排在第幾件">${
+           Array.from({length: total}, (_, k) =>
+             `<option value="${k}" ${k === i ? 'selected' : ''}>移到第 ${k + 1} 件</option>`
+           ).join('')}</select>` : '';
     const drop = r.manual
       ? `<span class="grow"></span><button data-drop="${i}">刪掉這一件</button>`
       : `<span class="grow"></span><button data-out="${i}">${
            r.dropped ? '放回去，要輸出' : '這一件不要輸出'}</button>`;
+    // 每一件下面都能直接插一件手動的，免得加在最後再一路拖上來
+    const insert = `<button class="ins" data-insert="${i + 1}"
+                      title="在這一件的下面插一件空白的手動輸入">下面插一件</button>`;
+    // 前面插了手動的件之後，畫面上的件號會往後推，但診斷報告的表格
+    // 用的是辨識時的件號。兩個不一樣的時候寫出來，對照報告才找得到。
+    const origin = (!r.manual && r.origin !== i)
+      ? `　辨識時是第 ${r.origin + 1} 件` : '';
+    const peek = [r.values.name, r.values.doc_number, r.values.address]
+        .filter(Boolean).map(esc).join('　');
     // 排除掉的件為什麼還留在畫面上，要講清楚，不然人會以為沒按成功
     const outnote = r.dropped
       ? `<div class="outbar">這一件<b>不會</b>寫進輸出檔。件還留在畫面上、序號也不動，
@@ -290,14 +373,17 @@ function render(){
          </label></div>` : '';
     const say = `<div class="say">
       <label>這一件有什麼問題？（會寫進診斷報告，不影響輸出檔）</label>
-      <textarea data-note="${i}" rows="1"
-        placeholder="例如：門牌抓到上面那一格的內容">${esc(notes[i] || '')}</textarea></div>`;
-    return `<div class="rec ${r.manual ? 'hand' : ''} ${r.dropped ? 'out' : ''}">
+      <textarea data-note="${esc(r.uid)}" rows="1"
+        placeholder="例如：門牌抓到上面那一格的內容">${esc(notes[r.uid] || '')}</textarea></div>`;
+    return `<div class="rec ${r.manual ? 'hand' : ''} ${r.dropped ? 'out' : ''}"
+                 data-index="${i}" data-uid="${esc(r.uid)}">
       <div class="head">
         <span class="who">第 ${i + 1} 件</span>
         ${badge}
-        <span class="src">${esc(r.source)}</span>
-        ${drop}
+        ${place}
+        <span class="src">${esc(r.source)}${origin}</span>
+        <span class="peek">${peek}</span>
+        ${drop}${insert}
       </div>
       <div class="fields">${outnote}${handnote}${cells}${say}</div></div>`;
   }).join('');
@@ -310,14 +396,30 @@ function render(){
     btn.addEventListener('click', () => toggleDrop(+btn.dataset.out));
   });
 
+  el('list').querySelectorAll('button[data-insert]').forEach(btn => {
+    btn.addEventListener('click', () => insertManual(+btn.dataset.insert));
+  });
+
+  el('list').querySelectorAll('select[data-move]').forEach(box => {
+    box.addEventListener('change', () => moveRecord(+box.dataset.move, +box.value));
+  });
+
+  el('list').querySelectorAll('[data-grip]').forEach(grip => {
+    grip.addEventListener('dragstart', event => startDrag(event, +grip.dataset.grip));
+    grip.addEventListener('dragend', endDrag);
+  });
+
   el('list').querySelectorAll('textarea[data-note]').forEach(box => {
-    box.addEventListener('input', () => { notes[+box.dataset.note] = box.value; });
+    box.addEventListener('input', () => { notes[box.dataset.note] = box.value; });
   });
 
   el('list').querySelectorAll('input').forEach(input => {
     const save = () => {
       data.records[+input.dataset.rec].values[input.dataset.col] = input.value;
     };
+    // 邊打邊存，不等離開輸入框。打到一半就去拖曳、插一件，畫面會整個重畫，
+    // 只在 change 時存的話，剛打的那幾個字會不見。
+    input.addEventListener('input', save);
     input.addEventListener('change', save);
     if (input.dataset.col === 'id_number'){
       // 邊打邊驗檢查碼。打完第 10 碼就知道對不對，不必等產生輸出檔 ——
@@ -346,6 +448,83 @@ function render(){
   });
 }
 
+/* 拖曳。
+
+   拖的時候把每一件收成只剩標題列（body.dragging），整批一頁看得完；
+   標題列上會多顯示姓名、文號、門牌，認得出要插在哪兩件之間。
+   放開的位置用滑鼠在那張卡片的上半或下半決定：上半插在它前面，下半插在後面。 */
+let dragFrom = null;
+let dropSlot = null;
+
+function startDrag(event, index){
+  dragFrom = index;
+  dropSlot = null;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', String(index));
+  const card = event.target.closest('.rec');
+  if (card) event.dataTransfer.setDragImage(card.querySelector('.head'), 20, 15);
+  // 收起卡片要等這一輪事件結束：dragstart 當下就改版面，瀏覽器會把拖曳取消掉。
+  // 收起來之後整頁變短，原本游標底下的東西會跑掉；捲回去讓這一件的標題列
+  // 還在游標底下，人才不會一放開就插到莫名其妙的地方。
+  const y = event.clientY;
+  setTimeout(() => {
+    document.body.classList.add('dragging');
+    if (card){
+      card.classList.add('moving');
+      const head = card.querySelector('.head').getBoundingClientRect();
+      window.scrollBy(0, head.top + head.height / 2 - y);
+    }
+  }, 0);
+}
+
+function clearMarks(){
+  el('list').querySelectorAll('.drop-before,.drop-after')
+      .forEach(c => c.classList.remove('drop-before', 'drop-after'));
+}
+
+function endDrag(){
+  document.body.classList.remove('dragging');
+  el('list').querySelectorAll('.moving').forEach(c => c.classList.remove('moving'));
+  clearMarks();
+  dragFrom = null;
+  dropSlot = null;
+}
+
+/* 拖到畫面上緣或下緣就自動捲動。瀏覽器自己也會捲，但只在邊緣很窄的一條
+   才會動，上面又有固定的標題列擋著，實際上很難拖到畫面外的那幾件。
+   dragover 在游標停著不動時也會一直來，所以停在邊緣就會一直捲。 */
+document.addEventListener('dragover', event => {
+  if (dragFrom === null) return;
+  const top = document.querySelector('header').getBoundingClientRect().bottom;
+  if (event.clientY < top + 60) window.scrollBy(0, -30);
+  else if (event.clientY > window.innerHeight - 60) window.scrollBy(0, 30);
+});
+
+el('list').addEventListener('dragover', event => {
+  if (dragFrom === null) return;
+  const card = event.target.closest('.rec');
+  if (!card) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  const box = card.getBoundingClientRect();
+  const before = event.clientY < box.top + box.height / 2;
+  const index = +card.dataset.index;
+  dropSlot = before ? index : index + 1;
+  clearMarks();
+  card.classList.add(before ? 'drop-before' : 'drop-after');
+});
+
+el('list').addEventListener('drop', event => {
+  if (dragFrom === null || dropSlot === null) return;
+  event.preventDefault();
+  const from = dragFrom;
+  // dropSlot 是「插在原清單第幾個位置之前」。自己先拿出來，
+  // 後面的位置都少一，所以插在自己後面的要減一。
+  const to = dropSlot > from ? dropSlot - 1 : dropSlot;
+  endDrag();
+  moveRecord(from, to);
+});
+
 /* 中華民國身分證檢查碼。打字時當場驗，不用等後端。 */
 const ID_LETTERS = 'ABCDEFGHJKLMNPQRSTUVXYWZIO';
 function idOK(v){
@@ -363,11 +542,7 @@ el('report').addEventListener('click', async () => {
   try {
     const res = await fetch(api('api/diagnose'), {method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({notes: {
-            overall: el('overall-note').value, records: notes,
-            // 被排除的件一定要寫進報告：從輸出檔上看不出來少了什麼
-            excluded: data.records
-                .map((r, i) => (r.dropped ? i + 1 : 0)).filter(Boolean)}})});
+        body: JSON.stringify({notes: reportNotes()})});
     const out = await res.json();
     if (!out.ok){ showFailure(out); return; }
     el('msg').textContent = '診斷報告已產出'; el('msg').className = 'ok';
@@ -379,6 +554,26 @@ el('report').addEventListener('click', async () => {
     showFailure({error: '連不上程式（' + error.message + '）', detail: DEAD});
   }
 });
+
+/* 送進診斷報告的意見。
+
+   報告裡的表格是照**辨識時**的件號排的（後端只知道那個順序），所以辨識
+   出來的件，意見和「排除了哪幾件」都用辨識時的件號寫，跟表格對得起來。
+   手動的件不在那些表格裡，另外列，寫明它排在畫面第幾件。 */
+function reportNotes(){
+  const records = {};
+  const manual = [];
+  data.records.forEach((r, i) => {
+    const text = (notes[r.uid] || '').trim();
+    if (r.manual) manual.push({number: i + 1, text});
+    else if (text) records[r.origin] = text;
+  });
+  return {
+    overall: el('overall-note').value, records, manual,
+    // 被排除的件一定要寫進報告：從輸出檔上看不出來少了什麼
+    excluded: data.records.filter(r => r.dropped).map(r => r.origin + 1),
+  };
+}
 
 /* 把失敗的內容直接攤在畫面上，不要只留一句話 */
 function showFailure(out){
@@ -408,6 +603,9 @@ el('export').addEventListener('click', async () => {
   try {
     // 排除掉的件不送。序號要一起送過去 —— 提醒上寫的「第 N 件」必須跟
     // 畫面上的序號是同一個，不然人照著去找會找到別件身上。
+    // origins 是每一列在後端清單裡的位置（手動的是 null）。難字回報要拿
+    // 人改好的值去比**那一件**的原圖；手動的件插到中間之後，畫面序號就
+    // 不等於後端位置了，不能再拿序號去找。
     const keep = data.records
         .map((r, i) => ({row: r, number: i + 1}))
         .filter(item => !item.row.dropped);
@@ -415,7 +613,9 @@ el('export').addEventListener('click', async () => {
     const res = await fetch(api('api/export'), {method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({records: keep.map(item => item.row.values),
-                              numbers: keep.map(item => item.number)})});
+                              numbers: keep.map(item => item.number),
+                              origins: keep.map(item =>
+                                  item.row.manual ? null : item.row.origin)})});
     const out = await res.json();
     if (out.ok){
       const warn = out.warnings || [];

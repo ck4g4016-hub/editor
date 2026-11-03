@@ -921,6 +921,8 @@ def check():
     problems.extend(_doc_number_not_forced())
     problems.extend(_export_warnings())
     problems.extend(_review_page_can_add_manual())
+    problems.extend(_manual_record_goes_anywhere())
+    problems.extend(_district_is_read_before_address())
     problems.extend(_address_drops_building_number())
     problems.extend(_address_floor_always_chinese())
     problems.extend(_address_follows_the_rule())
@@ -3566,9 +3568,9 @@ def _review_page_can_add_manual():
 
     承辦人 2026-09-16：「我掃錯了…應該要加一個刪除功能來應對這種狀況。」
 
-    辨識出來的件只能標記成不輸出，不能真的從清單裡拿掉：原圖是用序號跟
-    後端要的（api/crop?record=N），意見也是照序號存的 —— 序號一移，
-    後面每一件的原圖和意見就全部貼到別人身上，而且畫面上看不出來。
+    辨識出來的件只能標記成不輸出，不從清單裡拿掉：人要看得到自己排除了
+    哪一件，隨時能反悔。（以前還有一個原因是原圖照序號要，2026-11-03
+    改成照每一件自己的代號之後就沒有了，見 _manual_record_goes_anywhere。）
     """
     from pipeline import resources
 
@@ -3598,6 +3600,221 @@ def _review_page_can_add_manual():
             ("numbers: keep.map", "沒有把畫面上的序號送過去，提醒會標錯件")):
         if need not in text:
             problems.append("editor/review.html %s" % why)
+    return problems
+
+
+def _manual_record_goes_anywhere():
+    """手動加的件可以插在任何位置，而原圖、意見、難字回報都不能因此錯開。
+
+    承辦人 2026-11-03：「手動加一件的部分我要改成可以拖曳插入任一順序，
+    這樣比較不會讓整體順序亂掉。」
+
+    以前手動的件只能放最後，因為三樣東西都是照「排在第幾件」對的：
+      原圖      api/crop?record=第幾件
+      意見      notes[第幾件]
+      難字回報  拿畫面序號減一去找是哪一件
+    手動那件一插到中間，後面每一件這三樣就全部對到別人身上 —— 原圖錯開
+    人還看得出來，另外兩樣**畫面上完全看不出來**：意見寫進報告貼到別件、
+    難字回報拿人改好的身分證去比別件的原圖，存出一堆真值是錯的圖。
+
+    這裡驗三件事都改成照「那一件自己的代號」對。實際拖曳的行為另外用
+    瀏覽器跑過（拖到最前面、拖到中間、放在清單外、打到一半就拖）；
+    這支檢查跑在沒有瀏覽器的建置機上，所以守的是程式裡的那幾個接點。
+    """
+    import glob
+    import tempfile
+
+    import numpy as np
+
+    from pipeline import diagnose, process, resources
+
+    problems = []
+
+    # ── 一、畫面：三個接點都要照代號，不能照位置 ──────────────────
+    page = open(os.path.join(resources.base_dir(), "editor", "review.html"),
+                encoding="utf-8").read()
+    for need, why in (
+            ("api/crop?record=${r.origin}", "原圖還是照畫面位置要，插一件之後後面全部錯開"),
+            ('data-note="${esc(r.uid)}"', "意見還是照畫面位置存，插一件之後會貼到別件"),
+            ("notes[r.uid]", "意見還是照畫面位置讀"),
+            ("item.row.manual ? null : item.row.origin", "匯出沒有送 origins，難字回報會比錯件"),
+            ("r.origin = i; r.uid = 'r' + i;", "載入時沒有記下每一件的代號"),
+            ("function moveRecord", "沒有移動手動件的函式"),
+            ("if (!record || !record.manual) return;", "moveRecord 沒有擋住辨識出來的件"),
+            ("data-insert=", "卡片上沒有「下面插一件」"),
+            ('draggable="true"', "手動的件沒有握把可以拖"),
+            ("input.addEventListener('input', save)", "值要離開輸入框才存，打到一半去拖會掉字")):
+        if need not in page:
+            problems.append("editor/review.html %s" % why)
+    # 負向：舊的照位置寫法不可以留著
+    for stale, why in (
+            ("api/crop?record=${i}", "還有一處照畫面位置要原圖"),
+            ("notes[+box.dataset.note]", "還有一處照位置存意見")):
+        if stale in page:
+            problems.append("editor/review.html %s" % why)
+
+    source = open(os.path.join(resources.base_dir(), "tools", "review.py"),
+                  encoding="utf-8").read()
+    if 'payload.get("origins")' not in source or "numbers, origins)" not in source:
+        problems.append("tools/review.py 沒有把畫面送來的 origins 交給難字回報")
+
+    # ── 二、難字回報照 origins 找件 ─────────────────────────────
+    class Fake:
+        def __init__(self, truth, wrong):
+            self.cells = {"id_number": [np.full((40, 30), 200, np.uint8)
+                                        for _ in range(10)]}
+            text = [[c] for c in truth]
+            text[wrong] = ["X"]
+            self.cell_text = {"id_number": text}
+
+    # 後端清單：第 0 件第 3 格讀錯（真值 3）、第 1 件第 7 格讀錯（真值 4）
+    records = [Fake("A123456789", 3), Fake("F128887458", 7)]
+    # 畫面：手動的件插在最前面，所以送出來是 [手動, 原第0件, 原第1件]
+    rows = [{"id_number": "B120000002"},
+            {"id_number": "A123456789"}, {"id_number": "F128887458"}]
+
+    def truths(folder):
+        names = [os.path.basename(f) for f in glob.glob(os.path.join(folder or "", "*.png"))]
+        return sorted(n.split("_")[1] for n in names)
+
+    folder, _count = process.dump_hard_cells(
+        records, rows, tempfile.mkdtemp(), numbers=[1, 2, 3], origins=[None, 0, 1])
+    got = truths(folder)
+    if got != ["真值3", "真值4"]:
+        problems.append("手動件插在最前面時，難字回報沒有照 origins 找件："
+                        "應該是 真值3、真值4，實際 %s" % got)
+
+    # 負向驗證：不給 origins、只照畫面序號推，就會比錯件 —— 這正是要防的錯
+    folder, _count = process.dump_hard_cells(
+        records, rows, tempfile.mkdtemp(), numbers=[1, 2, 3])
+    if truths(folder) == ["真值3", "真值4"]:
+        problems.append("負向驗證沒有叫：照序號推也得到一樣的結果，"
+                        "這個檢查分不出對錯")
+
+    # 手動件（None）以及怪東西一律跳過，不准退回「照位置猜」
+    for bad in ([None, None, None], [True, "0", 1.0]):
+        folder, count = process.dump_hard_cells(
+            records, rows, tempfile.mkdtemp(), numbers=[1, 2, 3], origins=bad)
+        if count:
+            problems.append("origins 是 %r 卻還是收了 %d 張 —— 對不上的要跳過，不猜"
+                            % (bad, count))
+
+    # ── 三、診斷報告講清楚手動件排在哪裡 ─────────────────────────
+    class Journal:
+        templates = []
+        documents = 0
+        unresolved = []
+        records = []
+
+        def __getattr__(self, name):
+            return []
+
+    try:
+        text = diagnose.build(Journal(), notes={
+            "overall": "", "records": {"1": "原第二件的意見"},
+            "manual": [{"number": 1, "text": "手動那件的意見"}, {"number": 4, "text": ""}]})
+    except Exception as error:                                      # noqa: BLE001
+        problems.append("診斷報告收到手動件的意見就產不出來：%s" % error)
+        return problems
+    for need in ("手動輸入：畫面上第 1、4 件", "辨識時的順序",
+                 "手動輸入（畫面第 1 件）：手動那件的意見", "第 2 件：原第二件的意見"):
+        if need not in text:
+            problems.append("診斷報告少了「%s」" % need)
+    if "手動輸入（畫面第 4 件）" in text:
+        problems.append("沒寫意見的手動件也冒出一行空的意見")
+    # 負向：沒有手動件就不可以出現那一段
+    text = diagnose.build(Journal(), notes={"overall": ""})
+    if "手動輸入" in text:
+        problems.append("沒有手動件，報告卻寫了「手動輸入」")
+    return problems
+
+
+def _district_is_read_before_address():
+    """行政區要比門牌先讀，**不管兩欄各用哪一種方式讀**。
+
+    承辦人 2026-11-03 第 8 件：「三峽才有國際一街，國際一路在鶯歌。」
+    那一件行政區清清楚楚讀到三峽區，門牌卻跳出「字典裡國際一街、國際一路
+    都有」的提醒。原因是 B 表的門牌用關鍵字讀、行政區用框選讀，而程式是
+    「關鍵字的全部讀完才讀框選的」—— 讀門牌時還不知道是哪一區，只能拿
+    兩區合起來的字典去對。
+
+    這裡真的跑 read_document（讀欄位的那幾步換成假的，只記順序），
+    看讀門牌那一刻行政區已經在了沒有。負向驗證在最後：把順序改回
+    「先關鍵字、後框選」，這個檢查一定要叫。
+    """
+    from pipeline import fields as fieldmod, lexicon, pagetext, process, validate
+
+    problems = []
+
+    class Definition:
+        def __init__(self, kind, mode):
+            self.kind = kind
+            self.column = kind
+            self.mode = mode
+            self.page = "front"
+
+    definitions = [Definition("address", fieldmod.LABEL),
+                   Definition("name", fieldmod.LABEL),
+                   Definition("district", "box")]
+
+    def run():
+        seen = {}
+        converter = object.__new__(process.Converter)
+        converter.fields_of = lambda code: definitions
+        converter.sheet_of = lambda *a, **k: (None, "sheet", None, {})
+        converter.grid_of = lambda *a, **k: None
+        converter._read_stamp = lambda record, document: None
+        converter._reconcile_district = lambda record: None
+
+        def label(record, definition, lines, rules):
+            seen[definition.kind] = record.values.get("district")
+            record.values[definition.kind] = "x"
+
+        def box(record, sheet, definition, keep_crops, grid):
+            seen[definition.kind] = record.values.get("district")
+            record.values[definition.kind] = "三峽區"
+
+        converter._read_label_field = label
+        converter._read_field = box
+        page = type("Page", (), {"source": "x.pdf", "index": 0, "rotation": 0})()
+        document = type("Document", (), {"front": page, "back": None, "code": "B"})()
+        saved = pagetext.read_page
+        pagetext.read_page = lambda *a, **k: ([], {})
+        try:
+            converter.read_document(document)
+        finally:
+            pagetext.read_page = saved
+        return seen
+
+    seen = run()
+    if seen.get("address") != "三峽區":
+        problems.append("門牌用關鍵字、行政區用框選時，讀門牌那一刻還不知道是哪一區"
+                        "（%r）—— 會拿兩區合起來的字典去對" % seen.get("address"))
+
+    # 為什麼一定要知道哪一區：拿兩區合起來的字典對，國際一街會被當成分不清
+    groups = lexicon.builtin()
+    if not groups:
+        problems.append("內建的路名字典是空的")
+    else:
+        _value, merged = validate.address("國際一街5號", roads=lexicon.for_district(groups))
+        _value, alone = validate.address("國際一街5號",
+                                         roads=lexicon.for_district(groups, "三峽區"))
+        if alone:
+            problems.append("知道是三峽區了，國際一街還是有提醒：%s" % alone)
+        if not merged:
+            problems.append("（說明用的對照組失效：兩區合起來時國際一街也沒有提醒，"
+                            "這段檢查就說明不了為什麼要先讀行政區）")
+
+    # 負向驗證：順序改回「先關鍵字、後框選」就一定要抓到
+    saved = process.reading_order
+    process.reading_order = lambda wanted: (
+        [d for d in wanted if d.mode == fieldmod.LABEL]
+        + [d for d in wanted if d.mode != fieldmod.LABEL])
+    try:
+        if run().get("address") == "三峽區":
+            problems.append("負向驗證沒有叫：順序改回先關鍵字後框選，檢查還是說沒問題")
+    finally:
+        process.reading_order = saved
     return problems
 
 

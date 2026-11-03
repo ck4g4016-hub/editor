@@ -125,6 +125,10 @@ def make_handler(state, guard):
             # 畫面上可以把掃錯的件排除掉，排除之後序號就不再等於清單位置。
             # 提醒上寫的「第 N 件」要跟畫面對得起來，所以序號由畫面送過來。
             numbers = payload.get("numbers")
+            # 每一列在 state["records"] 裡的位置，手動輸入的是 None。
+            # 手動的件可以插在中間，插了之後畫面序號就不等於清單位置，
+            # 難字回報要找「那一件的原圖」只能靠這個，不能拿序號去推。
+            origins = payload.get("origins")
             written = output.write_all(rows, state["out"])
             for path in written:
                 print("已產出: %s" % path)
@@ -153,7 +157,7 @@ def make_handler(state, guard):
             hard = None
             try:
                 folder, count = process.dump_hard_cells(
-                    state["records"], rows, state["out"], numbers)
+                    state["records"], rows, state["out"], numbers, origins)
                 if count:
                     hard = {"path": folder, "count": count}
                     print("難字回報：%d 張 → %s" % (count, folder))
