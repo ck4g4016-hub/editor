@@ -764,6 +764,7 @@ class Converter:
         span_widths, box_width = [], 0
         all_cells = []
         all_spans = []
+        overlap_notes = []
         grid_source = None
         grid_band = None
         for box, suffix in definition.segments():
@@ -774,7 +775,9 @@ class Converter:
             # 是拿 crop 跟「照整個框裁的格線圖」對齊的，crop 變矮就對不上了。
             seen = (recognise.strip_printed_top(crop)
                     if definition.kind in TEXT_KINDS else crop)
-            text, confidence = recognise.read(seen)
+            text, confidence, merged = recognise.read_noted(seen)
+            # 接段落時動到內容（重疊處的字只算一次）要標出來，見 recognise._merge_overlaps
+            overlap_notes.extend(merged)
             if crop is not None and crop.size:
                 crops.append(crop)
             text = (text or "").strip()
@@ -987,6 +990,9 @@ class Converter:
         else:
             value, problem = validate.check(definition.kind, raw, **extra)
 
+        if overlap_notes:
+            how["段落重疊"] = len(overlap_notes)
+            problem = validate._join_notes(problem, "；".join(overlap_notes))
         how["採用"] = raw
         record.raw[definition.column] = raw
         record.values[definition.column] = value

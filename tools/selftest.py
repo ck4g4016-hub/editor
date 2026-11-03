@@ -466,6 +466,57 @@ def check():
         if got != want:
             problems.append("分行「%s」得到 %r，應該是 %r" % (label, got, want))
 
+    # 同一串字被偵測成兩段、框互相重疊，交界的字兩段都讀到。
+    # 承辦人 2026-11-03：「為何156號會被讀成1556號?」「186號被讀成1886號」。
+    # 下面的框座標是拿合成的「大觀路156號」實際跑偵測量到的。
+    overlap_cases = (
+        ("交界的 5 讀了兩次", [(_box(46, 20, 416, 90), "大觀路15", 0.9),
+                               (_box(349, 20, 598, 90), "56號", 0.9)],
+         "大觀路156號", "merged"),
+        ("交界的 18 讀了兩次", [(_box(46, 20, 393, 90), "大觀路18", 0.9),
+                                (_box(329, 20, 598, 90), "186号", 0.9)],
+         "大觀路186号", "merged"),
+        ("簡繁算同一個字", [(_box(521, 20, 745, 90), "86号", 0.9),
+                            (_box(703, 20, 849, 90), "號", 0.9)],
+         "86号", "merged"),
+        # 以前重疊超過一半就把後面那段整個丟掉，「56號」會不見
+        ("重疊很多但對得起來", [(_box(380, 20, 483, 90), "15", 0.9),
+                                (_box(431, 20, 678, 90), "56號", 0.9)],
+         "156號", "merged"),
+        # 負向：只是框的白邊碰到一點，門牌真的是 1556，不可以併
+        ("真的是 1556", [(_box(46, 20, 416, 90), "大觀路15", 0.9),
+                         (_box(410, 20, 660, 90), "56號", 0.9)],
+         "大觀路1556號", None),
+        # 負向：重疊很多、內容又對不起來 —— 維持不採用，但一定要講
+        ("對不起來", [(_box(40, 20, 400, 90), "左", 0.9),
+                      (_box(60, 20, 420, 90), "右", 0.9)],
+         "左", "dropped"),
+    )
+    for label, items, want, kind in overlap_cases:
+        found = []
+        got = "".join(item[1] for line in recognise.rows(items, found) for item in line)
+        if got != want:
+            problems.append("段落重疊「%s」得到 %r，應該是 %r" % (label, got, want))
+        kinds = [k for k, _chars in found]
+        if kind is None and kinds:
+            problems.append("段落重疊「%s」沒有動到內容，卻記了提醒 %r" % (label, found))
+        if kind and kind not in kinds:
+            problems.append("段落重疊「%s」動到了內容卻沒有記下來 —— "
+                            "複核畫面上會看不出來（CLAUDE.md 第三條）" % label)
+
+    # 接線：記下來的提醒要真的標到複核畫面上
+    code = open(os.path.join(resources_base(), "pipeline", "process.py"),
+                encoding="utf-8").read()
+    for need, why in (("recognise.read_noted(seen)", "讀欄位時沒有拿到段落重疊的提醒"),
+                      ("overlap_notes.extend(merged)", "段落重疊的提醒沒有收起來"),
+                      ('validate._join_notes(problem, "；".join(overlap_notes))',
+                       "段落重疊的提醒沒有標到複核畫面上")):
+        if need not in code:
+            problems.append("process.py %s" % why)
+    note = recognise.overlap_note("merged", "5")
+    if "「5」" not in note or "原圖" not in note:
+        problems.append("段落重疊的提醒沒講出是哪個字、也沒叫人看原圖：%s" % note)
+
     # 一欄有好幾格、只有其中一格有印刷格子的時候（門牌就是這樣：路名是
     # 空白欄，「號」才有格子），沒格線的那幾格要沿用整行讀的結果。
     # 只收有格線的那幾格會讓整欄變成單一個「15號」，路名整段消失。

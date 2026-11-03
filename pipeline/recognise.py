@@ -78,29 +78,84 @@ def prepare(crop):
                               cv2.BORDER_CONSTANT, value=(255, 255, 255))
 
 
-# 兩個偵測框水平方向重疊超過這個比例，就當成同一段文字的重複偵測
+# 兩個偵測框水平方向重疊超過這個比例，又對不出是哪幾個字重複，
+# 就當成同一段文字的重複偵測，後面那段不採用（會標記，見 _merge_overlaps）
 OVERLAP = 0.5
 
 
-def _drop_overlaps(ordered):
-    """丟掉跟前一段重疊的偵測框。
+def _same(a, b):
+    """兩個字串是不是同樣的字。簡繁算同一個字（「号」跟「號」）。"""
+    from . import validate        # 用到才載入：validate 不依賴這裡，不會循環
+    return validate.to_traditional(a) == validate.to_traditional(b)
 
-    偵測階段偶爾會對同一塊文字給出好幾個互相重疊的框，接起來就變成
-    「A1232345667889」這種每個字讀兩次的字串 —— 長度和內容都像模像樣，
-    只是錯的。這種錯比讀不出來危險得多。
+
+def _shared(left, right, overlap, left_width, right_width):
+    """left 的結尾跟 right 的開頭有幾個字是同一批墨跡被讀了兩次；沒有就回 0。
+
+    重疊的寬度換算成「大約幾個字寬」，只認跟它差不多的那個長度 ——
+    兩段只是框的邊緣碰到一點（不到半個字寬）的時候，就算 left 結尾是 5、
+    right 開頭也是 5，那也可能是門牌真的寫了 55，不能併。
+
+    字寬取兩段裡比較窄的那個。只有一個字的段落，框會多留一圈白邊，
+    拿它算字寬會算得太寬，實測「86号」和「號」重疊了 42 像素、明明是同一個
+    字，照「號」那段算只有 0.3 個字寬，照「86号」那段算是 0.56。
+    """
+    if not left or not right or left_width <= 0 or right_width <= 0:
+        return 0
+    width = min(left_width / float(len(left)), right_width / float(len(right)))
+    estimate = overlap / width
+    if estimate < 0.5:
+        return 0
+    limit = min(len(left), len(right), int(round(estimate)) + 1)
+    for size in range(limit, 0, -1):
+        if _same(left[-size:], right[:size]):
+            return size
+    return 0
+
+
+def _merge_overlaps(ordered, notes=None):
+    """同一行裡互相重疊的偵測框：重疊處的字只算一次。
+
+    偵測階段偶爾會把一串字切成兩段、而且兩段的框互相重疊，交界那個字
+    兩段都讀到 —— 承辦人 2026-11-03：「為何156號會被讀成1556號?」、
+    「186號被讀成1886號」，9/24 也有一件 168 讀成 1668，**每次都是中間那個
+    數字變兩個**。拿合成的「大觀路156號」實測重現得出來：偵測框切成
+    「大觀路15」和「56號」，重疊 67 像素，接起來就是 1556。
+
+    以前的做法是「重疊超過一半就把後面那段整個丟掉、不到一半就照接」，
+    兩種都錯：不到一半的照接就是上面那個 1556；超過一半的丟掉，實測會把
+    「56號」整段弄丟，門牌只剩「大觀路15」。
+
+    現在照重疊的寬度去對：left 的結尾跟 right 的開頭是同樣的字、長度又跟
+    重疊的寬度相當，就把 right 開頭那幾個字拿掉。**動到讀出來的內容**，
+    所以每併一次都記一筆到 notes，由呼叫的人標在複核畫面上（CLAUDE.md 第三條）。
+    對不起來又重疊很多的，維持原本「後面那段不採用」，一樣記一筆。
     """
     kept = []
     for item in ordered:
-        x0, x1 = _span(item)
-        clash = False
-        for other in kept:
-            a0, a1 = _span(other)
-            overlap = min(x1, a1) - max(x0, a0)
-            if overlap > 0 and overlap >= OVERLAP * min(x1 - x0, a1 - a0):
-                clash = True
-                break
-        if not clash:
+        if not kept:
             kept.append(item)
+            continue
+        prev = kept[-1]
+        a0, a1 = _span(prev)
+        b0, b1 = _span(item)
+        overlap = min(a1, b1) - max(a0, b0)
+        if overlap <= 0:
+            kept.append(item)
+            continue
+        size = _shared(prev[1], item[1], overlap, a1 - a0, b1 - b0)
+        if size:
+            if notes is not None:
+                notes.append(("merged", item[1][:size]))
+            rest = item[1][size:]
+            if rest.strip():
+                kept.append((item[0], rest) + tuple(item[2:]))
+            continue
+        if overlap >= OVERLAP * min(a1 - a0, b1 - b0):
+            if notes is not None and item[1].strip() and not _same(item[1], prev[1]):
+                notes.append(("dropped", item[1]))
+            continue
+        kept.append(item)
     return kept
 
 
@@ -118,7 +173,7 @@ def _vspan(item):
 ROW_OVERLAP = 0.5
 
 
-def rows(items):
+def rows(items, notes=None):
     """把偵測到的段落分行，回傳 [[同一行的段落…]]，由上而下、每行由左而右。
 
     欄位框常常會多框到上下相鄰的一行 —— 公文文號那一格尤其明顯，
@@ -149,7 +204,7 @@ def rows(items):
             groups.append({"top": top, "bottom": bottom, "items": [item]})
 
     groups.sort(key=lambda g: g["top"])
-    return [_drop_overlaps(sorted(g["items"], key=lambda item: _span(item)[0]))
+    return [_merge_overlaps(sorted(g["items"], key=lambda item: _span(item)[0]), notes)
             for g in groups]
 
 
@@ -199,26 +254,45 @@ def strip_printed_top(crop):
 
 
 def read(crop):
-    """辨識一個欄位，回傳 (文字, 信心)。
+    """辨識一個欄位，回傳 (文字, 信心)。見 read_noted。"""
+    text, confidence, _notes = read_noted(crop)
+    return text, confidence
+
+
+def read_noted(crop):
+    """辨識一個欄位，回傳 (文字, 信心, 提醒)。
 
     同一個欄位可能被切成好幾段（中間有空格，或框到了相鄰的行）。
     由上而下、每行由左而右接起來，順序才跟人看到的一樣。
     信心取最低的那一段 —— 一串裡只要有一個字沒把握，整串就不能算有把握。
+
+    提醒是接起來時動到內容的地方（見 _merge_overlaps），已經寫成給人看的
+    句子；呼叫的人要把它標到複核畫面上。
     """
     image = prepare(crop)
     if image is None:
-        return "", 0.0
+        return "", 0.0, []
 
     result, _ = engine()(image)
     if not result:
-        return "", 0.0
+        return "", 0.0, []
 
-    ordered = [item for line in rows(result) for item in line]
+    found = []
+    ordered = [item for line in rows(result, found) for item in line]
     if not ordered:
-        return "", 0.0
+        return "", 0.0, []
     text = "".join(item[1] for item in ordered).strip()
     confidence = min(float(item[2]) for item in ordered)
-    return text, confidence
+    return text, confidence, [overlap_note(kind, chars) for kind, chars in found]
+
+
+def overlap_note(kind, chars):
+    """_merge_overlaps 記下來的事，寫成複核畫面上的一句話。"""
+    if kind == "merged":
+        return ("這一格被切成兩段辨識，交界的「%s」兩段都讀到，已經只算一次，"
+                "請對著原圖確認" % chars)
+    return ("這一格有一段跟旁邊重疊、內容又對不起來，那段「%s」沒有採用，"
+            "請對著原圖確認" % chars)
 
 
 def crop_field(page, box):
