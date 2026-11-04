@@ -1,0 +1,234 @@
+name: build-app
+
+# 把正式程式打包成 Windows 綠色版並發布。
+#
+# 用 onedir 不用 onefile：onefile 每次啟動都要把上百 MB 解壓到暫存資料夾，
+# 開啟明顯變慢；環境探測確認過兩種都能執行，所以選快的那個。
+on:
+  push:
+    branches: ['main', 'claude/**']
+    paths:
+      - 'app.py'
+      - 'pipeline/**'
+      - 'tools/**'
+      - 'editor/**'
+      - 'data/**'
+      - '說明.txt'
+      - 'requirements.txt'
+      - '.github/workflows/build-app.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 一次只跑一個。連續推好幾次的時候，兩個建置會同時去動同一個 Release ——
+# 一個正在刪、另一個正在建，就出現 HTTP 403 建置失敗，而且中間那段時間
+# 下載連結是 404。舊的直接取消，反正只有最新那一版有意義。
+concurrency:
+  group: build-app
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安裝套件
+        shell: pwsh
+        run: |
+          # 預設只有最後一個指令的結束碼算數，中間的 pip 裝失敗會被吃掉
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.15.0 pyinstaller-hooks-contrib
+
+      - name: 自我檢查
+        shell: pwsh
+        run: |
+          # 先跑過再打包。有一次改動把 summarise() 連帶刪掉，每個模組
+          # 單獨 import 都正常，只有使用者按下「轉換」才會炸 ——
+          # 壞掉的版本照樣發布出去了。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          # runner 的主控台是 cp1252，不指定的話印中文就炸
+          $env:PYTHONIOENCODING = 'utf-8'
+          $env:PYTHONWARNINGS = 'error::SyntaxWarning'
+          python tools/selftest.py
+
+      - name: 決定版本號
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONIOENCODING = 'utf-8'
+          # 承辦人 2026-09-29：「我都不知道我到底是下載哪一版的。」
+          # 版本號照他定的規則：當天第一版 1150929，第二版 1150929-1……
+          # 當天第幾版是看 Release 上現在掛的檔名算的（見 tools/release_version.py）。
+          # Release 還不存在（第一次建置）時 gh 會失敗，那就當作什麼都沒有。
+          $names = @(gh release view app-latest --repo $env:GITHUB_REPOSITORY `
+                       --json assets -q '.assets[].name' 2>$null)
+          if ($LASTEXITCODE -ne 0) { $names = @() }
+          $global:LASTEXITCODE = 0
+          $version = (python tools/release_version.py @names).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "算不出版本號" }
+          # 格式不對就停 —— 壞掉的版本號會變成壞掉的檔名，承辦人更分不清楚
+          if ($version -notmatch '^\d{7}(-\d+)?$') { throw "版本號格式不對：$version" }
+          Write-Host "Release 上現有：$($names -join ', ')"
+          Write-Host "這一版：$version"
+          "APP_VERSION=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $sha = "$env:GITHUB_SHA".Substring(0,7)
+          # 版本編號要跟著程式走。前面是承辦人看得懂的日期版號（主畫面上顯示，
+          # 跟壓縮檔檔名對得起來），括號裡是 commit 編號（診斷報告靠它對回
+          # 是哪一份程式碼）。
+          "$($env:APP_VERSION)版（$sha）" | Out-File -Encoding utf8 -NoNewline version.txt
+          # 把版本號填進 exe 的版本資訊。這個檔只能放 ASCII（見 tools/version_info.txt），
+          # 所以不放「版」字。
+          # 沒有中介資料的 exe 是啟發式判定的扣分項（詳見 tools/version_info.txt）。
+          (Get-Content tools\version_info.txt -Raw) -replace '__SHA__', "$($env:APP_VERSION) ($sha)" |
+              Out-File -Encoding ascii version_info.txt
+          pyinstaller --onedir --name 紙本轉excel `
+            --version-file version_info.txt `
+            --collect-all rapidocr_onnxruntime `
+            --collect-all onnxruntime `
+            --collect-all cv2 `
+            --collect-all numpy `
+            --collect-all pymupdf `
+            --add-data "editor;editor" `
+            --add-data "data;data" `
+            --add-data "version.txt;." `
+            --hidden-import xlwt `
+            --hidden-import tools.review `
+            --hidden-import tools.template_editor `
+            app.py
+          Copy-Item 說明.txt dist\紙本轉excel\
+
+      - name: 檢查打包內容
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'dist\紙本轉excel'
+          foreach ($item in @('紙本轉excel.exe', '說明.txt', '_internal\version.txt',
+                              '_internal\editor\page.html', '_internal\editor\review.html',
+                              '_internal\data\roads-三峽-鶯歌.txt',
+                              '_internal\data\sections-三峽-鶯歌.txt',
+                              '_internal\data\簡繁對照.txt',
+                              '_internal\data\易混字.txt',
+                              '_internal\data\公文文號.txt')) {
+              if (-not (Test-Path (Join-Path $root $item))) { throw "打包後少了 $item" }
+          }
+          # 指名要哪三個模型。只數 *.onnx 的話會把 onnxruntime 自帶的測試模型
+          # (logreg_iris、mul_1、sigmoid) 算進去，OCR 模型漏收也照樣通過。
+          foreach ($model in @('ch_PP-OCRv4_det_infer.onnx',
+                               'ch_PP-OCRv4_rec_infer.onnx',
+                               'ch_ppocr_mobile_v2.0_cls_infer.onnx')) {
+              $found = Get-ChildItem -Recurse $root -Filter $model
+              if (-not $found) { throw "OCR 模型 $model 沒有包進去" }
+              Write-Host ("   {0}  {1:N1} MB" -f $found[0].Name, ($found[0].Length/1MB))
+          }
+          $size = (Get-ChildItem -Recurse $root | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("整包大小 {0:N0} MB" -f $size)
+
+      - name: 打包成 zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          # 檔名用純英數 —— GitHub 的 Release 附件會把非 ASCII 濾掉，
+          # 「紙本轉excel.zip」上傳後會變成「excel.zip」，看起來像壞掉的檔案。
+          # 檔名帶版本號（paper2excel_1150929-1.zip），承辦人下載下來就知道是哪一版。
+          #
+          # **裡面那一層資料夾的名稱不帶版本號。** 樣板和輸出是放在執行檔旁邊的
+          # （見 pipeline/resources.workspace），資料夾名稱每版不一樣的話，
+          # 每更新一次樣板就「不見」一次。
+          $zip = "release\paper2excel_$($env:APP_VERSION).zip"
+          Compress-Archive -Path dist\紙本轉excel -DestinationPath $zip
+          Get-ChildItem release | ForEach-Object {
+              Write-Host ("{0}  {1:N0} MB" -f $_.Name, ($_.Length/1MB)) }
+          # SHA-256 印在建置紀錄裡，而建置紀錄是公開的。
+          # 瀏覽器把未簽章的執行檔擋下來是常態，這時候承辦人需要能證明
+          # 「我下載到的就是這份公開原始碼建出來的東西」—— 雜湊值對得上就是同一份。
+          Write-Host ""
+          Write-Host "=== SHA-256（拿去跟下載到的檔案核對）==="
+          (Get-FileHash $zip -Algorithm SHA256).Hash |
+              ForEach-Object { Write-Host "zip      $_" }
+          Write-Host "版本     $($env:APP_VERSION)"
+          (Get-FileHash "dist\紙本轉excel\紙本轉excel.exe" -Algorithm SHA256).Hash |
+              ForEach-Object { Write-Host "exe      $_" }
+          Write-Host "原始碼   $env:GITHUB_SHA"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: release/
+          retention-days: 30
+
+      - name: 發布 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = "paper2excel_$($env:APP_VERSION).zip"
+          $zip = "release\$asset"
+          $title = "紙本轉 Excel $($env:APP_VERSION)版"
+          # 原本是先 delete 再 create。那中間有一段時間 Release 不存在，
+          # 使用者剛好在那時候點下載連結就是 404 —— 看起來像「又沒有連結」。
+          # 改成就地覆蓋附件，連結任何時候都指得到東西。
+          gh release view app-latest --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+              $global:LASTEXITCODE = 0
+              gh release create app-latest $zip `
+                --repo $env:GITHUB_REPOSITORY `
+                --target $env:GITHUB_SHA `
+                --title $title `
+                --notes-file 說明.txt
+              if ($LASTEXITCODE -ne 0) { throw "建立 Release 失敗" }
+          } else {
+              # 先上傳新的、再刪舊的：順序反過來的話，中間有一段時間
+              # Release 上一個檔案都沒有。
+              gh release upload app-latest $zip --clobber --repo $env:GITHUB_REPOSITORY
+              if ($LASTEXITCODE -ne 0) { throw "上傳附件失敗" }
+              gh release edit app-latest --repo $env:GITHUB_REPOSITORY `
+                --target $env:GITHUB_SHA `
+                --title $title `
+                --notes-file 說明.txt
+              if ($LASTEXITCODE -ne 0) { throw "更新 Release 失敗" }
+          }
+
+          # 舊版的附件全部拿掉，只留這一版。留著的話 Release 頁面上會有好幾個
+          # 檔案，承辦人又要猜該下載哪一個 —— 那正是這個功能要解決的事。
+          # 改版前的 paper2excel.zip 也一起拿掉。
+          $names = @(gh release view app-latest --repo $env:GITHUB_REPOSITORY `
+                       --json assets -q '.assets[].name')
+          foreach ($old in $names) {
+              if ($old -ne $asset) {
+                  gh release delete-asset app-latest $old --yes --repo $env:GITHUB_REPOSITORY
+                  if ($LASTEXITCODE -ne 0) { throw "刪不掉舊附件 $old" }
+                  Write-Host "已移除舊附件 $old"
+              }
+          }
+
+          # 確認發布出去的真的是這一版，不是上一版留下來的
+          $head = gh release view app-latest --repo $env:GITHUB_REPOSITORY --json targetCommitish -q .targetCommitish
+          if ($head -ne $env:GITHUB_SHA) {
+              throw "Release 指向 $head，不是這次的 $env:GITHUB_SHA"
+          }
+          $left = @(gh release view app-latest --repo $env:GITHUB_REPOSITORY `
+                      --json assets -q '.assets[].name')
+          if ($left.Count -ne 1 -or $left[0] -ne $asset) {
+              throw "Release 上的附件應該只有 $asset，實際是：$($left -join ', ')"
+          }
+          Write-Host "Release 已更新到 $head"
+          Write-Host "下載連結：https://github.com/$env:GITHUB_REPOSITORY/releases/download/app-latest/$asset"

@@ -1,0 +1,39 @@
+# Windows 執行檔的版本資訊。打包時用 --version-file 帶進去。
+#
+# 為什麼要有這個：**沒有中介資料的執行檔本身就是啟發式判定的扣分項。**
+# Chrome 的 Safe Browsing 跟各家防毒都會把「無發行者、無版本、下載次數少」的
+# exe 當成可疑。帶上版本資訊不會讓它變成受信任（那要程式碼簽章憑證），
+# 但少一個扣分項。
+#
+# 內容刻意只用 ASCII：PyInstaller 舊版讀這個檔會用系統地區編碼，
+# 中文字有機會讓打包整個失敗 —— 為了一段附加說明不值得冒那個風險。
+#
+# __SHA__ 會在打包時被換成 commit 編號。
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040404b0', [
+        StringStruct('CompanyName', 'New Taipei City Revenue Service Office'),
+        StringStruct('FileDescription', 'Offline handwriting to Excel converter'),
+        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('InternalName', 'paper2excel'),
+        StringStruct('OriginalFilename', 'paper2excel.exe'),
+        StringStruct('ProductName', 'Paper to Excel (offline)'),
+        StringStruct('ProductVersion', '__SHA__'),
+        StringStruct('LegalCopyright', 'Internal administrative tool. No network access at runtime.'),
+        StringStruct('Comments', 'Source: github.com/ck4g4016-hub/editor')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [0x404, 1200])])
+  ]
+)
