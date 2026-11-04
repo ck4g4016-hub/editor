@@ -157,7 +157,8 @@ def make_handler(state, guard):
             hard = None
             try:
                 folder, count = process.dump_hard_cells(
-                    state["records"], rows, state["out"], numbers, origins)
+                    state["records"], rows, state["out"], numbers, origins,
+                    controls=True)
                 if count:
                     hard = {"path": folder, "count": count}
                     print("難字回報：%d 張 → %s" % (count, folder))

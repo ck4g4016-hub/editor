@@ -221,6 +221,9 @@ class Record:
         # **整格絕對不會被送出去** —— 難字回報只把巷、弄、號、樓那幾格
         # 拆成「一個數字一張圖」才收（見 split_glyphs 與 dump_hard_cells）。
         self.address_parts = []
+        # 行政區那一格的影像與讀到的字（框選、只有一格的才有）。「三峽區」
+        # 「鶯歌區」是公開的地名，給難字回報當樣本用（見 dump_hard_cells）。
+        self.district_cell = None
         # 每一面的底圖對位品質：{"front": {"減版面": True, "對位": 0.87}}。
         # 減不掉的時候欄位是從**沒減過的原圖**上裁的，印刷的「段巷弄號樓」
         # 會跟手寫混在一起被讀進來 —— 那種讀出來的東西看起來就像 OCR 很爛，
@@ -813,6 +816,10 @@ class Converter:
                     and len(definition.segments()) > 1
                     and seen is not None and getattr(seen, "size", 0)):
                 record.address_parts.append((seen, text, suffix))
+            if (definition.kind == "district" and len(definition.segments()) == 1
+                    and record.district_cell is None
+                    and seen is not None and getattr(seen, "size", 0)):
+                record.district_cell = (seen, text)
             if text:
                 pieces.append(text + suffix)
                 scores.append(confidence)
@@ -1108,14 +1115,15 @@ def safe_hard_name(name):
         return False
     # 「真值」「程式讀成」「程式沒讀到」「程式分不出是」「路名」「首字」
     # 這些是固定的字樣，扣掉之後才是資料
-    for word in ("路名首字", "路名", "門牌數字", "字母", "數字", "真值",
-                 "程式讀成", "程式沒讀到", "程式分不出是", "整格沒讀對"):
+    for word in ("路名首字", "路名", "門牌數字", "行政區", "字母", "數字", "真值",
+                 "程式讀成", "程式沒讀到", "程式分不出是", "整格沒讀對", "程式讀對"):
         name = name.replace(word, "")
     chinese = sum(1 for char in name if "\u4e00" <= char <= "\u9fff")
     return chinese <= _NAME_MAX_CHINESE
 
 _HARD_README = """\
-這個資料夾裡是**程式讀錯或讀不出來的那幾個字**，一個字一張圖。
+這個資料夾裡是**辨識樣本**：程式讀錯、讀不出來的字，加上少數讀對的
+當對照組，一個字一張圖。裁切圖去識別化之後就是這個樣子，可以直接傳。
 
 檔名就是答案：
 
@@ -1125,6 +1133,8 @@ _HARD_README = """\
     路名_真值大觀_程式讀成4大觀_9f1a55.png  門牌的路名那一格讀錯
     路名首字_真值鳳_程式沒讀到_ab12cd.png   路名第一個字沒讀出來
     門牌數字_真值4_程式讀成7_5e61f0.png    門牌的巷、弄、號、樓裡讀錯的那個數字
+    行政區_真值三峽區_程式讀成三_88aa01.png 行政區那一格
+    數字_真值3_程式讀對_d0e1f2.png     讀對的（對照組，見下面）
 
 「真值」是**你在複核畫面上改完、按下產生輸出檔的那個值**，所以是對的。
 程式就是靠這個才知道自己哪一格錯了。
@@ -1133,20 +1143,22 @@ _HARD_README = """\
 
 跟「裁切圖（含個資，勿外傳）」不一樣，這裡是刻意做成可以外傳的：
 
-  * **只有讀錯的那幾格**，讀對的一律不收。一件十格通常只錯一兩格，
-    少了其他八格，湊不回任何人的身分證號。
-  * 門牌**只收路名**，而且只收讀錯的那一格。路名（「大觀」「鳳鳴」）
-    是公開的街道名稱，一條路上有幾百戶，單獨一個指不向任何人。
-    門牌號、樓層、巷、弄一律不收 —— 那些一旦配上路名就是完整住址了。
-    （不收號也沒損失：門牌號跟身分證是同一個人用同一支筆寫的數字，
-      身分證那邊已經在收了。）
+  * **身分證一件最多 3 格**，讀錯的優先，名額有剩才放讀對的。十格裡
+    只有三格、又不知道是第幾格，湊不回任何人的號碼。
+    （從裁切圖自己挑格子刪是不夠的：刪到剩八格，配上最後一碼的檢查碼，
+      只剩十來種可能。上限一定要壓在程式裡，不能靠人刪。）
+  * 讀對的那幾張是**對照組**：只收讀錯的，開發者量不出「改了之後有沒有
+    把原本讀對的改壞」。
+  * 門牌的**路名**那一格整格收。路名（「大觀」「鳳鳴」）是公開的街道
+    名稱，一條路上有幾百戶，單獨一個指不向任何人。行政區那一格也一樣。
   * 門牌只框一個大框的表格（E 表那種），整格就是整串住址，所以**整格
     不收**，只從最左邊切出一個字（檔名開頭是「路名首字」）。
     鶯歌的「鳳七路」跟「龍七路」分不出來，差的就是那一個字。
   * 門牌的巷、弄、號、樓（一格一框的表格）**拆成一個數字一張**才收，
-    整格不收，也只收讀錯的那幾個位數。整格的「38」配上路名就是住址；
-    單獨一個「3」跟身分證的一格一樣，指不向任何人。數字黏在一起拆不準、
-    或寫了「之」的，整格不收 —— 寧可少收，也不要標錯答案。
+    整格不收，**一件最多 2 個數字**，也不記是巷、弄、號還是樓。整格的
+    「38」配上路名就是住址；兩個沒有順序的數字指不到哪一戶。數字黏在
+    一起拆不準、或寫了「之」的，整格不收 —— 寧可少收，也不要標錯答案。
+  * 姓名、公文文號、地號**一律不收**。
   * 檔名寫出去之前再擋一次：只要檔名裡出現「號」「樓」「巷」「弄」，
     那一張就不寫。2026-09-22 真的外洩過一次整串住址，這一關是那次加的。
   * **不記第幾件、不記第幾格**，而且檔案順序是打亂的。哪幾個字屬於
@@ -1207,7 +1219,33 @@ def _row_source(records, position, numbers=None, origins=None):
     return index if 0 <= index < len(records) else None
 
 
-def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
+# 每一件最多收幾個字。這是**去識別化的上限**，不是取樣比例：
+#
+#   身分證  3 格（共 10 格）。不記第幾格、整批打亂，3 個沒有順序的數字
+#           湊不回號碼 —— 剩下 7 碼就算扣掉檢查碼也還有上百萬種組合。
+#           承辦人 2026-11-04 自己從裁切圖挑格子刪，刪完每件還剩 8 格，
+#           有一件 10 格整組都在；8 格配上檢查碼只剩十來種可能。
+#   門牌數字 2 個。不記是巷、弄、號還是樓，兩個沒有順序的數字配上路名
+#           也指不到哪一戶。
+#
+# 讀錯的一律優先；名額有剩才放讀對的（見 controls）。
+ID_CELLS_PER_CASE = 3
+HOUSE_DIGITS_PER_CASE = 2
+
+
+def _take(wrong, right, cap, controls):
+    """一件裡要收哪幾個：讀錯的先（打亂後取），名額有剩再放讀對的。"""
+    import random
+
+    wrong = list(wrong)
+    random.shuffle(wrong)
+    picked = wrong[:cap]
+    if controls and len(picked) < cap and right:
+        picked += random.sample(list(right), min(cap - len(picked), len(right)))
+    return picked
+
+
+def dump_hard_cells(records, rows, folder, numbers=None, origins=None, controls=False):
     """把「程式讀錯的那幾格」存成一個字一張圖，檔名帶正確答案。
 
     承辦人 2026-09-22：「診斷的部分你會加一份某字辨識不出來嗎？然後我再
@@ -1221,6 +1259,12 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
     憑筆跡拼得回來）。只收錯的那一兩格，缺了其他八格，湊不回任何人的號碼。
 
     origins 是每一列對應 records 的哪一件（手動輸入的是 None），見 _row_source。
+
+    controls=True 時名額有剩會放幾張**讀對的**（檔名寫「程式讀對」）。
+    承辦人 2026-11-04：「現在需要的是把裁切圖產生出來後去識別化，這樣就
+    可以直接給你來辨識。」只有讀錯的，量不出改了之後有沒有把原本讀對的
+    改壞 —— 要有對照組。但每一件的總數照樣受 ID_CELLS_PER_CASE 限制，
+    讀對的不會多佔名額。
 
     回傳 (資料夾, 寫出幾張)。
     """
@@ -1240,6 +1284,7 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
         texts = (record.cell_text or {}).get("id_number") or []
         if len(truth) != 10 or len(cells) != 10:
             continue
+        wrong, right = [], []
         for slot in range(10):
             want = truth[slot]
             if want == "?" or not want.isalnum():
@@ -1251,7 +1296,8 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
                 texts[slot] if slot < len(texts) else [], slot)
             if was_read and len(choices) == 1:
                 if choices[0] == want:
-                    continue        # 讀對了，不收
+                    right.append((want, "程式讀對", cell))
+                    continue
                 saw = "程式讀成%s" % choices[0]
             elif was_read:
                 # 幾種讀法各說各話，程式沒辦法決定。這種一樣算失敗，
@@ -1259,7 +1305,8 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
                 saw = "程式分不出是%s" % "".join(choices)
             else:
                 saw = "程式沒讀到"
-            pairs.append((want, saw, cell))
+            wrong.append((want, saw, cell))
+        pairs.extend(_take(wrong, right, ID_CELLS_PER_CASE, controls))
 
     # ── 門牌：只收「路名」那一格 ──────────────────────────────────
     #
@@ -1292,8 +1339,12 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
         # 先換成繁體再比：辨識模型偶爾吐簡體字（「爱」），但門牌那一欄本來就會
         # 照簡繁對照表換回來，輸出是對的 —— 那不算讀錯，收進來只會害開發者白查。
         got = _lexicon.stem(_validate.to_traditional((saw or "").strip()))
-        if not want or got == want:
-            continue                # 讀對了，不收
+        if not want:
+            continue
+        if got == want:
+            if controls:
+                road_pairs.append((want, "程式讀對", cell))
+            continue
         road_pairs.append((want, "程式讀成%s" % got if got else "程式沒讀到", cell))
 
     # ── 門牌只框一個大框的表格：只切最左邊那一個字 ─────────────────
@@ -1327,8 +1378,11 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
             continue
         if len(got) == len(want):
             if got[0] == want[0]:
-                continue                       # 第一個字讀對了，不收
-            note = "程式讀成%s" % got[0]
+                if not controls:
+                    continue                   # 第一個字讀對了
+                note = "程式讀對"
+            else:
+                note = "程式讀成%s" % got[0]
         elif len(got) == len(want) - 1 and want.endswith(got):
             note = "程式沒讀到"                # 第一個字整個沒讀出來
         else:
@@ -1357,6 +1411,7 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
         found = _ADDRESS_PARTS.match((row.get("address") or "").strip())
         if not found:
             continue                   # 人改完的門牌拆不開，就不知道哪一格該是什麼
+        wrong_digits, right_digits = [], []
         for crop, saw, suffix in boxes:
             part = _SUFFIX_PART.get(suffix)
             if not part or not found.group(part):
@@ -1377,19 +1432,61 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
                     continue           # 「十七樓之3」的之3 寫在哪一格不一定，不收
             if not want.isdigit():
                 continue               # 「14之6」這種：之 寫成什麼樣子不一定，不收
-            if got == want:
-                continue               # 讀對了，不收
+            if got == want and not controls:
+                continue               # 讀對了
             glyphs = split_glyphs(crop, len(want))
             if glyphs is None:
                 continue               # 拆不準就不收
             if len(got) == len(want):
-                wrong = [(i, "程式讀成%s" % got[i]) for i in range(len(want)) if got[i] != want[i]]
+                for i in range(len(want)):
+                    if got[i] != want[i]:
+                        wrong_digits.append((want[i], "程式讀成%s" % got[i], glyphs[i]))
+                    else:
+                        right_digits.append((want[i], "程式讀對", glyphs[i]))
             else:
-                wrong = [(i, "程式沒讀到" if not got else "整格沒讀對") for i in range(len(want))]
-            for i, note in wrong:
-                number_pairs.append((want[i], note, glyphs[i]))
+                for i in range(len(want)):
+                    wrong_digits.append((want[i], "程式沒讀到" if not got else "整格沒讀對",
+                                         glyphs[i]))
+        number_pairs.extend(_take(wrong_digits, right_digits, HOUSE_DIGITS_PER_CASE, controls))
 
-    if not pairs and not road_pairs and not head_pairs and not number_pairs:
+    # ── 行政區：整格收（「三峽區」「鶯歌區」是公開的地名）────────────
+    #
+    # 承辦人 2026-10-21：「第11件 行政區辨識度很差」。行政區那一格只寫區名，
+    # 指不向任何人。但框畫得大、民眾又寫超出去的話，格子裡可能夾到別的東西，
+    # 所以三條都要成立才收：格子是一行的形狀、人改完的值是「○○區」、
+    # 程式讀到的字裡沒有數字也沒有路街巷弄號樓。
+    district_pairs = []
+    for position, row in enumerate(rows or ()):
+        index = _row_source(records, position, numbers, origins)
+        if index is None:
+            continue
+        cell = getattr(records[index], "district_cell", None)
+        if not cell:
+            continue
+        crop, saw = cell
+        want = (row.get("district") or "").strip()
+        if not (2 <= len(want) <= 4 and want.endswith("區")):
+            continue
+        height, width = crop.shape[:2]
+        if height <= 0 or width > height * 8:
+            continue
+        got = _validate.to_traditional((saw or "").strip())
+        if any(ch.isdigit() or ch in "路街巷弄號樓段号楼" for ch in got):
+            continue
+        if got == want or (got.endswith(want) and len(got) - len(want) <= 3
+                           and got[:-len(want)] in ("新北市", "北市", "市")):
+            if controls:
+                district_pairs.append((want, "程式讀對", crop))
+            continue
+        if not got:
+            note = "程式沒讀到"
+        elif len(got) <= 4:
+            note = "程式讀成%s" % got
+        else:
+            note = "整格沒讀對"
+        district_pairs.append((want, note, crop))
+
+    if not (pairs or road_pairs or head_pairs or number_pairs or district_pairs):
         return None, 0
 
     # 打亂 —— 檔名裡沒有件號也沒有格號，順序是最後一個可能洩漏關聯的東西
@@ -1397,6 +1494,7 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
     random.shuffle(road_pairs)
     random.shuffle(head_pairs)
     random.shuffle(number_pairs)
+    random.shuffle(district_pairs)
 
     target = os.path.join(folder, HARD_CELLS)
     os.makedirs(target, exist_ok=True)
@@ -1427,6 +1525,11 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None):
         if len(want) != 1 or not want.isdigit() or width > height * 1.6:
             continue
         name = "門牌數字_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
+        if safe_hard_name(name) and _resources.imwrite(
+                os.path.join(target, name), cell):
+            written += 1
+    for want, saw, cell in district_pairs:
+        name = "行政區_真值%s_%s_%06x.png" % (want, saw, random.getrandbits(24))
         if safe_hard_name(name) and _resources.imwrite(
                 os.path.join(target, name), cell):
             written += 1

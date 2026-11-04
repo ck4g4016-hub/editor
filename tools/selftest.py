@@ -974,6 +974,7 @@ def check():
     problems.extend(_review_page_can_add_manual())
     problems.extend(_manual_record_goes_anywhere())
     problems.extend(_district_is_read_before_address())
+    problems.extend(_samples_are_capped_per_case())
     problems.extend(_address_drops_building_number())
     problems.extend(_address_floor_always_chinese())
     problems.extend(_address_follows_the_rule())
@@ -1743,7 +1744,7 @@ def _hard_cells_are_safe_to_send():
         problems.append("沒有讀我.txt —— 承辦人不會知道這份能不能傳")
     else:
         text = open(readme, encoding="utf-8").read()
-        for need in ("只有讀錯", "自己打開看一遍"):
+        for need in ("一件最多 3 格", "自己打開看一遍"):
             if need not in text:
                 problems.append("讀我.txt 沒有寫「%s」" % need)
 
@@ -2617,8 +2618,11 @@ def _house_numbers_go_out_as_single_digits():
         img = cv2.imread(os.path.join(folder, name), cv2.IMREAD_GRAYSCALE) if folder else None
         if img is not None and img.shape[1] > img.shape[0] * 1.6:
             problems.append("收進去的圖比一個字寬，可能是整格：%s" % name)
-    if count != 5:
-        problems.append("三格（巷38、弄2、號14）都沒讀到，應該收 5 張，實際 %d 張" % count)
+    # 5 個位數都讀錯，但一件最多收 HOUSE_DIGITS_PER_CASE 個（去識別化的上限，
+    # 見 _samples_are_capped_per_case）
+    if count != process.HOUSE_DIGITS_PER_CASE:
+        problems.append("三格（巷38、弄2、號14）都沒讀到，應該收 %d 張（每件上限），實際 %d 張"
+                        % (process.HOUSE_DIGITS_PER_CASE, count))
     return problems
 
 
@@ -3706,7 +3710,7 @@ def _manual_record_goes_anywhere():
 
     source = open(os.path.join(resources.base_dir(), "tools", "review.py"),
                   encoding="utf-8").read()
-    if 'payload.get("origins")' not in source or "numbers, origins)" not in source:
+    if 'payload.get("origins")' not in source or "numbers, origins," not in source:
         problems.append("tools/review.py 沒有把畫面送來的 origins 交給難字回報")
 
     # ── 二、難字回報照 origins 找件 ─────────────────────────────
@@ -3866,6 +3870,134 @@ def _district_is_read_before_address():
             problems.append("負向驗證沒有叫：順序改回先關鍵字後框選，檢查還是說沒問題")
     finally:
         process.reading_order = saved
+    return problems
+
+
+def _samples_are_capped_per_case():
+    """辨識樣本（裁切圖去識別化）：讀對的也收當對照組，但每一件有上限。
+
+    承辦人 2026-11-04：「現在需要的是把裁切圖產生出來後去識別化，這樣就
+    可以直接給你來辨識。」他前一天自己從裁切圖挑格子刪 —— 刪完每件還剩
+    8 格，有一件 10 格整組都在。8 格配上檢查碼只剩十來種可能，所以上限
+    一定要壓在程式裡：
+
+      身分證    每件最多 ID_CELLS_PER_CASE（3）格，讀錯的優先
+      門牌數字  每件最多 HOUSE_DIGITS_PER_CASE（2）個，讀錯的優先
+      行政區    整格收，但格子裡夾到數字或路街巷弄號樓的不收
+
+    負向驗證：controls 沒開時讀對的一張都不收（舊行為不變）；把上限調高，
+    這支檢查一定要叫。
+    """
+    import glob
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    from pipeline import process
+
+    problems = []
+    if process.ID_CELLS_PER_CASE > 3 or process.HOUSE_DIGITS_PER_CASE > 2:
+        problems.append("每件的上限被調高了（身分證 %d、門牌數字 %d）—— "
+                        "那是去識別化的上限，不是取樣比例"
+                        % (process.ID_CELLS_PER_CASE, process.HOUSE_DIGITS_PER_CASE))
+
+    class Case:
+        def __init__(self, truth, wrong=()):
+            self.cells = {"id_number": [np.full((40, 30), 200, np.uint8)
+                                        for _ in range(10)]}
+            text = [[c] for c in truth]
+            for slot in wrong:
+                text[slot] = ["X"]
+            self.cell_text = {"id_number": text}
+
+    def names(records, rows, controls):
+        folder, _count = process.dump_hard_cells(records, rows, tempfile.mkdtemp(),
+                                                 controls=controls)
+        return [os.path.basename(f) for f in glob.glob(os.path.join(folder or "", "*.png"))]
+
+    good = "A123456789"
+    # 一、全部讀對：沒開對照組 0 張；開了剛好 3 張，都標「程式讀對」
+    if names([Case(good)], [{"id_number": good}], False):
+        problems.append("沒開對照組，讀對的格子卻被收了")
+    got = names([Case(good)], [{"id_number": good}], True)
+    if len(got) != 3 or not all("程式讀對" in n for n in got):
+        problems.append("十格全讀對、開了對照組，應該收 3 張讀對的，實際 %s" % got)
+    # 二、讀錯 5 格：也只收 3 張，而且全是讀錯的
+    got = names([Case(good, wrong=(1, 2, 4, 6, 8))], [{"id_number": good}], True)
+    if len(got) != 3 or any("程式讀對" in n for n in got):
+        problems.append("讀錯 5 格應該只收 3 張讀錯的（上限），實際 %s" % got)
+    # 三、讀錯 1 格：1 張讀錯的 + 2 張讀對的
+    got = names([Case(good, wrong=(3,))], [{"id_number": good}], True)
+    if (len(got) != 3 or sum("程式讀對" in n for n in got) != 2
+            or not any("真值3_程式沒讀到" in n for n in got)):
+        problems.append("讀錯 1 格應該是 1 張讀錯 + 2 張讀對，實際 %s" % got)
+    # 四、好幾件：總數不超過 3 × 件數，檔名沒有件號格號
+    many = [Case(good, wrong=(i % 10,)) for i in range(6)]
+    got = names(many, [{"id_number": good}] * 6, True)
+    if len(got) != 18:
+        problems.append("6 件應該剛好 18 張，實際 %d 張" % len(got))
+    if any("件" in n or "格" in n for n in got):
+        problems.append("檔名留下了件號或格號：%s" % got)
+
+    # 五、門牌數字：每件最多 2 個
+    def digits_box(text):
+        img = np.full((80, 40 + 60 * len(text)), 255, np.uint8)
+        for i, ch in enumerate(text):
+            cv2.putText(img, ch, (20 + 60 * i, 62), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 0, 5)
+        return img
+
+    class House:
+        def __init__(self, parts):
+            self.cells, self.cell_text = {}, {}
+            self.road_cell = None
+            self.address_cell = None
+            self.address_parts = parts
+
+    parts = [(digits_box("12"), "12", "巷"), (digits_box("38"), "38", "號"),
+             (digits_box("5"), "5", "樓")]
+    row = {"address": "大觀路12巷38號五樓"}
+    got = names([House(parts)], [row], True)
+    house = [n for n in got if n.startswith("門牌數字")]
+    if len(house) != 2 or not all("程式讀對" in n for n in house):
+        problems.append("門牌全讀對、開了對照組，應該收 2 個數字，實際 %s" % got)
+    if names([House(parts)], [row], False):
+        problems.append("門牌全讀對、沒開對照組，卻還是收了")
+
+    # 六、行政區
+    class Place:
+        def __init__(self, crop, saw):
+            self.cells, self.cell_text = {}, {}
+            self.district_cell = (crop, saw)
+
+    line = np.full((60, 240), 255, np.uint8)
+    for crop, saw, want, expect, why in (
+            (line, "三峽區", "三峽區", "程式讀對", "讀對的收當對照組"),
+            (line, "三", "三峽區", "程式讀成三", "讀錯的收"),
+            (line, "", "鶯歌區", "程式沒讀到", "沒讀到的收"),
+            (line, "三峽區12號", "三峽區", None, "格子裡夾到門牌號，不收"),
+            (np.full((60, 900), 255, np.uint8), "三峽區", "三峽區", None, "格子太長，不收"),
+            (line, "三峽區", "", None, "人沒填行政區，不收")):
+        got = names([Place(crop, saw)], [{"district": want}], True)
+        if expect is None and got:
+            problems.append("行政區：%s，實際收了 %s" % (why, got))
+        if expect and not (len(got) == 1 and expect in got[0]):
+            problems.append("行政區：%s，實際 %s" % (why, got))
+
+    # 接線：複核畫面匯出時要開對照組
+    source = open(os.path.join(resources_base(), "tools", "review.py"),
+                  encoding="utf-8").read()
+    if "controls=True" not in source:
+        problems.append("tools/review.py 匯出時沒有開對照組，量不出改壞了什麼")
+
+    # 負向驗證：上限調高，這支檢查要叫
+    saved = process.ID_CELLS_PER_CASE
+    process.ID_CELLS_PER_CASE = 10
+    try:
+        if len(names([Case(good)], [{"id_number": good}], True)) == 3:
+            problems.append("負向驗證沒有叫：上限調成 10 還是只收 3 張，檢查沒在看上限")
+    finally:
+        process.ID_CELLS_PER_CASE = saved
     return problems
 
 
