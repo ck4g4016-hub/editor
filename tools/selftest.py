@@ -1744,7 +1744,7 @@ def _hard_cells_are_safe_to_send():
         problems.append("沒有讀我.txt —— 承辦人不會知道這份能不能傳")
     else:
         text = open(readme, encoding="utf-8").read()
-        for need in ("一件最多 3 格", "自己打開看一遍"):
+        for need in ("一件最多 5 格", "自己打開看一遍"):
             if need not in text:
                 problems.append("讀我.txt 沒有寫「%s」" % need)
 
@@ -3881,7 +3881,8 @@ def _samples_are_capped_per_case():
     8 格，有一件 10 格整組都在。8 格配上檢查碼只剩十來種可能，所以上限
     一定要壓在程式裡：
 
-      身分證    每件最多 ID_CELLS_PER_CASE（3）格，讀錯的優先
+      身分證    每件最多 ID_CELLS_PER_CASE（5）格，讀錯的優先；
+                讀對的只補到 ID_CONTROLS_UPTO（3）張
       門牌數字  每件最多 HOUSE_DIGITS_PER_CASE（2）個，讀錯的優先
       行政區    整格收，但格子裡夾到數字或路街巷弄號樓的不收
 
@@ -3897,7 +3898,8 @@ def _samples_are_capped_per_case():
     from pipeline import process
 
     problems = []
-    if process.ID_CELLS_PER_CASE > 3 or process.HOUSE_DIGITS_PER_CASE > 2:
+    if (process.ID_CELLS_PER_CASE > 5 or process.ID_CONTROLS_UPTO > 3
+            or process.HOUSE_DIGITS_PER_CASE > 2):
         problems.append("每件的上限被調高了（身分證 %d、門牌數字 %d）—— "
                         "那是去識別化的上限，不是取樣比例"
                         % (process.ID_CELLS_PER_CASE, process.HOUSE_DIGITS_PER_CASE))
@@ -3923,10 +3925,14 @@ def _samples_are_capped_per_case():
     got = names([Case(good)], [{"id_number": good}], True)
     if len(got) != 3 or not all("程式讀對" in n for n in got):
         problems.append("十格全讀對、開了對照組，應該收 3 張讀對的，實際 %s" % got)
-    # 二、讀錯 5 格：也只收 3 張，而且全是讀錯的
-    got = names([Case(good, wrong=(1, 2, 4, 6, 8))], [{"id_number": good}], True)
-    if len(got) != 3 or any("程式讀對" in n for n in got):
-        problems.append("讀錯 5 格應該只收 3 張讀錯的（上限），實際 %s" % got)
+    # 二、讀錯 7 格：只收 5 張（上限），而且全是讀錯的
+    got = names([Case(good, wrong=(1, 2, 3, 4, 6, 7, 8))], [{"id_number": good}], True)
+    if len(got) != 5 or any("程式讀對" in n for n in got):
+        problems.append("讀錯 7 格應該只收 5 張讀錯的（上限），實際 %s" % got)
+    # 二之二、讀錯 4 格：4 張全收，不補讀對的（已經超過對照組的 3 張）
+    got = names([Case(good, wrong=(1, 2, 4, 6))], [{"id_number": good}], True)
+    if len(got) != 4 or any("程式讀對" in n for n in got):
+        problems.append("讀錯 4 格應該收那 4 張、不補讀對的，實際 %s" % got)
     # 三、讀錯 1 格：1 張讀錯的 + 2 張讀對的
     got = names([Case(good, wrong=(3,))], [{"id_number": good}], True)
     if (len(got) != 3 or sum("程式讀對" in n for n in got) != 2
@@ -3994,8 +4000,9 @@ def _samples_are_capped_per_case():
     saved = process.ID_CELLS_PER_CASE
     process.ID_CELLS_PER_CASE = 10
     try:
-        if len(names([Case(good)], [{"id_number": good}], True)) == 3:
-            problems.append("負向驗證沒有叫：上限調成 10 還是只收 3 張，檢查沒在看上限")
+        got = names([Case(good, wrong=(1, 2, 3, 4, 6, 7, 8))], [{"id_number": good}], True)
+        if len(got) == 5:
+            problems.append("負向驗證沒有叫：上限調成 10 還是只收 5 張，檢查沒在看上限")
     finally:
         process.ID_CELLS_PER_CASE = saved
     return problems

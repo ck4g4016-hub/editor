@@ -1143,8 +1143,8 @@ _HARD_README = """\
 
 跟「裁切圖（含個資，勿外傳）」不一樣，這裡是刻意做成可以外傳的：
 
-  * **身分證一件最多 3 格**，讀錯的優先，名額有剩才放讀對的。十格裡
-    只有三格、又不知道是第幾格，湊不回任何人的號碼。
+  * **身分證一件最多 5 格**，讀錯的優先；讀錯的不到 3 格才補讀對的，
+    補到 3 張為止。十格裡最多五格、又不知道是第幾格，湊不回任何人的號碼。
     （從裁切圖自己挑格子刪是不夠的：刪到剩八格，配上最後一碼的檢查碼，
       只剩十來種可能。上限一定要壓在程式裡，不能靠人刪。）
   * 讀對的那幾張是**對照組**：只收讀錯的，開發者量不出「改了之後有沒有
@@ -1221,27 +1221,35 @@ def _row_source(records, position, numbers=None, origins=None):
 
 # 每一件最多收幾個字。這是**去識別化的上限**，不是取樣比例：
 #
-#   身分證  3 格（共 10 格）。不記第幾格、整批打亂，3 個沒有順序的數字
-#           湊不回號碼 —— 剩下 7 碼就算扣掉檢查碼也還有上百萬種組合。
+#   身分證  5 格（共 10 格）。不記第幾格、整批打亂，5 個沒有順序的數字
+#           湊不回號碼 —— 剩下 5 碼扣掉檢查碼還有上萬種組合，再乘上
+#           「已知的 5 個各在第幾格」的排法。
 #           承辦人 2026-11-04 自己從裁切圖挑格子刪，刪完每件還剩 8 格，
 #           有一件 10 格整組都在；8 格配上檢查碼只剩十來種可能。
+#           原本訂 3 格；承辦人 2026-11-05 想要全部收錄、打亂順序，討論過
+#           「同一個人的十格看筆跡就歸得在一起、檢查碼再篩一次就還原」之後，
+#           折衷成 5 格：「就折衷改成五格吧。」**不要再往上調。**
 #   門牌數字 2 個。不記是巷、弄、號還是樓，兩個沒有順序的數字配上路名
 #           也指不到哪一戶。
 #
-# 讀錯的一律優先；名額有剩才放讀對的（見 controls）。
-ID_CELLS_PER_CASE = 3
+# 讀錯的一律優先。讀對的只是對照組，一件湊到 ID_CONTROLS_UPTO 張為止，
+# 不會把上限填滿 —— 上限放寬是為了多收難字，不是多收讀對的。
+ID_CELLS_PER_CASE = 5
+ID_CONTROLS_UPTO = 3
 HOUSE_DIGITS_PER_CASE = 2
 
 
-def _take(wrong, right, cap, controls):
-    """一件裡要收哪幾個：讀錯的先（打亂後取），名額有剩再放讀對的。"""
+def _take(wrong, right, cap, controls, upto=None):
+    """一件裡要收哪幾個：讀錯的先（打亂後取，最多 cap 個），
+    controls 開著的話再放讀對的，讓總數湊到 upto（沒給就是 cap）為止。"""
     import random
 
     wrong = list(wrong)
     random.shuffle(wrong)
     picked = wrong[:cap]
-    if controls and len(picked) < cap and right:
-        picked += random.sample(list(right), min(cap - len(picked), len(right)))
+    fill = min(cap, cap if upto is None else upto)
+    if controls and len(picked) < fill and right:
+        picked += random.sample(list(right), min(fill - len(picked), len(right)))
     return picked
 
 
@@ -1263,8 +1271,8 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None, controls=
     controls=True 時名額有剩會放幾張**讀對的**（檔名寫「程式讀對」）。
     承辦人 2026-11-04：「現在需要的是把裁切圖產生出來後去識別化，這樣就
     可以直接給你來辨識。」只有讀錯的，量不出改了之後有沒有把原本讀對的
-    改壞 —— 要有對照組。但每一件的總數照樣受 ID_CELLS_PER_CASE 限制，
-    讀對的不會多佔名額。
+    改壞 —— 要有對照組。讀對的一件最多湊到 ID_CONTROLS_UPTO 張，總數照樣受
+    ID_CELLS_PER_CASE 限制。
 
     回傳 (資料夾, 寫出幾張)。
     """
@@ -1306,7 +1314,7 @@ def dump_hard_cells(records, rows, folder, numbers=None, origins=None, controls=
             else:
                 saw = "程式沒讀到"
             wrong.append((want, saw, cell))
-        pairs.extend(_take(wrong, right, ID_CELLS_PER_CASE, controls))
+        pairs.extend(_take(wrong, right, ID_CELLS_PER_CASE, controls, ID_CONTROLS_UPTO))
 
     # ── 門牌：只收「路名」那一格 ──────────────────────────────────
     #
