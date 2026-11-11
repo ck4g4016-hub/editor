@@ -155,6 +155,20 @@ def make_handler(state, guard):
             # 把那幾格存下來，累積成「圖 + 正確答案」給開發者量準確率。
             # 只收讀錯的那幾格，湊不回任何人的號碼（見 dump_hard_cells）。
             hard = None
+            # 舊版留在難字回報資料夾裡、檔名帶住址的圖，先清掉再寫新的
+            # （見 process.purge_unsafe_hard_cells）。一定要講出來：
+            # 承辦人可能已經把舊的那一包傳出去過。
+            try:
+                purged = process.purge_unsafe_hard_cells(state["out"])
+            except Exception as error:                              # noqa: BLE001
+                purged = 0
+                print("難字回報資料夾清不乾淨：%s" % error)
+            if purged:
+                warnings.append(
+                    "「難字回報」資料夾裡有 %d 張舊版程式留下、檔名含門牌號碼的圖，"
+                    "已經刪掉了。如果之前曾把這個資料夾整包傳出去過，"
+                    "那幾張已經跟著出去，請告訴開發者。" % purged)
+                print("注意：%s" % warnings[-1])
             try:
                 folder, count = process.dump_hard_cells(
                     state["records"], rows, state["out"], numbers, origins,

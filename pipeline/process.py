@@ -1121,6 +1121,33 @@ def safe_hard_name(name):
     chinese = sum(1 for char in name if "\u4e00" <= char <= "\u9fff")
     return chinese <= _NAME_MAX_CHINESE
 
+def purge_unsafe_hard_cells(folder):
+    """把難字回報資料夾裡檔名過不了 safe_hard_name 的圖刪掉，回傳刪了幾張。
+
+    **這是 2026-11-11 真的發生過才加的。** 那個資料夾從來不清空，每次匯出
+    都往裡面加。舊版（9/22 那個漏洞修好之前，以及承辦人一時還在用的舊執行檔）
+    寫進去的「路名」圖，檔名就是整串住址 ——「…街88號十三楼之1」。新版雖然
+    不會再寫，舊的那幾張卻一直躺在裡面，承辦人照說明把整個資料夾打包傳出來，
+    就跟著出去了：那一包 70 張裡有 9 張，日期全是 9/23～10/14。
+
+    所以每次匯出先掃一遍，用跟寫檔時同一條規則判斷，不合格的直接刪掉。
+    只動這個資料夾裡的 .png，讀我.txt 和其他東西不碰。
+    """
+    target = os.path.join(folder, HARD_CELLS)
+    if not os.path.isdir(target):
+        return 0
+    removed = 0
+    for name in os.listdir(target):
+        if not name.lower().endswith(".png") or safe_hard_name(name):
+            continue
+        try:
+            os.remove(os.path.join(target, name))
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 _HARD_README = """\
 這個資料夾裡是**辨識樣本**：程式讀錯、讀不出來的字，加上少數讀對的
 當對照組，一個字一張圖。裁切圖去識別化之後就是這個樣子，可以直接傳。

@@ -975,6 +975,8 @@ def check():
     problems.extend(_manual_record_goes_anywhere())
     problems.extend(_district_is_read_before_address())
     problems.extend(_samples_are_capped_per_case())
+    problems.extend(_old_unsafe_samples_are_purged())
+    problems.extend(_handwritten_two_read_as_v())
     problems.extend(_address_drops_building_number())
     problems.extend(_address_floor_always_chinese())
     problems.extend(_address_follows_the_rule())
@@ -4005,6 +4007,108 @@ def _samples_are_capped_per_case():
             problems.append("負向驗證沒有叫：上限調成 10 還是只收 5 張，檢查沒在看上限")
     finally:
         process.ID_CELLS_PER_CASE = saved
+    return problems
+
+
+def _old_unsafe_samples_are_purged():
+    """難字回報資料夾裡舊版留下、檔名帶住址的圖，匯出時要清掉。
+
+    2026-11-11 承辦人傳來的那一包 70 張裡有 9 張「路名」的檔名是整串住址，
+    日期全是 9/23～10/14 —— 舊版寫的，資料夾從不清空，就一直留著跟著出去。
+
+    負向驗證：合格的圖、讀我.txt 一張都不可以被刪。
+    """
+    import tempfile
+
+    from pipeline import process
+
+    problems = []
+    out = tempfile.mkdtemp()
+    target = os.path.join(out, process.HARD_CELLS)
+    os.makedirs(target)
+    bad = ["路名_真值國中_程式讀成國中街88號十三楼之1_64c34c.png",
+           "路名_真值光明_程式讀成光明路75巷16號六樓之1_aaaaaa.png"]
+    good = ["數字_真值2_程式沒讀到_1647ff.png", "路名_真值大觀_程式讀成4大觀_9f1a55.png",
+            "行政區_真值三峽區_程式讀成三峽_116902.png", "數字_真值0_程式讀對_06e7eb.png"]
+    for name in bad + good + ["讀我.txt"]:
+        open(os.path.join(target, name), "wb").close()
+    removed = process.purge_unsafe_hard_cells(out)
+    left = set(os.listdir(target))
+    if removed != len(bad) or any(name in left for name in bad):
+        problems.append("舊版留下、檔名帶住址的圖沒有清掉（刪了 %d 張，還剩 %s）"
+                        % (removed, sorted(left & set(bad))))
+    for name in good + ["讀我.txt"]:
+        if name not in left:
+            problems.append("合格的檔案被刪掉了：%s" % name)
+    if process.purge_unsafe_hard_cells(out) != 0:
+        problems.append("已經清乾淨了，再清一次還說刪了東西")
+    if process.purge_unsafe_hard_cells(tempfile.mkdtemp()) != 0:
+        problems.append("沒有難字回報資料夾的時候，不該回報刪了東西")
+
+    # 接線：匯出時要先清、再寫新的，而且清掉了要講出來
+    source = open(os.path.join(resources_base(), "tools", "review.py"),
+                  encoding="utf-8").read()
+    purge = source.find("process.purge_unsafe_hard_cells(")
+    dump = source.find("process.dump_hard_cells(")
+    if purge < 0 or dump < 0 or purge > dump:
+        problems.append("匯出時沒有先清掉舊版留下的不安全檔案")
+    if "已經跟著出去" not in source:
+        problems.append("清掉舊檔時沒有告訴承辦人：之前傳過的那一包可能已經帶出去了")
+    return problems
+
+
+def _handwritten_two_read_as_v():
+    """身分證逐格：手寫的 2 被讀成 V、Y，要當成 2 的候選，而且一定要標記。
+
+    承辦人 2026-11-11：「房屋稅的申請書身分證的部分讀的還是很差，基本上都
+    讀不了。」難字回報兩批合計 50 格，讀成 V/Y/v/y 的每一格答案都是 2。
+
+    負向驗證：
+      一、規則拿掉之後，同一組讀法解不出來（證明這條規則真的有作用）
+      二、用到這條規則時一定要有提醒，不可以靜靜地當成讀到了
+      三、那一格同時有讀到真正的數字時，不算推測、不標
+      四、真值不是 2 卻讀成 V 的時候，不可以生出一個「通過、沒提醒」的號碼
+    """
+    from pipeline import validate
+
+    problems = []
+    truth = "A223456781"          # 檢查碼正確的假號碼
+    if validate.id_number(truth)[1] is not None:
+        return ["selftest 自己的假號碼檢查碼就不對"]
+    reads = [[c] for c in truth]
+    reads[1], reads[2] = ["V"], ["y"]
+    value, note = validate.solve_id(reads)
+    if value != truth:
+        problems.append("手寫 2 讀成 V/Y，解出來是 %r（應該是 %s）：%s" % (value, truth, note))
+    elif not note or "讀成「V」" not in note or "原圖" not in note:
+        problems.append("用了「V 當成 2」卻沒有標起來讓人核對：%r" % note)
+
+    saved = dict(validate._HANDWRITTEN_DIGIT)
+    validate._HANDWRITTEN_DIGIT.clear()
+    try:
+        if validate.solve_id(reads)[0] == truth:
+            problems.append("負向驗證沒有叫：拿掉規則還是解得出來，這個檢查分不出差別")
+    finally:
+        validate._HANDWRITTEN_DIGIT.update(saved)
+
+    both = [[c] for c in truth]
+    both[2] = ["V", "2"]
+    value, note = validate.solve_id(both)
+    if value != truth or (note and "讀成" in note):
+        problems.append("那一格明明也讀到了 2，卻被標成推測：%r %r" % (value, note))
+
+    # 真值是 7、卻讀成 V：只能失敗或被標記，不能安靜地通過
+    seven = "A127456785"
+    if validate.id_number(seven)[1] is None:
+        reads = [[c] for c in seven]
+        reads[3] = ["V"]
+        value, note = validate.solve_id(reads)
+        if value is not None and not note:
+            problems.append("7 被讀成 V，卻生出一個沒有任何提醒的號碼 %r" % value)
+
+    # 只用在身分證：門牌那條路不可以跟著把 V 換成 2
+    if "V" in validate._LETTER_TO_DIGIT or "Y" in validate._LETTER_TO_DIGIT:
+        problems.append("V/Y 被放進了共用的 _LETTER_TO_DIGIT，門牌也會被靜靜地改")
     return problems
 
 

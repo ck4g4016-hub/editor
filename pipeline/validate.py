@@ -127,6 +127,36 @@ def best_id(*texts):
 
 # 一格一個字時，每一格的候選字。位置本身就是規則：
 # 第 1 碼一定是英文字母、第 2 碼一定是 1 或 2、其餘一定是數字。
+# 手寫的「2」被模型讀成的樣子。**只用在身分證逐格解碼**，門牌等欄位不用。
+#
+# 承辦人 2026-11-11：「房屋稅的申請書身分證的部分讀的還是很差，基本上都
+# 讀不了，我看畫面很清楚能知道是甚麼，但是就讀不出來。」那一批的難字回報
+# 裡 11 個「2」有 9 個讀不出來 —— 民眾的 2 寫得像「ン」，上面的彎很短，
+# 模型讀成 V 或 Y。11/3 那一批也一樣（7 個 2 有 5 個讀成 V/v/y）。
+# 兩批合計 50 格，**讀成 V、Y、v、y 的每一格正確答案都是 2**，沒有例外。
+#
+# 跟上面 _LETTER_TO_DIGIT 不同的是：那些是字形本來就相同（O 和 0），
+# 這些是**這種寫法的習慣**，所以分開放，而且用到的時候一定標起來讓人核對
+# （見 solve_id 的 guessed）。試過的前處理（擦掉格線殘跡、加粗、柔化、置中）
+# 都只多讀對一兩格，模型就是把這種 2 看成 V。
+_HANDWRITTEN_DIGIT = {"V": "2", "v": "2", "Y": "2", "y": "2"}
+
+
+def _lookalike_only(texts, position):
+    """這一格的數字是不是**全靠** _HANDWRITTEN_DIGIT 換出來的。"""
+    if position == 0:
+        return None
+    direct, guessed = set(), None
+    for text in texts or ():
+        for char in to_halfwidth(text or ""):
+            digit = _LETTER_TO_DIGIT.get(char, _LETTER_TO_DIGIT.get(char.upper(), char))
+            if digit.isdigit():
+                direct.add(digit)
+            elif char in _HANDWRITTEN_DIGIT:
+                guessed = guessed or char
+    return guessed if guessed and not direct else None
+
+
 def _cell_options(texts, position):
     """把一格的幾種讀法，換算成那個位置**可能**的字。"""
     got = set()
@@ -138,6 +168,8 @@ def _cell_options(texts, position):
                     got.add(letter)
             else:
                 digit = _LETTER_TO_DIGIT.get(char, _LETTER_TO_DIGIT.get(char.upper(), char))
+                if not digit.isdigit():
+                    digit = _HANDWRITTEN_DIGIT.get(char, digit)
                 if digit.isdigit():
                     got.add(digit)
     read = bool(got)
@@ -257,13 +289,24 @@ def solve_id(cells):
     if not found:
         return None, "十格湊不出通過檢查碼的號碼"
 
+    # 靠「手寫 2 讀成 V」那條規則換出來的格子：值照給，但一定要標
+    # （CLAUDE.md 第三條：可以修，不可以靜靜地修）
+    guessed = []
+    for index in range(1, 10):
+        char = _lookalike_only(cells[index], index)
+        if char:
+            guessed.append("第 %d 格讀成「%s」，當成 %s" % (index + 1, char, found[0][index]))
+    guess_note = ("、".join(guessed) + "（手寫的 2 常被讀成 V 或 Y），請對著原圖核對"
+                  if guessed else None)
+
     if blanks:
         # 有格子是「推」出來的，不是「讀」出來的。值照樣給 —— 有個號碼可以
         # 對照比空白有用 —— 但一定要標起來，不可以當成讀到了。
         # 推回來的前提是其餘幾格都對，那個前提沒有任何東西保證。
-        return found[0], ("第 %s 格沒讀到，是用檢查碼推回來的，請自己核對原圖"
-                          % "、".join(str(n) for n in blanks))
-    return found[0], None
+        note = ("第 %s 格沒讀到，是用檢查碼推回來的，請自己核對原圖"
+                % "、".join(str(n) for n in blanks))
+        return found[0], (note + "；" + guess_note) if guess_note else note
+    return found[0], guess_note
 
 
 def id_number(text):
