@@ -1,0 +1,109 @@
+name: build-probe-exe
+
+# 在 Windows runner 上把 probe/probe.py 打包成 Windows 執行檔。
+# 產出四個版本，用來分辨「跑不起來」到底是哪一種管制造成的：
+#   lite  / full   → 是不是含原生 DLL 的套件被防毒擋下
+#   onefile/onedir → 是不是「暫存資料夾不准執行」的政策擋下 (onefile 會解壓到暫存資料夾再執行)
+#
+# 建置完成後會同時：
+#   1. 上傳成 Actions 產出物 (需要登入 GitHub 才下載得到)
+#   2. 發布成 Release (一般的檔案下載連結，點了就下載，不需要任何額外權限)
+on:
+  push:
+    branches: ['main', 'claude/**']
+    paths:
+      - 'probe/**'
+      - '.github/workflows/build-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 建置精簡版 (只用 Python 標準函式庫)
+        shell: pwsh
+        run: |
+          # 預設只有最後一個指令的結束碼算數，中間的 pip 裝失敗會被吃掉。
+          # 這兩行讓任何一個外部指令失敗就立刻中斷。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv venv-lite
+          venv-lite\Scripts\python -m pip install --upgrade pip
+          venv-lite\Scripts\pip install pyinstaller==6.15.0
+          venv-lite\Scripts\pyinstaller --onefile --name probe-lite-onefile --distpath dist\lite --workpath build\lite-one --specpath build probe\probe.py
+          venv-lite\Scripts\pyinstaller --onedir  --name probe-lite-onedir  --distpath dist\lite --workpath build\lite-dir --specpath build probe\probe.py
+
+      - name: 建置完整版 (含影像處理與推論套件)
+        shell: pwsh
+        run: |
+          # 預設只有最後一個指令的結束碼算數，中間的 pip 裝失敗會被吃掉。
+          # 這兩行讓任何一個外部指令失敗就立刻中斷。
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m venv venv-full
+          venv-full\Scripts\python -m pip install --upgrade pip
+          venv-full\Scripts\pip install -r probe\requirements-full.txt
+          venv-full\Scripts\pip install pyinstaller==6.15.0 pyinstaller-hooks-contrib
+          # --collect-all 確保原生 DLL 與資料檔一起收進去，光靠靜態分析不夠
+          $collect = '--collect-all', 'numpy', '--collect-all', 'cv2', '--collect-all', 'pymupdf',
+                     '--collect-all', 'PIL', '--collect-all', 'onnxruntime', '--collect-all', 'openpyxl'
+          venv-full\Scripts\pyinstaller --onefile @collect --name probe-full-onefile --distpath dist\full --workpath build\full-one --specpath build probe\probe.py
+          venv-full\Scripts\pyinstaller --onedir  @collect --name probe-full-onedir  --distpath dist\full --workpath build\full-dir --specpath build probe\probe.py
+
+      - name: 冒煙測試 (確認執行檔跑得動，且套件真的包對了)
+        shell: pwsh
+        run: |
+          function Invoke-Probe($exe) {
+              $report = '' | & $exe 2>&1 | Out-String
+              if ($LASTEXITCODE -ne 0) { Write-Host $report; throw "$exe 執行失敗" }
+              return $report
+          }
+          # 精簡版應該一個套件都沒有，完整版應該六個都在。
+          # 這道檢查是為了擋住「動態載入導致完整版其實什麼都沒包」這種靜默失敗。
+          $lite = Invoke-Probe 'dist\lite\probe-lite-onefile.exe'
+          if ($lite -notmatch 'PACKAGES_OK=0/6') { Write-Host $lite; throw '精簡版不該包含任何套件' }
+          $full = Invoke-Probe 'dist\full\probe-full-onefile.exe'
+          if ($full -notmatch 'PACKAGES_OK=6/6') { Write-Host $full; throw '完整版少包了套件' }
+          Write-Host '精簡版 PACKAGES_OK=0/6，完整版 PACKAGES_OK=6/6，符合預期'
+
+      - name: 打包成可下載的檔案
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          # 單一檔案版直接放，資料夾版壓縮 (需要 _internal 一起帶著才跑得動)
+          Copy-Item dist\lite\probe-lite-onefile.exe release\
+          Copy-Item dist\full\probe-full-onefile.exe release\
+          Compress-Archive -Path dist\lite\probe-lite-onedir\* -DestinationPath release\probe-lite-onedir.zip
+          Compress-Archive -Path dist\full\probe-full-onedir\* -DestinationPath release\probe-full-onedir.zip
+          Get-ChildItem release |
+            Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} |
+            Format-Table -AutoSize
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-exe
+          path: release/
+          retention-days: 30
+
+      - name: 發布 Release (一般下載連結)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 重跑時先移除舊的，讓下載連結永遠指向最新一版
+          gh release delete probe-latest --yes --cleanup-tag --repo $env:GITHUB_REPOSITORY 2>$null
+          $assets = Get-ChildItem release | ForEach-Object { $_.FullName }
+          gh release create probe-latest $assets `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "環境探測程式" `
+            --notes-file probe/RELEASE_NOTES.md
