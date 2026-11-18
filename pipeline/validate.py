@@ -139,7 +139,11 @@ def best_id(*texts):
 # 這些是**這種寫法的習慣**，所以分開放，而且用到的時候一定標起來讓人核對
 # （見 solve_id 的 guessed）。試過的前處理（擦掉格線殘跡、加粗、柔化、置中）
 # 都只多讀對一兩格，模型就是把這種 2 看成 V。
-_HANDWRITTEN_DIGIT = {"V": "2", "v": "2", "Y": "2", "y": "2"}
+#
+# 2026-11-18 那一批：C 表門牌的「12」被讀成「/>」—— 同一種寫法的 2 寫成
+# 「>」、1 是一條斜線，拆出來的門牌數字圖看得很清楚；同一件的身分證也讀出
+# 好幾個「>」。證據比 V/Y 少（一件），所以一樣只用在身分證、一樣一定標記。
+_HANDWRITTEN_DIGIT = {"V": "2", "v": "2", "Y": "2", "y": "2", ">": "2", "/": "1"}
 
 
 def _lookalike_only(texts, position):
@@ -296,7 +300,8 @@ def solve_id(cells):
         char = _lookalike_only(cells[index], index)
         if char:
             guessed.append("第 %d 格讀成「%s」，當成 %s" % (index + 1, char, found[0][index]))
-    guess_note = ("、".join(guessed) + "（手寫的 2 常被讀成 V 或 Y），請對著原圖核對"
+    guess_note = ("、".join(guessed) + "（手寫的 2 常被讀成 V、Y 或 >，1 常被讀成 /），"
+                  "請對著原圖核對"
                   if guessed else None)
 
     if blanks:
@@ -753,6 +758,18 @@ def district(text, known=None):
     winners = [option for option in options if scores[option] == best]
     if best >= 1 and len(winners) == 1:
         return winners[0], None
+    # 再用易混字表比一次（「三快」→「三峽」）。這是照字形推的，不是讀到的，
+    # 所以值照填、但一定標起來（CLAUDE.md 第三條）。
+    from . import lexicon
+    seen = lexicon.canonical(value)
+    scores = {option: len({lexicon.canonical(c) for c in distinct_chars(option, options)}
+                          & set(seen))
+              for option in options}
+    best = max(scores.values())
+    winners = [option for option in options if scores[option] == best]
+    if best >= 1 and len(winners) == 1:
+        return winners[0], ("讀到的是「%s」，照字形最像%s，已經填%s，請對著原圖確認"
+                            % (value, winners[0], winners[0]))
     return value, "認不出是哪一區"
 
 

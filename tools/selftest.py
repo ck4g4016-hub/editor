@@ -977,6 +977,7 @@ def check():
     problems.extend(_samples_are_capped_per_case())
     problems.extend(_old_unsafe_samples_are_purged())
     problems.extend(_handwritten_two_read_as_v())
+    problems.extend(_district_by_lookalike())
     problems.extend(_address_drops_building_number())
     problems.extend(_address_floor_always_chinese())
     problems.extend(_address_follows_the_rule())
@@ -2661,6 +2662,21 @@ def _grid_widths_in_report():
     for line in data_rows:
         if re.search(r"[A-Za-z]\d{9}", line):
             problems.append("格子寬度那一段漏出了身分證號：%s" % line)
+
+    # 2026-11-18：C 表 8 格、佔框寬 74%，要看得出少的兩格在左邊還是右邊
+    hint = diagnose.grid_hint("id_number", [95] * 8, 1022, [30, 232])
+    if "右邊空 232" not in hint or "右邊大約還有 2 格" not in hint:
+        problems.append("格子右邊空了兩格寬，報告卻沒講出來：%s" % hint)
+    hint = diagnose.grid_hint("id_number", [95] * 8, 1022, [232, 30])
+    if "左邊大約還有 2 格" not in hint:
+        problems.append("格子左邊空了兩格寬，報告卻沒講出來：%s" % hint)
+    # 負向：格數對的時候不要多話
+    if diagnose.grid_hint("id_number", [50] * 10, 642, [3, 5]) != "格數對":
+        problems.append("十格都切對了，報告卻還多寫了邊界")
+    # 接線：process 真的有把邊界記下來、送進報告
+    code = open(os.path.join(resources_base(), "pipeline", "process.py"), encoding="utf-8").read()
+    if '"格邊": span_edges' not in code or '"edges": list(how.get("格邊")' not in code:
+        problems.append("process.py 沒有把格子左右邊界記下來給報告用")
     return problems
 
 
@@ -4106,9 +4122,43 @@ def _handwritten_two_read_as_v():
         if value is not None and not note:
             problems.append("7 被讀成 V，卻生出一個沒有任何提醒的號碼 %r" % value)
 
+    # 2026-11-18：「>」是同一種寫法的 2、「/」是 1，一樣要解得出來、一樣要標
+    reads = [[c] for c in truth]
+    reads[1], reads[2] = ["/"], [">"]
+    if truth[1] == "2":
+        reads[1] = [">"]
+    value, note = validate.solve_id(reads)
+    if value != truth or not note or "讀成「>」" not in note:
+        problems.append("手寫 2 讀成「>」沒有解出來或沒有標記：%r %r" % (value, note))
+
     # 只用在身分證：門牌那條路不可以跟著把 V 換成 2
-    if "V" in validate._LETTER_TO_DIGIT or "Y" in validate._LETTER_TO_DIGIT:
-        problems.append("V/Y 被放進了共用的 _LETTER_TO_DIGIT，門牌也會被靜靜地改")
+    if any(ch in validate._LETTER_TO_DIGIT for ch in "VYv>/"):
+        problems.append("V、Y、>、/ 被放進了共用的 _LETTER_TO_DIGIT，門牌也會被靜靜地改")
+    return problems
+
+
+def _district_by_lookalike():
+    """行政區讀成「新北市－快區」：用易混字表推回三峽區，而且一定標記。
+
+    承辦人 2026-11-11、11-18 兩批都有「三峽」讀成「三快」。「三」又被讀成
+    一橫的時候，剩下的「快」兩區都沒有，以前就判「認不出是哪一區」。
+
+    負向驗證：讀得出區名的時候不可以多一個提醒；完全不像的照樣講認不出來。
+    """
+    from pipeline import validate
+
+    problems = []
+    known = ["三峽區", "鶯歌區"]
+    value, note = validate.district("新北市－快區", known=known)
+    if value != "三峽區" or not note or "原圖" not in note:
+        problems.append("「新北市－快區」應該推成三峽區並標記，實際 %r %r" % (value, note))
+    for text, want in (("新北市三峽區", "三峽區"), ("新北市鶯歌區", "鶯歌區"), ("三峡区", "三峽區")):
+        value, note = validate.district(text, known=known)
+        if value != want or note:
+            problems.append("「%s」本來就讀得出來，卻得到 %r %r" % (text, value, note))
+    value, note = validate.district("新北市－字區", known=known)
+    if note != "認不出是哪一區":
+        problems.append("完全不像的區名沒有講認不出來：%r %r" % (value, note))
     return problems
 
 

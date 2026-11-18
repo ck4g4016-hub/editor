@@ -465,6 +465,8 @@ class Converter:
                 # 只有數字（每格幾個像素寬），不含內容，可以外傳
                 "cell_widths": [int(w) for w in how.get("格寬", []) or []],
                 "box_width": int(how.get("框寬", 0) or 0),
+                # 格子左邊、右邊各空了幾個像素（只有數字）
+                "edges": list(how.get("格邊") or ()),
                 # **白名單，不是黑名單。** 只有列在這裡的讀法才會進報告 ——
                 # 新增一種讀法時如果忘了加，報告會少一欄（看得出來），
                 # 而不是把沒遮罩過的東西漏出去（看不出來）。
@@ -765,6 +767,10 @@ class Converter:
         # C 表身分證一直切成 8 格（該 10 格），報告上只有「格數 8」看不出是
         # 兩格黏在一起，還是整排格子沒框到。有寬度就分得出來。
         span_widths, box_width = [], 0
+        # 格子在框裡的左右邊界（只有一段框的欄位才記）。C 表身分證一直只切出
+        # 8 格、佔框寬 74%，光看寬度分不出少的那兩格在左邊還是右邊 ——
+        # 在左邊多半是框畫歪了，在右邊多半是最後兩條格線沒找到。
+        span_edges = None
         all_cells = []
         all_spans = []
         overlap_notes = []
@@ -838,6 +844,9 @@ class Converter:
             spans = recognise.grid_spans(printed, crop)
             cells = [crop[:, a:b] for a, b in spans]
             span_widths.extend(int(b - a) for a, b in spans)
+            if spans and crop is not None and getattr(crop, "size", 0):
+                if span_edges is None and len(definition.segments()) == 1:
+                    span_edges = (int(spans[0][0]), int(crop.shape[1] - spans[-1][1]))
             if crop is not None and getattr(crop, "size", 0):
                 box_width += int(crop.shape[1])
             if spans and grid_source is None:
@@ -887,7 +896,7 @@ class Converter:
         # 診斷報告上完全看不出它有沒有觸發過 —— 結果一次都沒觸發，
         # 而我看著報告看不出來，又照著錯誤的假設猜了一輪。
         how = {"格數": cell_count, "整行": raw, "照格子": grid_raw if any_grid else "",
-               "格寬": span_widths, "框寬": box_width}
+               "格寬": span_widths, "框寬": box_width, "格邊": span_edges}
         record.how[definition.column] = how
 
         extra = self._dictionaries(definition, record)

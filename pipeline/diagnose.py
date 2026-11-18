@@ -206,10 +206,22 @@ def _table(header, rows):
     return out
 
 
-def grid_hint(column, widths, box_width):
+def grid_hint(column, widths, box_width, edges=None):
     """看格子寬度猜是哪一種切錯。只用在身分證（固定 10 格）。"""
     if column != "id_number" or not widths:
         return ""
+    hint = _grid_hint(widths, box_width)
+    if edges and len(edges) == 2 and len(widths) != 10:
+        left, right = edges
+        hint += "；格子左邊空 %d、右邊空 %d" % (left, right)
+        median = sorted(widths)[len(widths) // 2]
+        if median and max(left, right) >= median * 1.5:
+            side = "左" if left > right else "右"
+            hint += "（%s邊大約還有 %d 格沒切到）" % (side, round(max(left, right) / float(median)))
+    return hint
+
+
+def _grid_hint(widths, box_width):
     if len(widths) == 10:
         return "格數對"
     ordered = sorted(widths)
@@ -439,7 +451,8 @@ def build(journal, notes=None, version=None):
                          fieldmod.COLUMNS.get(field["column"], field["column"]),
                          len(widths), field.get("box_width", 0),
                          " ".join(str(w) for w in widths),
-                         grid_hint(field["column"], widths, field.get("box_width", 0))])
+                         grid_hint(field["column"], widths, field.get("box_width", 0),
+                                   field.get("edges"))])
     if rows:
         out.extend(_table(["件", "欄位", "格數", "框寬", "每格寬度", "看起來像"], rows))
     else:
